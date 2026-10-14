@@ -40,6 +40,8 @@ jobs:
           --tests 'ai.closepaw.app.ShellyBackgroundRunTest'
           --tests 'ai.closepaw.app.OverlayLocationPolicyTest'
           --tests 'ai.closepaw.app.AgentServiceEventHandlerTest'
+          --tests 'ai.closepaw.tool.PolicyEngineTest'
+          --tests 'ai.closepaw.tool.ToolRouterTest'
 
       - name: Decode keystore
         env:

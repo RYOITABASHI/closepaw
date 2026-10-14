@@ -45,11 +45,15 @@ internal object SessionToolingBootstrapper {
         delegatableRoleDefs: List<AgentRoleDef> = emptyList(),
         termuxSnapshot: TermuxCapabilitySnapshot = TermuxCapabilitySnapshot.Unavailable,
         excludedTools: Set<String> = emptySet(),
-        context: Context? = null
+        context: Context? = null,
+        systemSurfacePackages: Set<String> = emptySet(),
+        denySystemSurfaceActions: Boolean = false,
     ): SessionToolingBootstrap {
         val policyEngine = PolicyEngine(
             initialApprovalMode = approvalMode,
-            appClassifier = appClassifier
+            appClassifier = appClassifier,
+            systemSurfacePackages = systemSurfacePackages,
+            denySystemSurfaceActions = denySystemSurfaceActions,
         )
         val sessionState = AgentSessionState()
         val allowedToolNames = resolveAllowedToolNames(

@@ -24,7 +24,20 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class PolicyEngine(
     initialApprovalMode: ApprovalMode = ApprovalMode.SMART,
-    val appClassifier: AppClassifier
+    val appClassifier: AppClassifier,
+    /**
+     * Device home launcher(s) and System UI. These are surfaces the agent passes through, not
+     * apps it operates: when the foreground is one of them, open_app judges only the destination
+     * (otherwise an unlisted launcher such as Samsung One UI Home — CAUTIOUS by default — would
+     * make every open_app ask, naming the destination app, even when the user allowed it).
+     */
+    private val systemSurfacePackages: Set<String> = emptySet(),
+    /**
+     * Unattended runs (e.g. a Shelly background hand-off): screen-changing actions ON a system
+     * surface are denied without prompting so the agent uses open_app instead of tapping the
+     * launcher, rather than parking an approval prompt the user did not expect.
+     */
+    private val denySystemSurfaceActions: Boolean = false,
 ) {
     private val approvalMode = AtomicReference(initialApprovalMode)
 
@@ -52,14 +65,22 @@ class PolicyEngine(
         destinationPackage: String? = null
     ): PolicyDecision {
         val currentMode = approvalMode.get()
-        val currentTier = appClassifier.classify(packageName)
+        val tool = ToolName.from(toolName)
+        val onSystemSurface = packageName != null && packageName in systemSurfacePackages
+        val classifiedCurrent = appClassifier.classify(packageName)
+        // Leaving a system surface via open_app is not operating it: it neither tightens nor
+        // triggers approval. A bundled-BLOCKED entry still wins (absolute floor).
+        val currentTier =
+            if (tool == ToolName.OpenApp && onSystemSurface && classifiedCurrent != AppTier.BLOCKED) {
+                AppTier.NORMAL
+            } else {
+                classifiedCurrent
+            }
         val destTier = destinationPackage?.let { appClassifier.classify(it) }
         // Effective tier = stricter of the two (lower ordinal = stricter)
         val effectiveTier = if (destTier != null) minOf(currentTier, destTier) else currentTier
         val approvalSubject = destinationPackage ?: packageName
         Log.d(TAG, "Policy check: tool=$toolName, pkg=$packageName, dest=$destinationPackage, tier=$effectiveTier, mode=$currentMode")
-
-        val tool = ToolName.from(toolName)
 
         // 1. Non-screen-changing tools → always allow.
         if (!tool.isScreenChanging) return PolicyDecision.Allow
@@ -74,6 +95,15 @@ class PolicyEngine(
         //    destination ("stricter wins" rule for open_app).
         if (effectiveTier == AppTier.BLOCKED) {
             return PolicyDecision.Deny("Blocked: financial/auth app ($packageName)")
+        }
+
+        // 3b. Unattended runs never operate the launcher / System UI directly; open_app is the
+        //     way out. Denied (not asked) so no unexpected prompt is parked on the user.
+        if (denySystemSurfaceActions && onSystemSurface && tool != ToolName.OpenApp) {
+            return PolicyDecision.Deny(
+                "Home screen / system UI ($packageName) is not operated in background runs; " +
+                    "use open_app to launch the target app"
+            )
         }
 
         // 4. browser_script mutates the user's real Chrome profile through CDP. Chrome is a NORMAL

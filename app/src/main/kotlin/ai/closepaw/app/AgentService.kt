@@ -529,6 +529,7 @@ class AgentService : AccessibilityService() {
                                     else -> PerceptionConfig.AccessibilityOnly
                                 },
                                 platformMode = platformMode,
+                                unattended = true,
                         )
                 val newSession =
                         withContext(Dispatchers.Default) {
@@ -559,8 +560,7 @@ class AgentService : AccessibilityService() {
 
                 val ignored = buildSet {
                     add(packageName)
-                    add("com.android.systemui")
-                    homePackage()?.let { add(it) }
+                    addAll(ai.closepaw.session.SystemSurfaces.resolve(this@AgentService))
                 }
                 val tracker = ShellyRunTracker(
                         sessionId = newSession.sessionId.value,
@@ -654,13 +654,6 @@ class AgentService : AccessibilityService() {
         Log.i(TAG, "Shelly run: user opened operated app $conflict on main display; pausing")
         overlayController?.requestTakeover()
         renderShellyRun()
-    }
-
-    private fun homePackage(): String? = try {
-        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-        packageManager.resolveActivity(home, 0)?.activityInfo?.packageName
-    } catch (e: Exception) {
-        null
     }
 
     fun stopAgent() {

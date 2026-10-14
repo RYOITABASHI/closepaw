@@ -340,5 +340,76 @@ class PolicyEngineTest {
         assertThat(decision).isInstanceOf(PolicyDecision.Deny::class.java)
     }
 
+    // --- System surfaces (home launcher / System UI) ---
+
+    private val launcher = "com.sec.android.app.launcher"   // One UI Home: not in bundled tiers
+    private val chrome = "com.android.chrome"
+
+    private fun surfaceEngine(
+        mode: ApprovalMode = ApprovalMode.SMART,
+        unattended: Boolean = false,
+        tiers: Map<String, AppTier> = mapOf(chrome to AppTier.NORMAL),
+    ) = PolicyEngine(mode, AppClassifier(tiers), setOf(launcher, "com.android.systemui"), unattended)
+
+    @Test
+    fun `open_app to an allowed app from an unlisted launcher is not asked`() {
+        // Root cause of the repeated "Allow ClosePaw to operate Chrome?": the CAUTIOUS launcher
+        // tightened the effective tier and the prompt named the destination (Chrome).
+        val legacy = engineWith(tiers = mapOf(chrome to AppTier.NORMAL))
+        assertThat(legacy.check("open_app", JSONObject(), launcher, chrome))
+            .isInstanceOf(PolicyDecision.AskUser::class.java)
+
+        assertThat(surfaceEngine().check("open_app", JSONObject(), launcher, chrome))
+            .isEqualTo(PolicyDecision.Allow)
+    }
+
+    @Test
+    fun `open_app from launcher still asks for a cautious destination`() {
+        assertThat(surfaceEngine().check("open_app", JSONObject(), launcher, "com.unknown.app"))
+            .isInstanceOf(PolicyDecision.AskUser::class.java)
+    }
+
+    @Test
+    fun `open_app from launcher to a blocked destination is denied`() {
+        val engine = surfaceEngine(tiers = mapOf("com.bank" to AppTier.BLOCKED))
+        assertThat(engine.check("open_app", JSONObject(), launcher, "com.bank"))
+            .isInstanceOf(PolicyDecision.Deny::class.java)
+    }
+
+    @Test
+    fun `persisted Always override on destination is honored from the launcher`() = runBlocking {
+        val classifier = AppClassifier(emptyMap())
+        classifier.setOverride("com.example.app", AppTier.NORMAL)
+        val engine = PolicyEngine(ApprovalMode.SMART, classifier, setOf(launcher), false)
+        assertThat(engine.check("open_app", JSONObject(), launcher, "com.example.app"))
+            .isEqualTo(PolicyDecision.Allow)
+    }
+
+    @Test
+    fun `interactive session still asks before tapping the launcher`() {
+        assertThat(surfaceEngine().check("mobile_action", clickParams(), launcher))
+            .isInstanceOf(PolicyDecision.AskUser::class.java)
+    }
+
+    @Test
+    fun `unattended run denies launcher and system ui taps without prompting`() {
+        val engine = surfaceEngine(unattended = true)
+        assertThat(engine.check("mobile_action", clickParams(), launcher))
+            .isInstanceOf(PolicyDecision.Deny::class.java)
+        assertThat(engine.check("mobile_action", clickParams(), "com.android.systemui"))
+            .isInstanceOf(PolicyDecision.Deny::class.java)
+        // escape and open_app remain available
+        assertThat(engine.check("system_button", JSONObject().put("button", "back"), launcher))
+            .isEqualTo(PolicyDecision.Allow)
+        assertThat(engine.check("open_app", JSONObject(), launcher, chrome))
+            .isEqualTo(PolicyDecision.Allow)
+    }
+
+    @Test
+    fun `unattended run does not affect ordinary apps`() {
+        val engine = surfaceEngine(unattended = true)
+        assertThat(engine.check("mobile_action", clickParams(), chrome)).isEqualTo(PolicyDecision.Allow)
+    }
+
     private fun clickParams() = JSONObject().put("action", "click").put("index", 5)
 }

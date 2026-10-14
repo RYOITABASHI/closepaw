@@ -23,6 +23,11 @@
         <intent>
             <action android:name="com.termux.RUN_COMMAND" />
         </intent>
+        <!-- Home launchers: treated as a system surface by the approval policy -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>

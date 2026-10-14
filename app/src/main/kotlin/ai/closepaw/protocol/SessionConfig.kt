@@ -43,7 +43,13 @@ data class SessionConfig(
          * Eval-only safety net plumbed to [ai.closepaw.agent.AgentExecutionConfig.evalTurnBudget].
          * Production leaves this null; eval bridge sets it from yaml `max_turns:`.
          */
-        val evalTurnBudget: Int? = null
+        val evalTurnBudget: Int? = null,
+        /**
+         * Started without the user watching ClosePaw (Shelly background hand-off). The policy
+         * engine then denies — instead of asking about — direct actions on the home launcher /
+         * System UI, so the agent uses open_app. Default false keeps interactive behavior.
+         */
+        val unattended: Boolean = false
 )
 
 /** Canonical LLM routing config used at runtime. */
