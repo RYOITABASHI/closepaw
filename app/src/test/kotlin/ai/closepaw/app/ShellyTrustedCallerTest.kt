@@ -55,4 +55,18 @@ class ShellyTrustedCallerTest {
         assertThat(ShellyTrustedCaller.hexToBytes(colon)).isEqualTo(pinnedBytes)
         assertThat(pinnedBytes.size).isEqualTo(32)
     }
+
+    @Test
+    fun `pins only the Shelly release key, never the public RN debug key`() {
+        assertThat(pinned).containsExactly(
+            "1476D9520A49BF8DA7A767CB413918CCD5C5FCD7F62603766AF6521F30DE212D",
+        )
+        val debugBytes = ShellyTrustedCaller.hexToBytes(
+            "FAC61745DC0903786FB9EDE62A962B399F7348F0BB6F899B8332667591033B9C",
+        )!!
+        val trusted = ShellyTrustedCaller.isTrusted("dev.shelly.terminal", pinned) { _, cert ->
+            cert.contentEquals(debugBytes)
+        }
+        assertThat(trusted).isFalse()
+    }
 }

@@ -28,12 +28,16 @@ object ShellyTrustedCaller {
     /**
      * SHA-256 of the signing certificate(s) accepted for [SHELLY_PACKAGE].
      *
-     * FA:C6:...:3B:9C = certificate of Shelly 8.0.2 (versionCode 2540) as installed on the
-     * owner's device on 2026-10-14 (CN=Android Debug). Add the new fingerprint here before
-     * Shelly rotates its signing key.
+     * 14:76:D9:52:...:21:2D = Shelly's private release key (CN=Shelly, O=RYOITABASHI), used from
+     * the 2026-10 signing-key migration onward.
+     *
+     * The legacy FA:C6:17:45:...:3B:9C certificate is deliberately NOT accepted: it is the public
+     * React Native / Expo debug.keystore that ships in every RN template, so anyone can sign an
+     * app as dev.shelly.terminal with it. Trusting it would let any sideloaded impersonator skip
+     * the External Goal confirmation. Debug-signed Shelly builds simply fall back to that dialog.
      */
     val PINNED_SHELLY_CERT_SHA256: List<String> = listOf(
-        "FAC61745DC0903786FB9EDE62A962B399F7348F0BB6F899B8332667591033B9C",
+        "1476D9520A49BF8DA7A767CB413918CCD5C5FCD7F62603766AF6521F30DE212D",
     )
 
     /** Pure decision logic, split out so it can be unit tested without Android framework objects. */
