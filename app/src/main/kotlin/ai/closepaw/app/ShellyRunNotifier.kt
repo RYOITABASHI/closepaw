@@ -109,15 +109,15 @@ class ShellyRunNotifier(context: Context) {
                     .setSmallIcon(android.R.drawable.ic_dialog_alert)
                     .setColor(COLOR_ATTENTION)
                     .setCategory(NotificationCompat.CATEGORY_REMINDER)
-                    .addAction(0, text.actionAllowAlways, approvalIntent(ShellyRunActionReceiver.ACTION_ALLOW_ALWAYS, state))
-                    .addAction(0, text.actionAllowSession, approvalIntent(ShellyRunActionReceiver.ACTION_ALLOW_SESSION, state))
+                    .addAction(securedAction(text.actionAllowAlways, approvalIntent(ShellyRunActionReceiver.ACTION_ALLOW_ALWAYS, state)))
+                    .addAction(securedAction(text.actionAllowSession, approvalIntent(ShellyRunActionReceiver.ACTION_ALLOW_SESSION, state)))
                     .addAction(0, text.actionReject, approvalIntent(ShellyRunActionReceiver.ACTION_REJECT, state))
             }
             is ShellyRunState.Paused -> {
                 builder.setOngoing(true)
                     .setSmallIcon(android.R.drawable.ic_media_pause)
                     .setColor(COLOR_ATTENTION)
-                    .addAction(0, text.actionResume, actionIntent(ShellyRunActionReceiver.ACTION_RESUME))
+                    .addAction(securedAction(text.actionResume, actionIntent(ShellyRunActionReceiver.ACTION_RESUME)))
                     .addAction(0, text.actionStop, actionIntent(ShellyRunActionReceiver.ACTION_STOP))
             }
             is ShellyRunState.Finished -> {
@@ -168,7 +168,25 @@ class ShellyRunNotifier(context: Context) {
         NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
     }
 
+    /**
+     * Actions that grant or continue agent control (Allow / Resume) require the device to be
+     * unlocked when tapped from the lock screen. Stop and Reject only reduce what the agent may
+     * do, so they stay usable without unlocking.
+     */
+    private fun securedAction(title: String, intent: PendingIntent): NotificationCompat.Action =
+        NotificationCompat.Action.Builder(0, title, intent)
+            .setAuthenticationRequired(true)
+            .build()
+
     private fun post(nm: NotificationManager, builder: NotificationCompat.Builder) {
+        // No goal / result / app names / approval text on the lock screen.
+        val channel = builder.build().channelId ?: CHANNEL_STATUS
+        val publicVersion = NotificationCompat.Builder(context, channel)
+            .setSmallIcon(R.drawable.ic_paw)
+            .setContentTitle("ClosePaw")
+            .setContentText(text.lockScreenSummary)
+            .build()
+        builder.setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setPublicVersion(publicVersion)
         try {
             nm.notify(NOTIFICATION_ID, builder.build())
         } catch (e: SecurityException) {
@@ -196,18 +214,22 @@ class ShellyRunNotifier(context: Context) {
         )
     }
 
-    private fun actionIntent(action: String, extras: Intent.() -> Unit = {}): PendingIntent {
+    private fun actionIntent(
+        action: String,
+        requestCode: Int = action.hashCode(),
+        extras: Intent.() -> Unit = {},
+    ): PendingIntent {
         val intent = Intent(context, ShellyRunActionReceiver::class.java).setAction(action).apply(extras)
         return PendingIntent.getBroadcast(
             context,
-            action.hashCode(),
+            requestCode,
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
     }
 
     private fun approvalIntent(action: String, state: ShellyRunState.WaitingForApproval): PendingIntent =
-        actionIntent(action) {
+        actionIntent(action, requestCode = (action + state.callId).hashCode()) {
             putExtra(ShellyRunActionReceiver.EXTRA_CALL_ID, state.callId)
             putExtra(ShellyRunActionReceiver.EXTRA_PACKAGE, state.packageName)
         }

@@ -72,6 +72,7 @@ internal fun ToolsSection(
                 enabled = browserScriptEnabled,
                 onEnabledChange = onBrowserScriptEnabledChange,
             )
+            ShellyMainDisplayRow()
         }
     }
     // Spacer is intentionally NOT rendered here — AgentSkillToggleRows owns its own top

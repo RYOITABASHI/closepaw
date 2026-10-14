@@ -134,6 +134,14 @@ class AgentService : AccessibilityService() {
 
     // ── Shelly background runs (see ShellyGoalReceiver) ──
     private var shellyRun: ShellyRunTracker? = null
+
+    /**
+     * True from [startShellyRun] until its async session creation has finished on every exit
+     * path. While true the service reports busy, so a second verified request arriving in the
+     * window where the old session was dropped and the new one is not yet attached is refused
+     * instead of creating a second, orphaned session on the virtual display. Main thread only.
+     */
+    private var shellyStartInFlight = false
     private val shellyNotifier by lazy { ShellyRunNotifier(this) }
 
     fun observeExternalSession(
@@ -444,9 +452,12 @@ class AgentService : AccessibilityService() {
     // ── Shelly background runs ──
 
     /** A session is mid-task (a new background run must not clobber it). */
-    internal fun isSessionBusy(): Boolean = when (session?.state?.value) {
-        SessionState.Running, SessionState.Paused, SessionState.TakeoverPending -> true
-        else -> false
+    internal fun isSessionBusy(): Boolean {
+        if (shellyStartInFlight) return true
+        return when (session?.state?.value) {
+            SessionState.Running, SessionState.Paused, SessionState.TakeoverPending -> true
+            else -> false
+        }
     }
 
     /**
@@ -461,6 +472,12 @@ class AgentService : AccessibilityService() {
             shellyNotifier.showBlocked(ShellyBackgroundRun.Block.ACCESSIBILITY_OFF, goal)
             return
         }
+        if (shellyStartInFlight) {
+            Log.w(TAG, "Shelly run already starting; refusing a second start")
+            shellyNotifier.showBlocked(ShellyBackgroundRun.Block.BUSY, goal)
+            return
+        }
+        shellyStartInFlight = true
         // Replace an idle/finished session (FORCE_FRESH semantics). Busy sessions were refused
         // by the receiver's precheck.
         shellyRun?.let {
@@ -481,7 +498,7 @@ class AgentService : AccessibilityService() {
         overlayController?.onBackgroundRunRequested()
         shellyNotifier.render(ShellyRunState.Working(onMainDisplay, emptyList()))
 
-        serviceScope.launch {
+        val startJob = serviceScope.launch {
             try {
                 val settings = AppSettingsState.create(applicationContext).also { it.load() }
                 val authStore = AuthStoreHolder.get(applicationContext)
@@ -550,6 +567,15 @@ class AgentService : AccessibilityService() {
                         onMainDisplay = effectiveMode != PlatformMode.VIRTUAL_DISPLAY,
                         ignoredPackages = ignored,
                 )
+                // Defensive: never leave a different session running unobserved (it would keep
+                // driving the virtual display with no capsule / notification attached).
+                session?.takeIf { it !== newSession }?.let { stray ->
+                    Log.w(TAG, "Shelly run: shutting down stray session ${stray.sessionId}")
+                    eventCollectorJob?.cancel()
+                    eventCollectorJob = null
+                    session = null
+                    serviceScope.launch { stray.submit(Op.Shutdown) }
+                }
                 observeExternalSession(newSession, effectiveMode)
                 shellyRun = tracker
                 renderShellyRun()
@@ -565,6 +591,10 @@ class AgentService : AccessibilityService() {
                 )
                 overlayController?.hideAll()
             }
+        }
+        // Cleared on every exit path: success, VD-lost refusal, exception and cancellation.
+        startJob.invokeOnCompletion {
+            android.os.Handler(android.os.Looper.getMainLooper()).post { shellyStartInFlight = false }
         }
     }
 

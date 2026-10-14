@@ -51,6 +51,37 @@ class ShellyBackgroundRunTest {
         assertThat(req.allowMainDisplay).isTrue()
     }
 
+    // ── Sender identity (API 34+) ──
+
+    private val pins = ShellyTrustedCaller.PINNED_SHELLY_CERT_SHA256
+    private val pinBytes = ShellyTrustedCaller.hexToBytes(pins.first())!!
+    private val shellyCert = { pkg: String, cert: ByteArray ->
+        pkg == ShellyTrustedCaller.SHELLY_PACKAGE && cert.contentEquals(pinBytes)
+    }
+
+    @Test
+    fun `api 34+ rejects a leaked token sent by another app`() {
+        assertThat(ShellyTrustedCaller.isBroadcastSenderTrusted(34, "com.evil.listener", pins) { _, _ -> true })
+            .isFalse()
+    }
+
+    @Test
+    fun `api 34+ rejects a broadcast without shared sender identity`() {
+        assertThat(ShellyTrustedCaller.isBroadcastSenderTrusted(35, null, pins, shellyCert)).isFalse()
+    }
+
+    @Test
+    fun `api 34+ accepts Shelly with the pinned cert only`() {
+        assertThat(ShellyTrustedCaller.isBroadcastSenderTrusted(34, "dev.shelly.terminal", pins, shellyCert)).isTrue()
+        assertThat(ShellyTrustedCaller.isBroadcastSenderTrusted(34, "dev.shelly.terminal", pins) { _, _ -> false })
+            .isFalse()
+    }
+
+    @Test
+    fun `below api 34 the token is the only signal`() {
+        assertThat(ShellyTrustedCaller.isBroadcastSenderTrusted(33, null, pins) { _, _ -> false }).isTrue()
+    }
+
     // ── Preconditions ──
 
     private fun precheck(

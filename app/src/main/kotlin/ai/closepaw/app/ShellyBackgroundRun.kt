@@ -345,6 +345,16 @@ class ShellyRunText(private val japanese: Boolean) {
     val actionAllowAlways get() = t("Always allow", "常に許可")
     val actionAllowSession get() = t("Allow this time", "今回のみ許可")
     val actionReject get() = t("Reject", "拒否")
+    val lockScreenSummary get() = t("Shelly task — unlock for details", "Shellyタスク — 詳細はロック解除後に表示")
+    val mainDisplaySettingTitle get() = t("Allow Shelly to control the main screen", "Shellyにメイン画面の操作を許可")
+    val mainDisplaySettingOn get() = t(
+        "When the virtual display (Shizuku) is unavailable, Shelly may run tasks on your main screen. ClosePaw will take over the screen.",
+        "仮想ディスプレイ（Shizuku）が使えないとき、Shellyからの依頼をメイン画面で実行します。ClosePawが画面を操作します。",
+    )
+    val mainDisplaySettingOff get() = t(
+        "Shelly tasks only run in the background on the virtual display; without Shizuku they are refused.",
+        "Shellyからの依頼は仮想ディスプレイ上でのみ実行します。Shizukuが使えないときは実行しません。",
+    )
     val channelStatus get() = t("Shelly tasks (status)", "Shellyタスク（状態）")
     val channelAttention get() = t("Shelly tasks (needs attention)", "Shellyタスク（要対応）")
 }

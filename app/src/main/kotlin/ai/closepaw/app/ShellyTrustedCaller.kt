@@ -57,6 +57,26 @@ object ShellyTrustedCaller {
         }
     }
 
+    /**
+     * Sender identity check for the background broadcast entry point ([ShellyGoalReceiver]).
+     *
+     * A caller token alone only proves that *some* PendingIntent created by Shelly was attached;
+     * Shelly-created PendingIntents can leak (e.g. notification actions visible to
+     * notification-listener apps, widgets). On API 34+ the broadcast must therefore also carry
+     * the sender's identity (sent with BroadcastOptions.setShareIdentityEnabled(true)), and that
+     * sender must be Shelly with the pinned cert. Below API 34 the platform cannot report the
+     * sender, so the token is the only signal.
+     */
+    fun isBroadcastSenderTrusted(
+        sdkInt: Int,
+        sentFromPackage: String?,
+        pinnedCertsSha256: List<String>,
+        hasSigningCertificate: (pkg: String, certSha256: ByteArray) -> Boolean,
+    ): Boolean {
+        if (sdkInt < 34) return true
+        return isTrusted(sentFromPackage, pinnedCertsSha256, hasSigningCertificate)
+    }
+
     /** Reads the token from [intent] and verifies it. Never throws. */
     fun verify(intent: Intent, packageManager: PackageManager): Boolean {
         val token = readToken(intent) ?: return false
