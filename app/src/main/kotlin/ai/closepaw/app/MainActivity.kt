@@ -20,7 +20,17 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import ai.closepaw.BuildConfig
@@ -94,6 +104,7 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_OTHER_MODEL_ID = "other_model_id"
         const val EXTRA_EVAL_TURN_BUDGET = "eval_turn_budget"
         const val EXTRA_REQUEST_VOICE_PERMISSION = "request_voice_permission"
+        private const val SHELLY_INDICATOR_VISIBLE_MS = 8_000L
     }
 
     private val sessionScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -115,6 +126,8 @@ class MainActivity : ComponentActivity() {
     private var pendingAutoStartGoal: String? = null
     private var pendingGoalRunnable: Runnable? = null
     private var pendingGoalForConfirmation by mutableStateOf<String?>(null)
+    /** Bumped each time a verified Shelly goal starts; drives the "Started by Shelly" chip. */
+    private var shellyStartedIndicatorTick by mutableStateOf(0)
     private var intentPayloadConsumed = false
     private lateinit var sessionHistoryManager: SessionHistoryManager
     private lateinit var viewModel: ChatViewModel
@@ -300,6 +313,30 @@ class MainActivity : ComponentActivity() {
                     memoryStore = settingsMemoryStore,
                     memoryEditGate = memoryEditGate,
                 )
+                if (shellyStartedIndicatorTick > 0) {
+                    var visible by remember(shellyStartedIndicatorTick) { mutableStateOf(true) }
+                    LaunchedEffect(shellyStartedIndicatorTick) {
+                        delay(SHELLY_INDICATOR_VISIBLE_MS)
+                        visible = false
+                    }
+                    if (visible) {
+                        Box(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+                            Surface(
+                                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                tonalElevation = 2.dp,
+                            ) {
+                                Text(
+                                    text = "Started by Shelly",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                )
+                            }
+                        }
+                    }
+                }
                 pendingGoalForConfirmation?.let { goal ->
                     AlertDialog(
                         onDismissRequest = { pendingGoalForConfirmation = null },
@@ -383,7 +420,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent) {
-        val payload = MainActivityIntentPayload.from(intent)
+        val payload = MainActivityIntentPayload.from(intent) {
+            ShellyTrustedCaller.verify(it, packageManager)
+        }
+        // The token is single-use from our side: never let a retained intent re-verify later.
+        intent.removeExtra(ShellyTrustedCaller.EXTRA_CALLER_TOKEN)
         val alreadyConsumed = intentPayloadConsumed
         intentPayloadConsumed = true
         lifecycleScope.launch {
@@ -430,10 +471,42 @@ class MainActivity : ComponentActivity() {
                 }
             } else {
                 payload.goalText?.let { goal ->
-                    Log.d(TAG, "External goal received, awaiting user confirmation: $goal")
-                    pendingGoalForConfirmation = goal
+                    if (payload.fromTrustedShelly && canStartTrustedGoalWithoutDialog()) {
+                        // Shelly already obtained the user's approval for this hand-off.
+                        Log.i(TAG, "External goal from verified Shelly caller; starting new conversation")
+                        startTrustedShellyGoal(goal)
+                    } else {
+                        Log.d(TAG, "External goal received, awaiting user confirmation: $goal")
+                        pendingGoalForConfirmation = goal
+                    }
                 }
             }
+        }
+    }
+
+    /**
+     * A verified Shelly goal skips the dialog only when doing so cannot clobber anything:
+     * onboarding is finished and no task is in flight. Otherwise fall back to the normal dialog.
+     */
+    private fun canStartTrustedGoalWithoutDialog(): Boolean {
+        if (onboardingRequired) return false
+        return when (coordinator.currentSessionState.value) {
+            SessionState.Running, SessionState.TakeoverPending, SessionState.Paused -> false
+            else -> true
+        }
+    }
+
+    private fun startTrustedShellyGoal(goal: String) {
+        pendingGoalForConfirmation = null
+        lifecycleScope.launch {
+            // handleIntent runs from onCreate before the view model exists; let onCreate finish.
+            delay(500)
+            coordinator.selectedSessionForReload = null
+            clearCurrentSession()
+            viewModel.startNewSession(settingsState.selectedModel, BuildConfig.VERSION_NAME)
+            shellyStartedIndicatorTick += 1
+            Toast.makeText(this@MainActivity, "Started by Shelly", Toast.LENGTH_SHORT).show()
+            ensureSessionAndSend(goal, launchPolicy = SessionLaunchPolicy.FORCE_FRESH)
         }
     }
 

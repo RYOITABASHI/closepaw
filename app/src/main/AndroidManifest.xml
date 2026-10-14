@@ -12,6 +12,8 @@
     <!-- Package visibility: Allow querying launchable apps and Termux RUN_COMMAND (Android 11+) -->
     <queries>
         <package android:name="com.termux" />
+        <!-- Shelly trusted-caller verification (PackageManager.hasSigningCertificate) -->
+        <package android:name="dev.shelly.terminal" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />

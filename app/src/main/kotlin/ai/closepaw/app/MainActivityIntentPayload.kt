@@ -24,10 +24,15 @@ data class MainActivityIntentPayload(
         val traceEnabled: Boolean?,
         val traceRunId: String?,
         val excludedTools: Set<String>,
-        val evalTurnBudget: Int?
+        val evalTurnBudget: Int?,
+        /** True only when the goal carries a verified Shelly caller token (see [ShellyTrustedCaller]). */
+        val fromTrustedShelly: Boolean = false
 ) {
     companion object {
-        fun from(intent: Intent): MainActivityIntentPayload {
+        fun from(
+                intent: Intent,
+                trustedCallerCheck: (Intent) -> Boolean = { false }
+        ): MainActivityIntentPayload {
             val apiKey =
                     intent.getStringExtra(MainActivity.EXTRA_API_KEY)?.takeIf { it.isNotBlank() }
 
@@ -156,7 +161,8 @@ data class MainActivityIntentPayload(
                     traceEnabled = traceEnabled,
                     traceRunId = traceRunId,
                     excludedTools = excludedTools,
-                    evalTurnBudget = evalTurnBudget
+                    evalTurnBudget = evalTurnBudget,
+                    fromTrustedShelly = goalText != null && trustedCallerCheck(intent)
             )
         }
 
