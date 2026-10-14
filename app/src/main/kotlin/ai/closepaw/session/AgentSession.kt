@@ -20,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /** Why the session is shutting down — drives [SessionEndReason] in the emitted event. */
 enum class ShutdownCause {
@@ -624,7 +626,18 @@ private constructor(
         _state.value = SessionState.Shutdown
         currentTaskId = null
 
-        cancelIdleTimeout()
+        // When shutdown is driven by the idle-timeout job itself, cancelling that job here
+        // cancels the coroutine we are currently running in. The next suspension point
+        // (flushClosed → recordingService IO) then throws CancellationException and the rest of
+        // this method — including services.cleanup() → platform.stop() — never runs. On the
+        // virtual-display platform that leaks the Shizuku VirtualDisplay (and the DeX launcher /
+        // app tasks parked on it) until the process dies. Only cancel the job when we are NOT
+        // that job; otherwise just drop the reference.
+        if (cause == ShutdownCause.IdleTimeout) {
+            idleTimeoutJob = null
+        } else {
+            cancelIdleTimeout()
+        }
 
         val closedCheckpointSaved = checkpointCoordinator.flushClosed()
         if (!closedCheckpointSaved) {
@@ -637,7 +650,9 @@ private constructor(
         agentRunner.shutdown()
         agentRunner.completions.close()
 
-        val cleanupResult = services.cleanup()
+        // Resource release must survive cancellation of the calling coroutine (scope teardown,
+        // idle-timeout job, etc.). Without this a cancelled shutdown leaks the virtual display.
+        val cleanupResult = withContext(NonCancellable) { services.cleanup() }
         if (cleanupResult is CleanupResult.PartialFailure) {
             Log.w(TAG, "Cleanup partial failure: ${cleanupResult.failures.joinToString(", ") { it.step }}")
         }
