@@ -57,7 +57,7 @@ jobs:
           test -f "$apk" || { echo "signed release APK not found (unsigned build?)" >&2; ls -R app/build/outputs/apk; exit 1; }
           apksigner="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
           "$apksigner" verify --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
-          grep -q "Signer #1 certificate SHA-256 digest" "$RUNNER_TEMP/certs.txt"
+          grep -q "certificate SHA-256 digest: d5f43923a8f60ed3418202db8d7747110bf691479954db9b31e1acfcf2747258" "$RUNNER_TEMP/certs.txt"
           out="ClosePaw-shelly-${{ github.run_number }}.apk"
           cp "$apk" "$RUNNER_TEMP/$out"
           echo "path=$RUNNER_TEMP/$out" >> "$GITHUB_OUTPUT"
