@@ -2,6 +2,11 @@ name: Build Shelly variant
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Override the prerelease tag (default shelly-v0.1.0-<run_number>)'
+        required: false
+        default: ''
   push:
     branches:
       - shelly-trusted-caller
@@ -32,6 +37,9 @@ jobs:
           ./gradlew :app:testDebugUnitTest
           --tests 'ai.closepaw.app.ShellyTrustedCallerTest'
           --tests 'ai.closepaw.app.MainActivityIntentApplierSecurityTest'
+          --tests 'ai.closepaw.app.ShellyBackgroundRunTest'
+          --tests 'ai.closepaw.app.OverlayLocationPolicyTest'
+          --tests 'ai.closepaw.app.AgentServiceEventHandlerTest'
 
       - name: Decode keystore
         env:
@@ -73,11 +81,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="shelly-v0.1.0-${{ github.run_number }}"
+          tag="${{ inputs.release_tag }}"
+          test -n "$tag" || tag="shelly-v0.1.0-${{ github.run_number }}"
           {
             echo "Self-built ClosePaw variant (branch \`${GITHUB_REF_NAME}\`, commit ${GITHUB_SHA})."
             echo
             echo "Trusted-caller bypass of the External Goal dialog for requests proven to come from dev.shelly.terminal."
+            echo
+            echo "Background entry point: explicit broadcast to ai.closepaw/.app.ShellyGoalReceiver (action ai.closepaw.action.SHELLY_RUN_GOAL) runs the goal on the Shizuku virtual display without opening ClosePaw's UI. Status, approvals and 'do not open <app>' warnings appear in the Smart Capsule and an ongoing notification."
             echo
             echo '```'
             cat "$RUNNER_TEMP/certs.txt"
@@ -87,5 +98,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --prerelease \
-            --title "ClosePaw Shelly variant #${{ github.run_number }}" \
+            --title "ClosePaw Shelly variant ($tag)" \
             --notes-file "$RUNNER_TEMP/notes.md"

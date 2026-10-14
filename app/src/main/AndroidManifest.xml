@@ -8,6 +8,8 @@
     <!-- Shizuku permission for virtual display operations -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Shelly background runs: status / approval / "don't open <app>" notification -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Package visibility: Allow querying launchable apps and Termux RUN_COMMAND (Android 11+) -->
     <queries>
@@ -72,6 +74,21 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/agent_accessibility_config" />
         </service>
+
+        <!--
+            Shelly background hand-off. Exported so dev.shelly.terminal can send an explicit
+            broadcast, but it acts only on a verified caller token (creator package + pinned
+            signing cert, see ShellyTrustedCaller); everything else is ignored. No intent-filter:
+            reachable by explicit component only.
+        -->
+        <receiver
+            android:name=".app.ShellyGoalReceiver"
+            android:exported="true" />
+
+        <!-- Notification action buttons for Shelly runs (own PendingIntents only). -->
+        <receiver
+            android:name=".app.ShellyRunActionReceiver"
+            android:exported="false" />
 
         <!-- Shizuku content provider for binder forwarding -->
         <provider

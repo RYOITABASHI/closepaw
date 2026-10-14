@@ -10,7 +10,16 @@ import android.view.Display
 import android.view.SurfaceView
 import android.view.accessibility.AccessibilityEvent
 import ai.closepaw.debug.ActionDebugReceiver
+import ai.closepaw.protocol.ApprovalDecision
+import ai.closepaw.protocol.ApprovalScope
+import ai.closepaw.protocol.LLMBackendType
+import ai.closepaw.llm.LFMLLMClient
+import ai.closepaw.llm.LLMProvider
+import ai.closepaw.llm.LocalLLMConfig
 import ai.closepaw.protocol.Op
+import ai.closepaw.perception.PerceptionConfig
+import ai.closepaw.protocol.SessionLlmConfig
+import ai.closepaw.protocol.SessionState
 import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.protocol.SessionConfig
 import ai.closepaw.session.AgentSession
@@ -123,6 +132,10 @@ class AgentService : AccessibilityService() {
 
     private var eventCollectorJob: Job? = null
 
+    // ── Shelly background runs (see ShellyGoalReceiver) ──
+    private var shellyRun: ShellyRunTracker? = null
+    private val shellyNotifier by lazy { ShellyRunNotifier(this) }
+
     fun observeExternalSession(
             externalSession: AgentSession,
             platformMode: PlatformMode = PlatformMode.ACCESSIBILITY
@@ -132,6 +145,7 @@ class AgentService : AccessibilityService() {
             return
         }
         Log.i(TAG, "Observing external session: ${externalSession.sessionId}, mode=$platformMode")
+        retireShellyRunUnlessFor(externalSession)
         session = externalSession
         currentPlatformMode = platformMode
         _effectivePlatformMode.value = platformMode
@@ -190,6 +204,7 @@ class AgentService : AccessibilityService() {
                         onUserResponse = { callId, response -> submitOp(Op.UserResponse(callId, response)) },
                         onApprovalResponse = { callId, decision, scope, packageName ->
                             submitOp(Op.Approve(callId, decision, scope, packageName))
+                            shellyRun?.let { if (it.onApprovalResolved(callId)) renderShellyRun() }
                         },
                         onOpenApp = {
                             val intent =
@@ -241,6 +256,11 @@ class AgentService : AccessibilityService() {
                     className = event.className?.toString(),
                     displayId = eventDisplayId,
             )
+            trackShellyRunWindow(
+                    packageName = event.packageName?.toString(),
+                    className = event.className?.toString(),
+                    displayId = eventDisplayId,
+            )
         }
     }
 
@@ -251,6 +271,12 @@ class AgentService : AccessibilityService() {
     override fun onDestroy() {
         isServiceActive = false
         instance = null
+
+        shellyRun?.let {
+            it.finish(ShellyRunState.Finished.Kind.STOPPED)
+            shellyNotifier.render(it.state)
+        }
+        shellyRun = null
 
         eventCollectorJob?.cancel()
         eventCollectorJob = null
@@ -333,6 +359,9 @@ class AgentService : AccessibilityService() {
                     try {
                         agentSession.events.collect { event ->
                             try {
+                                // Tracker first: the overlay may resolve an approval synchronously
+                                // (auto-deny), which must find the tracker already waiting.
+                                onShellyRunEvent(agentSession, event)
                                 eventHandler.handleEvent(event, recordingService)
                             } catch (e: Exception) {
                                 Log.e(
@@ -358,6 +387,11 @@ class AgentService : AccessibilityService() {
         if (!isServiceActive) {
             Log.w(TAG, "Ignoring runAgent because service is not active")
             return
+        }
+        shellyRun?.let {
+            it.finish(ShellyRunState.Finished.Kind.STOPPED)
+            shellyNotifier.render(it.state)
+            shellyRun = null
         }
         if (session != null) {
             Log.i(TAG, "Stopping existing session before starting new one")
@@ -405,6 +439,198 @@ class AgentService : AccessibilityService() {
                 overlayController?.hideAll()
             }
         }
+    }
+
+    // ── Shelly background runs ──
+
+    /** A session is mid-task (a new background run must not clobber it). */
+    internal fun isSessionBusy(): Boolean = when (session?.state?.value) {
+        SessionState.Running, SessionState.Paused, SessionState.TakeoverPending -> true
+        else -> false
+    }
+
+    /**
+     * Start a verified Shelly goal as a NEW session, without MainActivity. Mirrors MainActivity's
+     * FORCE_FRESH session creation (same persisted settings, credentials and recording), so the
+     * run shows up in ClosePaw's history and MainActivity rebinds to it when the user opens it.
+     *
+     * Visible surface: Smart Capsule overlay + [ShellyRunNotifier] only.
+     */
+    internal fun startShellyRun(goal: String, platformMode: PlatformMode) {
+        if (!isServiceActive) {
+            shellyNotifier.showBlocked(ShellyBackgroundRun.Block.ACCESSIBILITY_OFF, goal)
+            return
+        }
+        // Replace an idle/finished session (FORCE_FRESH semantics). Busy sessions were refused
+        // by the receiver's precheck.
+        shellyRun?.let {
+            it.finish(ShellyRunState.Finished.Kind.STOPPED)
+            shellyRun = null
+        }
+        session?.let { old ->
+            eventCollectorJob?.cancel()
+            eventCollectorJob = null
+            session = null
+            _effectivePlatformMode.value = null
+            serviceScope.launch { old.submit(Op.Shutdown) }
+        }
+
+        val onMainDisplay = platformMode != PlatformMode.VIRTUAL_DISPLAY
+        currentPlatformMode = platformMode
+        overlayController?.setPlatformMode(platformMode)
+        overlayController?.onBackgroundRunRequested()
+        shellyNotifier.render(ShellyRunState.Working(onMainDisplay, emptyList()))
+
+        serviceScope.launch {
+            try {
+                val settings = AppSettingsState.create(applicationContext).also { it.load() }
+                val authStore = AuthStoreHolder.get(applicationContext)
+                val baseUrlOverrides: Map<LLMProvider, String> =
+                        if (settings.openaiBaseUrl.isNotBlank()) {
+                            mapOf(LLMProvider.OPENAI_API to settings.openaiBaseUrl)
+                        } else emptyMap()
+                val localConfig =
+                        if (settings.llmBackend == LLMBackendType.LOCAL) {
+                            LocalLLMConfig(
+                                    modelSlug = settings.localModel.modelSlug,
+                                    quantizationSlug = settings.localModel.quantizationSlug
+                            )
+                        } else null
+                val config =
+                        SessionConfig(
+                                approvalMode = settings.approvalMode,
+                                mainModel = settings.selectedModel,
+                                debugMode = settings.debugMode,
+                                traceEnabled = settings.traceEnabled,
+                                llm = SessionLlmConfig(
+                                        backendType = settings.llmBackend,
+                                        localConfig = localConfig
+                                ),
+                                perceptionConfig = when (settings.perceptionMode) {
+                                    "screenshot_only" -> PerceptionConfig.ScreenshotOnly()
+                                    "hybrid" -> PerceptionConfig.Hybrid()
+                                    else -> PerceptionConfig.AccessibilityOnly
+                                },
+                                platformMode = platformMode,
+                        )
+                val newSession =
+                        withContext(Dispatchers.Default) {
+                            AgentSession.create(
+                                    config = config,
+                                    service = this@AgentService,
+                                    scope = serviceScope,
+                                    authStore = authStore,
+                                    baseUrlOverrides = baseUrlOverrides,
+                                    visualizer = actionVisualizer,
+                                    overlayTouchGate = overlayController?.overlayTouchGate,
+                            )
+                        }
+                val effectiveMode = newSession.getServices().platform.mode
+                if (platformMode == PlatformMode.VIRTUAL_DISPLAY && effectiveMode != PlatformMode.VIRTUAL_DISPLAY) {
+                    // Shizuku went away between the precheck and session creation: PlatformFactory
+                    // fell back to the main display. Refuse instead of taking over the screen.
+                    Log.w(TAG, "Shelly run: virtual display lost during setup; not starting")
+                    serviceScope.launch { newSession.submit(Op.Shutdown) }
+                    shellyNotifier.cancel()
+                    shellyNotifier.showBlocked(ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE, goal)
+                    overlayController?.hideAll()
+                    return@launch
+                }
+                if (settings.llmBackend == LLMBackendType.LOCAL) {
+                    (newSession.getServices().llmClient as? LFMLLMClient)?.loadModel()
+                }
+
+                val ignored = buildSet {
+                    add(packageName)
+                    add("com.android.systemui")
+                    homePackage()?.let { add(it) }
+                }
+                val tracker = ShellyRunTracker(
+                        sessionId = newSession.sessionId.value,
+                        onMainDisplay = effectiveMode != PlatformMode.VIRTUAL_DISPLAY,
+                        ignoredPackages = ignored,
+                )
+                observeExternalSession(newSession, effectiveMode)
+                shellyRun = tracker
+                renderShellyRun()
+                Log.i(TAG, "Shelly run started: session=${newSession.sessionId}, mode=$effectiveMode")
+                newSession.submit(Op.UserInput(text = goal))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Shelly run failed to start", e)
+                shellyRun = null
+                shellyNotifier.render(
+                        ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, e.message)
+                )
+                overlayController?.hideAll()
+            }
+        }
+    }
+
+    internal fun stopShellyRun() {
+        if (session != null) {
+            submitOp(Op.Shutdown)
+        } else {
+            shellyRun?.finish(ShellyRunState.Finished.Kind.STOPPED)
+            renderShellyRun()
+            shellyRun = null
+        }
+    }
+
+    internal fun resumeShellyRun() {
+        submitOp(Op.Resume)
+    }
+
+    internal fun resolveShellyApproval(
+            callId: String,
+            decision: ApprovalDecision,
+            scope: ApprovalScope,
+            packageName: String,
+    ) {
+        val resolved = overlayController?.resolveApprovalExternally(callId, decision, scope, packageName) == true
+        if (!resolved) Log.d(TAG, "Shelly approval $callId already resolved or stale")
+    }
+
+    private fun renderShellyRun() {
+        shellyRun?.let { shellyNotifier.render(it.state) }
+    }
+
+    private fun retireShellyRunUnlessFor(newSession: AgentSession) {
+        val tracker = shellyRun ?: return
+        if (tracker.sessionId == newSession.sessionId.value) return
+        tracker.finish(ShellyRunState.Finished.Kind.STOPPED)
+        shellyNotifier.render(tracker.state)
+        shellyRun = null
+    }
+
+    private fun onShellyRunEvent(agentSession: AgentSession, event: ai.closepaw.protocol.AgentEvent) {
+        val tracker = shellyRun ?: return
+        if (tracker.sessionId != agentSession.sessionId.value) return
+        if (tracker.onEvent(event)) renderShellyRun()
+        if (tracker.isFinished) shellyRun = null
+    }
+
+    private fun trackShellyRunWindow(packageName: String?, className: String?, displayId: Int) {
+        val tracker = shellyRun ?: return
+        if (!isActivityWindowClass(className)) return
+        if (displayId != Display.DEFAULT_DISPLAY) {
+            if (tracker.onVirtualDisplayWindow(packageName)) renderShellyRun()
+            return
+        }
+        val conflict = tracker.onMainDisplayWindow(packageName) ?: return
+        // The user brought the app ClosePaw is operating to the main display, pulling its task
+        // off the virtual display. Pause rather than fight over it; Resume/Stop on the notification.
+        Log.i(TAG, "Shelly run: user opened operated app $conflict on main display; pausing")
+        overlayController?.requestTakeover()
+        renderShellyRun()
+    }
+
+    private fun homePackage(): String? = try {
+        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        packageManager.resolveActivity(home, 0)?.activityInfo?.packageName
+    } catch (e: Exception) {
+        null
     }
 
     fun stopAgent() {

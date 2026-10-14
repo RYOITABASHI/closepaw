@@ -105,6 +105,7 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_EVAL_TURN_BUDGET = "eval_turn_budget"
         const val EXTRA_REQUEST_VOICE_PERMISSION = "request_voice_permission"
         private const val SHELLY_INDICATOR_VISIBLE_MS = 8_000L
+        private const val REQUEST_POST_NOTIFICATIONS = 0x5E12
     }
 
     private val sessionScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -391,6 +392,21 @@ class MainActivity : ComponentActivity() {
         AgentService.instance?.onMainAppVisible()
         onboardingViewModel?.onHostResumed()
         retryPendingAutoStartGoalIfReady()
+        maybeRequestNotificationPermissionForShellyRuns()
+    }
+
+    /**
+     * Shelly background runs report progress, approvals and "don't open <app>" warnings through a
+     * notification. Ask for POST_NOTIFICATIONS once, and only after Shelly has actually used the
+     * background entry point (so users who never pair with Shelly are not prompted).
+     */
+    private fun maybeRequestNotificationPermissionForShellyRuns() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        if (onboardingRequired) return
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        if (!ShellyRunPrefs.shouldAskNotificationPermission(this)) return
+        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
     }
 
     override fun onStop() {

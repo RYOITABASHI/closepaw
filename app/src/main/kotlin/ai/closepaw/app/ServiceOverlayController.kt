@@ -329,6 +329,41 @@ class ServiceOverlayController(
         applyVisibility()
     }
 
+    /**
+     * A run is starting without MainActivity (Shelly background hand-off). userLocation starts as
+     * MAIN_APP and only changes on window events, so if no event arrived since the service
+     * connected the overlay would stay hidden. MainActivity is not resumed, so the user is
+     * elsewhere: treat it as OTHER_APP.
+     */
+    fun onBackgroundRunRequested() {
+        if (!isMainAppResumed && userLocation == OverlayUserLocation.MAIN_APP) {
+            userLocation = OverlayUserLocation.OTHER_APP
+            updateContext()
+            applyVisibility()
+        }
+    }
+
+    /** Pause the agent as if the user pressed the capsule's takeover button. */
+    fun requestTakeover() {
+        stateHolder.onTakeoverRequested()
+        onTakeover()
+    }
+
+    /**
+     * Answer the pending approval from outside the capsule (Shelly run notification). Goes through
+     * the same callId guard as the capsule buttons, so a double answer is ignored.
+     */
+    fun resolveApprovalExternally(
+        callId: String,
+        decision: ApprovalDecision,
+        scope: ApprovalScope,
+        packageName: String,
+    ): Boolean {
+        if (!stateHolder.onApprovalResolved(callId)) return false
+        onApprovalResponse(callId, decision, scope, packageName)
+        return true
+    }
+
     // ── Event handlers ──
 
     fun onTaskStarted(taskId: String, input: String) {
