@@ -1,5 +1,6 @@
 package ai.closepaw.app
 
+import ai.closepaw.R
 import ai.closepaw.protocol.ApprovalDetails
 import ai.closepaw.protocol.ApprovalRequired
 import ai.closepaw.protocol.PlatformMode
@@ -196,13 +197,16 @@ class ShellyBackgroundRunTest {
 
     @Test
     fun `text tells the user whether they may use the phone`() {
-        val en = ShellyRunText(japanese = false)
-        val ja = ShellyRunText(japanese = true)
-        val vd = ShellyRunState.Working(false, listOf("com.android.chrome"))
+        // Fake resolver: "<resource id>[args]" so the test checks which string is chosen.
+        val text = ShellyRunText { id, args -> "$id" + args.joinToString(prefix = "[", postfix = "]") }
         val label = { _: String -> "Chrome" }
-        assertThat(en.render(vd, label).title).contains("you can keep using your phone")
-        assertThat(en.render(vd, label).body).contains("Don't open \"Chrome\"")
-        assertThat(ja.render(vd, label).body).contains("「Chrome」は開かないでください")
-        assertThat(en.render(ShellyRunState.Working(true, emptyList()), label).title).contains("please don't touch")
+        val vd = text.render(ShellyRunState.Working(false, listOf("com.android.chrome")), label)
+        assertThat(vd.title).isEqualTo("${R.string.shelly_background_title}[]")
+        assertThat(vd.body).startsWith("${R.string.shelly_background_body_apps}[")
+        assertThat(vd.body).contains("${R.string.shelly_quoted_app}[Chrome]")
+        val main = text.render(ShellyRunState.Working(true, emptyList()), label)
+        assertThat(main.title).isEqualTo("${R.string.shelly_main_display_title}[]")
+        val waiting = text.render(ShellyRunState.WaitingForApproval(false, "c", "com.android.chrome", ""), label)
+        assertThat(waiting.title).isEqualTo("${R.string.shelly_approval_title}[]")
     }
 }

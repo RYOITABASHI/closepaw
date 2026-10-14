@@ -1,5 +1,6 @@
 package ai.closepaw.ui.chat
 
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -447,7 +448,7 @@ private fun MessageList(
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
-                        text = "live",
+                        text = stringResource(R.string.chat_screen_jump_to_live),
                         style = MaterialTheme.closePaw.monoSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

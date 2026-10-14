@@ -1,6 +1,8 @@
 package ai.closepaw.ui.overlay.model
 
+import ai.closepaw.R
 import ai.closepaw.protocol.PlatformMode
+import androidx.annotation.StringRes
 
 /**
  * CapsuleRenderSpec — pure rendering specification derived from CapsuleMode.
@@ -22,11 +24,22 @@ data class CapsuleRenderSpec(
     /** Status dot configuration. null = dot hidden. */
     data class DotSpec(val status: GlowState, val pulsing: Boolean)
 
-    /** Status-line text (the agent's thought). */
-    data class ThoughtSpec(val text: String, val dimmed: Boolean = false)
+    /**
+     * Status-line text (the agent's thought).
+     *
+     * Either free [text] (agent output) or a localized [textRes] with optional
+     * [formatArgs]; when [textRes] is non-null the UI layer resolves it and
+     * ignores [text].
+     */
+    data class ThoughtSpec(
+        val text: String = "",
+        @StringRes val textRes: Int? = null,
+        val formatArgs: List<String> = emptyList(),
+        val dimmed: Boolean = false,
+    )
 
     /** A single button in the control bar. The Compose layer chooses the icon. */
-    data class ButtonSpec(val text: String, val enabled: Boolean = true)
+    data class ButtonSpec(@StringRes val textRes: Int, val enabled: Boolean = true)
 
     enum class ControlLayout {
         SharedWithNav,
@@ -43,8 +56,8 @@ data class CapsuleRenderSpec(
 
     /** Input-bar specification. null = input bar hidden. */
     data class InputSpec(
-        val hint: String,
-        val submitLabel: String,
+        @StringRes val hintRes: Int,
+        @StringRes val submitLabelRes: Int,
         val clearDraft: Boolean = false,
     )
 
@@ -62,43 +75,48 @@ data class CapsuleRenderSpec(
             when (mode) {
                 is CapsuleMode.Running -> CapsuleRenderSpec(
                     dot = DotSpec(GlowState.Active, pulsing = true),
-                    thought = ThoughtSpec(mode.thought.ifEmpty { "Thinking..." }),
+                    thought = freeOrRes(
+                        mode.thought,
+                        mode.thoughtRes ?: R.string.capsule_render_spec_thinking,
+                        preferRes = mode.thoughtRes != null,
+                    ),
                     expandedBody = null,
                     buttons = ButtonsSpec(
-                        primary = ButtonSpec("Takeover"),
+                        primary = ButtonSpec(R.string.capsule_render_spec_takeover),
                         stop = stopButtonSpec(isStopPending),
                     ),
-                    input = InputSpec("Got ideas? Add a note...", "Add note"),
+                    input = InputSpec(R.string.capsule_render_spec_note_hint, R.string.capsule_render_spec_add_note),
                 )
 
                 is CapsuleMode.TakeoverPending -> CapsuleRenderSpec(
                     dot = DotSpec(GlowState.Paused, pulsing = false),
-                    thought = ThoughtSpec("Handing over..."),
+                    thought = ThoughtSpec(textRes = R.string.capsule_render_spec_handing_over_status),
                     expandedBody = null,
                     buttons = ButtonsSpec(
-                        primary = ButtonSpec("Handing over", enabled = false),
+                        primary = ButtonSpec(R.string.capsule_render_spec_handing_over, enabled = false),
                         stop = stopButtonSpec(isStopPending),
                     ),
-                    input = InputSpec("Got ideas? Add a note...", "Add note"),
+                    input = InputSpec(R.string.capsule_render_spec_note_hint, R.string.capsule_render_spec_add_note),
                 )
 
                 is CapsuleMode.Takeover -> CapsuleRenderSpec(
                     dot = DotSpec(GlowState.Paused, pulsing = false),
-                    thought = ThoughtSpec(
-                        mode.lastThought.ifEmpty { "Paused" },
-                        dimmed = true,
-                    ),
+                    thought = freeOrRes(
+                        mode.lastThought,
+                        mode.lastThoughtRes ?: R.string.capsule_render_spec_paused,
+                        preferRes = mode.lastThoughtRes != null,
+                    ).copy(dimmed = true),
                     expandedBody = null,
                     buttons = ButtonsSpec(
-                        primary = ButtonSpec("Resume"),
+                        primary = ButtonSpec(R.string.capsule_render_spec_resume),
                         stop = stopButtonSpec(isStopPending),
                     ),
-                    input = InputSpec("Got ideas? Add a note...", "Add note"),
+                    input = InputSpec(R.string.capsule_render_spec_note_hint, R.string.capsule_render_spec_add_note),
                 )
 
                 is CapsuleMode.WaitingForInput -> CapsuleRenderSpec(
                     dot = null,
-                    thought = ThoughtSpec("Awaiting response"),
+                    thought = ThoughtSpec(textRes = R.string.capsule_render_spec_awaiting_response),
                     expandedBody = mode.question,
                     buttons = ButtonsSpec(
                         primary = null,
@@ -106,8 +124,8 @@ data class CapsuleRenderSpec(
                         layout = ControlLayout.RequiredActionsOnly,
                     ),
                     input = InputSpec(
-                        hint = "Type your response...",
-                        submitLabel = "Send",
+                        hintRes = R.string.capsule_render_spec_response_hint,
+                        submitLabelRes = R.string.capsule_render_spec_send,
                         clearDraft = previousMode != null
                             && previousMode !is CapsuleMode.WaitingForInput,
                     ),
@@ -115,10 +133,10 @@ data class CapsuleRenderSpec(
 
                 is CapsuleMode.WaitingForAction -> CapsuleRenderSpec(
                     dot = null,
-                    thought = ThoughtSpec("Action needed"),
+                    thought = ThoughtSpec(textRes = R.string.capsule_render_spec_action_needed),
                     expandedBody = mode.instruction,
                     buttons = ButtonsSpec(
-                        primary = ButtonSpec("Done"),
+                        primary = ButtonSpec(R.string.capsule_render_spec_done),
                         stop = stopButtonSpec(isStopPending),
                         layout = ControlLayout.RequiredActionsOnly,
                     ),
@@ -127,12 +145,15 @@ data class CapsuleRenderSpec(
 
                 is CapsuleMode.WaitingForApproval -> CapsuleRenderSpec(
                     dot = DotSpec(GlowState.Paused, pulsing = false),
-                    thought = ThoughtSpec("Allow ClosePaw to operate ${mode.appLabel}?"),
+                    thought = ThoughtSpec(
+                        textRes = R.string.capsule_render_spec_approval_prompt,
+                        formatArgs = listOf(mode.appLabel),
+                    ),
                     expandedBody = null,
                     buttons = ButtonsSpec(
-                        primary = ButtonSpec("Always"),
-                        secondary = ButtonSpec("Session"),
-                        stop = ButtonSpec("Reject"),
+                        primary = ButtonSpec(R.string.capsule_render_spec_always),
+                        secondary = ButtonSpec(R.string.capsule_render_spec_session),
+                        stop = ButtonSpec(R.string.capsule_render_spec_reject),
                         layout = ControlLayout.RequiredActionsOnly,
                     ),
                     input = null,
@@ -140,7 +161,7 @@ data class CapsuleRenderSpec(
 
                 is CapsuleMode.Done -> CapsuleRenderSpec(
                     dot = DotSpec(GlowState.Success, pulsing = false),
-                    thought = ThoughtSpec(mode.message),
+                    thought = ThoughtSpec(text = mode.message, textRes = mode.messageRes),
                     expandedBody = null,
                     buttons = ButtonsSpec(primary = null, stop = null),
                     input = null,
@@ -148,11 +169,11 @@ data class CapsuleRenderSpec(
 
                 is CapsuleMode.Error -> CapsuleRenderSpec(
                     dot = DotSpec(GlowState.Error, pulsing = false),
-                    thought = ThoughtSpec(mode.message),
+                    thought = ThoughtSpec(text = mode.message, textRes = mode.messageRes),
                     expandedBody = null,
                     buttons = ButtonsSpec(
                         primary = null,
-                        stop = ButtonSpec("Close"),
+                        stop = ButtonSpec(R.string.capsule_render_spec_close),
                         layout = ControlLayout.RequiredActionsOnly,
                     ),
                     input = null,
@@ -160,16 +181,24 @@ data class CapsuleRenderSpec(
 
                 is CapsuleMode.Hidden -> CapsuleRenderSpec(
                     dot = null,
-                    thought = ThoughtSpec(""),
+                    thought = ThoughtSpec(),
                     expandedBody = null,
                     buttons = ButtonsSpec(primary = null, stop = null),
-                    input = InputSpec("What can I help you with?", "Send"),
+                    input = InputSpec(R.string.capsule_render_spec_task_hint, R.string.capsule_render_spec_send),
                 )
             }
 
         private fun stopButtonSpec(isStopPending: Boolean): ButtonSpec =
-            if (isStopPending) ButtonSpec("Stopping...", enabled = false)
-            else ButtonSpec("Stop")
+            if (isStopPending) ButtonSpec(R.string.capsule_render_spec_stopping, enabled = false)
+            else ButtonSpec(R.string.capsule_render_spec_stop)
+
+        /**
+         * Free agent text wins unless it is empty or a localized status id was
+         * explicitly supplied ([preferRes]); then the resource is used.
+         */
+        private fun freeOrRes(text: String, @StringRes res: Int, preferRes: Boolean): ThoughtSpec =
+            if (preferRes || text.isEmpty()) ThoughtSpec(textRes = res)
+            else ThoughtSpec(text = text)
     }
 }
 

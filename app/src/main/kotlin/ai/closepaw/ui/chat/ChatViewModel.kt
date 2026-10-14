@@ -1,8 +1,10 @@
 package ai.closepaw.ui.chat
 
+import android.content.Context
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import ai.closepaw.R
 import ai.closepaw.app.AgentService
 import ai.closepaw.history.SessionHistoryManager
 import ai.closepaw.history.model.MessageConverter
@@ -23,8 +25,36 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-internal fun completionSummary(result: String?): String =
-        result?.takeIf { it.isNotBlank() } ?: "Task completed"
+/**
+ * User-visible copy the chat pipeline bakes into [ContentBlock.Text] rows.
+ * The defaults are the English fallbacks used by JVM unit tests; production
+ * builds pass [ChatStrings.from] so the rows follow the device locale.
+ */
+class ChatStrings(
+        val taskCompleted: String = DEFAULT_TASK_COMPLETED,
+        private val failedToStartFormat: (String) -> String = { "Failed to start: $it" },
+) {
+    fun failedToStart(errorMessage: String): String = failedToStartFormat(errorMessage)
+
+    companion object {
+        const val DEFAULT_TASK_COMPLETED = "Task completed"
+
+        fun from(context: Context): ChatStrings {
+            val appContext = context.applicationContext
+            return ChatStrings(
+                    taskCompleted = appContext.getString(R.string.chat_view_model_task_completed),
+                    failedToStartFormat = { error ->
+                        appContext.getString(R.string.chat_view_model_failed_to_start, error)
+                    },
+            )
+        }
+    }
+}
+
+internal fun completionSummary(
+        result: String?,
+        fallback: String = ChatStrings.DEFAULT_TASK_COMPLETED,
+): String = result?.takeIf { it.isNotBlank() } ?: fallback
 
 /** Display name of `complete_task` after [formatToolName] — used to detect the
  *  Turn.kt:205-209 stop signal in the chat trace (the tool's args.answer is
@@ -52,12 +82,13 @@ internal fun appendCompletionToMessages(
         taskId: String,
         isError: Boolean = false,
         handoff: ai.closepaw.protocol.CompletionHandoff? = null,
+        completedFallback: String = ChatStrings.DEFAULT_TASK_COMPLETED,
 ) {
     val terminalRowState = if (isError) RowState.Error else RowState.Complete
     val index = messages.indexOfLast { it is ChatMessage.Agent }
     if (index >= 0) {
         val current = messages[index] as ChatMessage.Agent
-        val newBlocks = applyCompletionToBlocks(current.contentBlocks, rawResult, isError)
+        val newBlocks = applyCompletionToBlocks(current.contentBlocks, rawResult, isError, completedFallback)
         messages[index] =
                 current.copy(
                         contentBlocks = newBlocks,
@@ -69,7 +100,7 @@ internal fun appendCompletionToMessages(
         return
     }
 
-    val seedBlocks = applyCompletionToBlocks(emptyList(), rawResult, isError)
+    val seedBlocks = applyCompletionToBlocks(emptyList(), rawResult, isError, completedFallback)
     messages.add(
             ChatMessage.Agent(
                     id = taskId,
@@ -86,10 +117,11 @@ internal fun appendCompletionToMessages(
 private fun applyCompletionToBlocks(
         blocks: List<ContentBlock>,
         rawResult: String?,
-        isError: Boolean
+        isError: Boolean,
+        completedFallback: String,
 ): List<ContentBlock> {
     if (isError) {
-        return blocks + ContentBlock.Text("⚠️ ${completionSummary(rawResult)}")
+        return blocks + ContentBlock.Text("⚠️ ${completionSummary(rawResult, completedFallback)}")
     }
     val realAnswer = rawResult?.trim()?.takeIf { it.isNotBlank() }
     val hasCompleteTask = blocks.any { block ->
@@ -151,7 +183,8 @@ internal fun appendStartupFailureMessages(
         messages: MutableList<ChatMessage>,
         inputText: String,
         errorMessage: String,
-        timestamp: Long
+        timestamp: Long,
+        strings: ChatStrings = ChatStrings(),
 ) {
     messages.add(
             ChatMessage.User(
@@ -165,7 +198,7 @@ internal fun appendStartupFailureMessages(
                     id = "startup-error-$timestamp",
                     timestamp = timestamp,
                     contentBlocks =
-                            listOf(ContentBlock.Text("⚠️ Failed to start: $errorMessage")),
+                            listOf(ContentBlock.Text("⚠️ ${strings.failedToStart(errorMessage)}")),
                     state = AgentMessageState.Complete,
                     rowState = RowState.Error,
                     completedTimestamp = timestamp
@@ -185,7 +218,8 @@ internal fun appendStartupFailureMessages(
 class ChatViewModel(
         private val sessionProvider: () -> AgentSession?,
         private val sessionHistoryManager: SessionHistoryManager? = null,
-        private val onSessionNeeded: ((String) -> Unit)? = null
+        private val onSessionNeeded: ((String) -> Unit)? = null,
+        private val strings: ChatStrings = ChatStrings(),
 ) : ViewModel() {
 
     companion object {
@@ -228,7 +262,8 @@ class ChatViewModel(
                     messages = _messages,
                     streamingBuffer = streamingBuffer,
                     stateLock = chatStateLock,
-                    setCurrentAgentMessageId = { currentAgentMessageId = it }
+                    setCurrentAgentMessageId = { currentAgentMessageId = it },
+                    completedFallback = strings.taskCompleted,
             )
     private val sessionHistoryController =
             ChatSessionHistoryController(
@@ -374,7 +409,8 @@ class ChatViewModel(
                     messages = _messages,
                     inputText = inputText,
                     errorMessage = errorMessage,
-                    timestamp = System.currentTimeMillis()
+                    timestamp = System.currentTimeMillis(),
+                    strings = strings,
             )
             _uiState.update { it.copy(showEmptyState = false) }
         }

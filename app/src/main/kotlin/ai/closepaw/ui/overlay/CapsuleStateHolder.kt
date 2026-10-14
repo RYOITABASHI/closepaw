@@ -1,6 +1,7 @@
 package ai.closepaw.ui.overlay
 
 import android.util.Log
+import ai.closepaw.R
 import ai.closepaw.protocol.AskUserType
 import ai.closepaw.protocol.SessionEndReason
 import ai.closepaw.protocol.TaskOutcome
@@ -153,7 +154,7 @@ class CapsuleStateHolder(private val scope: CoroutineScope) {
             Log.d(TAG, "Ignoring approval resolved: callId mismatch expected=${current.callId}, actual=$callId")
             return false
         }
-        setMode(CapsuleMode.Running("Processing..."))
+        setMode(CapsuleMode.Running("", R.string.capsule_state_holder_processing))
         return true
     }
 
@@ -169,19 +170,19 @@ class CapsuleStateHolder(private val scope: CoroutineScope) {
             Log.d(TAG, "Ignoring takeover request in ${_mode.value::class.simpleName}")
             return
         }
-        setMode(CapsuleMode.TakeoverPending(current.thought))
+        setMode(CapsuleMode.TakeoverPending(current.thought, current.thoughtRes))
     }
 
     fun onTakeoverConfirmed() {
-        val thought = when (val m = _mode.value) {
-            is CapsuleMode.TakeoverPending -> m.lastThought
-            is CapsuleMode.Running -> m.thought
+        val (thought, thoughtRes) = when (val m = _mode.value) {
+            is CapsuleMode.TakeoverPending -> m.lastThought to m.lastThoughtRes
+            is CapsuleMode.Running -> m.thought to m.thoughtRes
             else -> {
                 Log.d(TAG, "Ignoring takeover confirmed in ${_mode.value::class.simpleName}")
                 return
             }
         }
-        setMode(CapsuleMode.Takeover(thought))
+        setMode(CapsuleMode.Takeover(thought, thoughtRes))
     }
 
     fun onResumed() {
@@ -192,7 +193,7 @@ class CapsuleStateHolder(private val scope: CoroutineScope) {
         }
         _turnPhase.value = null
         _isAgentMidTurn.value = false
-        setMode(CapsuleMode.Running("Thinking..."))
+        setMode(CapsuleMode.Running("", R.string.capsule_state_holder_thinking))
     }
 
     fun onUserResponseSent(callId: String): Boolean {
@@ -209,7 +210,7 @@ class CapsuleStateHolder(private val scope: CoroutineScope) {
             Log.d(TAG, "Ignoring user response due to callId mismatch: expected=$expectedCallId, actual=$callId")
             return false
         }
-        setMode(CapsuleMode.Running("Processing response..."))
+        setMode(CapsuleMode.Running("", R.string.capsule_state_holder_processing_response))
         return true
     }
 
@@ -242,14 +243,17 @@ class CapsuleStateHolder(private val scope: CoroutineScope) {
         _isStopPending.value = false
         val mode = when (outcome) {
             TaskOutcome.GOAL_ACHIEVED -> {
-                val completionMessage = message?.takeIf { it.isNotBlank() } ?: "Task completed"
-                CapsuleMode.Done(completionMessage)
+                val completionMessage = message?.takeIf { it.isNotBlank() }
+                if (completionMessage != null) CapsuleMode.Done(completionMessage)
+                else CapsuleMode.Done("", R.string.capsule_state_holder_task_completed)
             }
-            TaskOutcome.TASK_IMPOSSIBLE -> CapsuleMode.Done("Task impossible")
-            TaskOutcome.USER_STOPPED -> CapsuleMode.Done("Stopped")
-            TaskOutcome.ERROR -> CapsuleMode.Error(
-                message?.takeIf { it.isNotBlank() }?.let(::compactThought) ?: "Error occurred"
-            )
+            TaskOutcome.TASK_IMPOSSIBLE -> CapsuleMode.Done("", R.string.capsule_state_holder_task_impossible)
+            TaskOutcome.USER_STOPPED -> CapsuleMode.Done("", R.string.capsule_state_holder_stopped)
+            TaskOutcome.ERROR -> {
+                val errorMessage = message?.takeIf { it.isNotBlank() }?.let(::compactThought)
+                if (errorMessage != null) CapsuleMode.Error(errorMessage)
+                else CapsuleMode.Error("", R.string.capsule_state_holder_error_occurred)
+            }
         }
         setMode(mode)
         if (mode is CapsuleMode.Done) scheduleAutoHide()

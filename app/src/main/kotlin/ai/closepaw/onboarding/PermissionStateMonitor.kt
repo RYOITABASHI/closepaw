@@ -3,6 +3,8 @@ package ai.closepaw.onboarding
 import android.content.Context
 import android.os.PowerManager
 import android.provider.Settings
+import androidx.annotation.StringRes
+import ai.closepaw.R
 import ai.closepaw.app.AgentService
 
 /**
@@ -31,12 +33,13 @@ class PermissionStateMonitor(private val context: Context) {
         val hasAnyIssue: Boolean
             get() = accessibilityMissing || overlayMissing || batteryMissing
 
-        /** Highest-priority missing permission label. */
-        val primaryIssue: String?
+        /** Highest-priority missing permission label (string resource id). */
+        @get:StringRes
+        val primaryIssueRes: Int?
             get() = when {
-                accessibilityMissing -> "Accessibility service is disabled"
-                overlayMissing -> "Overlay permission is revoked"
-                batteryMissing -> "Battery optimization re-enabled"
+                accessibilityMissing -> R.string.permission_state_monitor_accessibility_disabled
+                overlayMissing -> R.string.permission_state_monitor_overlay_revoked
+                batteryMissing -> R.string.permission_state_monitor_battery_reenabled
                 else -> null
             }
     }

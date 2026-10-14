@@ -1,5 +1,7 @@
 package ai.closepaw.ui.chat.components
 
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -56,10 +58,12 @@ internal fun AgentRow(
     val expanded = !collapsed
 
     val rowDescription = when (message.rowState) {
-        RowState.Live -> "live"
-        RowState.Waiting -> "waiting"
-        RowState.Complete -> if (collapsed) "collapsed" else "expanded"
-        RowState.Error -> "error"
+        RowState.Live -> stringResource(R.string.agent_row_state_live)
+        RowState.Waiting -> stringResource(R.string.agent_row_state_waiting)
+        RowState.Complete -> stringResource(
+            if (collapsed) R.string.agent_row_state_collapsed else R.string.agent_row_state_expanded
+        )
+        RowState.Error -> stringResource(R.string.agent_row_state_error)
     }
 
     Column(

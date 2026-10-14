@@ -1,6 +1,7 @@
 package ai.closepaw.onboarding
 
 import android.util.Log
+import ai.closepaw.R
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -215,7 +216,10 @@ class OnboardingViewModel(
         scope.launch {
             val validator = createValidatorForProvider(selectedProvider)
             if (validator == null) {
-                stepState = ApiKeyStepState.TransientError(key, "No model found for ${selectedProvider.label}")
+                stepState = ApiKeyStepState.TransientError(
+                    key,
+                    OnboardingText.Res(R.string.onboarding_view_model_no_model_found, listOf(selectedProvider.label))
+                )
                 return@launch
             }
             val result = validator.validate(key)

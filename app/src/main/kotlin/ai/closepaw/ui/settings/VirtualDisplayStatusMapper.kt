@@ -1,5 +1,6 @@
 package ai.closepaw.ui.settings
 
+import ai.closepaw.R
 import ai.closepaw.protocol.PlatformMode
 
 /**
@@ -56,8 +57,8 @@ internal fun virtualDisplayCardState(
     if (gatePending) {
         return VirtualDisplayCardState(
             status = ToolStatusUi(
-                label = "Setting up…",
-                subtitle = "Checking Shizuku…",
+                labelRes = R.string.virtual_display_status_mapper_setting_up,
+                subtitleRes = R.string.virtual_display_status_mapper_checking_shizuku,
                 tone = ToolStatusTone.Neutral,
                 showSpinner = true,
             ),
@@ -71,8 +72,8 @@ internal fun virtualDisplayCardState(
     if (gateError != null && persistedMode == PlatformMode.ACCESSIBILITY) {
         return VirtualDisplayCardState(
             status = ToolStatusUi(
-                label = "Needs Setup",
-                subtitle = gateError.message(),
+                labelRes = R.string.virtual_display_status_mapper_needs_setup,
+                subtitleRes = gateError.messageRes(),
                 tone = ToolStatusTone.Warning,
                 showSpinner = false,
             ),
@@ -84,15 +85,15 @@ internal fun virtualDisplayCardState(
 
     // Rows 4–5: persisted ACCESSIBILITY
     if (persistedMode == PlatformMode.ACCESSIBILITY) {
-        val subtitle = if (effectiveMode == PlatformMode.VIRTUAL_DISPLAY) {
-            "Current session is still on a virtual display; next session will use your current screen."
+        val subtitleRes = if (effectiveMode == PlatformMode.VIRTUAL_DISPLAY) {
+            R.string.virtual_display_status_mapper_still_on_vd
         } else {
-            "Agent runs on your current screen."
+            R.string.virtual_display_status_mapper_runs_on_current_screen
         }
         return VirtualDisplayCardState(
             status = ToolStatusUi(
-                label = "Disabled",
-                subtitle = subtitle,
+                labelRes = R.string.virtual_display_status_mapper_disabled,
+                subtitleRes = subtitleRes,
                 tone = ToolStatusTone.Neutral,
                 showSpinner = false,
             ),
@@ -110,8 +111,8 @@ internal fun virtualDisplayCardState(
                 // Row 8
                 VirtualDisplayCardState(
                     status = ToolStatusUi(
-                        label = "Degraded",
-                        subtitle = "Lost Shizuku connection — the current virtual-display session may stop working. Restart Shizuku to recover.",
+                        labelRes = R.string.virtual_display_status_mapper_degraded,
+                        subtitleRes = R.string.virtual_display_status_mapper_lost_connection,
                         tone = ToolStatusTone.Warning,
                         showSpinner = false,
                     ),
@@ -123,8 +124,8 @@ internal fun virtualDisplayCardState(
                 // Row 6
                 VirtualDisplayCardState(
                     status = ToolStatusUi(
-                        label = "Not Available",
-                        subtitle = "Shizuku is not running. If a new session starts now, it will run on your current screen.",
+                        labelRes = R.string.virtual_display_status_mapper_not_available,
+                        subtitleRes = R.string.virtual_display_status_mapper_shizuku_not_running,
                         tone = ToolStatusTone.Warning,
                         showSpinner = false,
                     ),
@@ -138,8 +139,8 @@ internal fun virtualDisplayCardState(
                 // Row 9
                 VirtualDisplayCardState(
                     status = ToolStatusUi(
-                        label = "Degraded",
-                        subtitle = "Shizuku permission revoked — the current virtual-display session may stop working.",
+                        labelRes = R.string.virtual_display_status_mapper_degraded,
+                        subtitleRes = R.string.virtual_display_status_mapper_permission_revoked,
                         tone = ToolStatusTone.Warning,
                         showSpinner = false,
                     ),
@@ -151,8 +152,8 @@ internal fun virtualDisplayCardState(
                 // Row 7
                 VirtualDisplayCardState(
                     status = ToolStatusUi(
-                        label = "Needs Setup",
-                        subtitle = "Grant Shizuku permission to use Virtual Display.",
+                        labelRes = R.string.virtual_display_status_mapper_needs_setup,
+                        subtitleRes = R.string.virtual_display_status_mapper_grant_permission,
                         tone = ToolStatusTone.Warning,
                         showSpinner = false,
                     ),
@@ -165,8 +166,8 @@ internal fun virtualDisplayCardState(
             PlatformMode.VIRTUAL_DISPLAY -> // Row 10
                 VirtualDisplayCardState(
                     status = ToolStatusUi(
-                        label = "Ready",
-                        subtitle = "Current session is configured for a virtual display.",
+                        labelRes = R.string.virtual_display_status_mapper_ready,
+                        subtitleRes = R.string.virtual_display_status_mapper_configured,
                         tone = ToolStatusTone.Positive,
                         showSpinner = false,
                     ),
@@ -177,8 +178,8 @@ internal fun virtualDisplayCardState(
             PlatformMode.ACCESSIBILITY -> // Row 11
                 VirtualDisplayCardState(
                     status = ToolStatusUi(
-                        label = "Ready",
-                        subtitle = "Will switch to a virtual display on the next session.",
+                        labelRes = R.string.virtual_display_status_mapper_ready,
+                        subtitleRes = R.string.virtual_display_status_mapper_will_switch,
                         tone = ToolStatusTone.Neutral,
                         showSpinner = false,
                     ),
@@ -189,8 +190,8 @@ internal fun virtualDisplayCardState(
             null -> // Row 12
                 VirtualDisplayCardState(
                     status = ToolStatusUi(
-                        label = "Ready",
-                        subtitle = "Will start on a virtual display.",
+                        labelRes = R.string.virtual_display_status_mapper_ready,
+                        subtitleRes = R.string.virtual_display_status_mapper_will_start,
                         tone = ToolStatusTone.Positive,
                         showSpinner = false,
                     ),

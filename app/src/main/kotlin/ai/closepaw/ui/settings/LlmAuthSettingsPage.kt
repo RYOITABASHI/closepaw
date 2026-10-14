@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.annotation.StringRes
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -29,7 +30,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import ai.closepaw.R
 import ai.closepaw.app.AuthStoreHolder
 import ai.closepaw.auth.AuthCredential
 import ai.closepaw.auth.AuthStore
@@ -77,11 +80,12 @@ private val VISIBLE_TABS: List<LlmAuthTab> =
 private fun LlmAuthTab.visibleOrFallback(): LlmAuthTab =
     if (this in VISIBLE_TABS) this else LlmAuthTab.API_KEY
 
-private val LlmAuthTab.label: String
+@get:StringRes
+private val LlmAuthTab.labelRes: Int
     get() = when (this) {
-        LlmAuthTab.SIGN_IN -> "Sign In"
-        LlmAuthTab.API_KEY -> "API Key"
-        LlmAuthTab.LOCAL -> "Local"
+        LlmAuthTab.SIGN_IN -> R.string.llm_auth_settings_page_tab_sign_in
+        LlmAuthTab.API_KEY -> R.string.llm_auth_settings_page_tab_api_key
+        LlmAuthTab.LOCAL -> R.string.llm_auth_settings_page_tab_local
     }
 
 private val LlmAuthTab.mode: AuthMode
@@ -184,14 +188,14 @@ internal fun LlmAuthSettingsPage(
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        PageMastheadDrillDown(title = "LLM & Authentication", onBack = onBack, onClose = onClose)
+        PageMastheadDrillDown(title = stringResource(R.string.llm_auth_settings_page_title), onBack = onBack, onClose = onClose)
 
         TabRow(selectedTabIndex = VISIBLE_TABS.indexOf(activeTab).coerceAtLeast(0)) {
             VISIBLE_TABS.forEach { tab ->
                 Tab(
                     selected = activeTab == tab,
                     onClick = { selectedTab = tab },
-                    text = { Text(tab.label) }
+                    text = { Text(stringResource(tab.labelRes)) }
                 )
             }
         }
@@ -337,7 +341,7 @@ private fun SignInTabContent(
     val provider = resolveProviderForTab(LlmAuthTab.SIGN_IN, selectedModel, modelCatalog)
     val modelOptions = catalogModelOptions(modelCatalog.modelsFor(provider))
 
-    SettingsSection(title = "Cloud Model") {
+    SettingsSection(title = stringResource(R.string.llm_auth_settings_page_section_cloud_model)) {
         CloudModelDropdown(
             selectedModel = selectedModel,
             modelOptions = modelOptions,
@@ -345,7 +349,7 @@ private fun SignInTabContent(
         )
     }
     Spacer(modifier = Modifier.height(20.dp))
-    SettingsSection(title = "Authentication") {
+    SettingsSection(title = stringResource(R.string.llm_auth_settings_page_section_authentication)) {
         OpenAiAuthCard(
             state = openAiAuthUiState,
             onStartOAuth = onStartOAuth,
@@ -394,7 +398,7 @@ private fun ApiKeyTabContent(
     var otherModelIdText by remember(otherModelId) { mutableStateOf(otherModelId) }
 
     // Provider sub-selector — local view state only, no settings writes on click.
-    SettingsSection(title = "Provider") {
+    SettingsSection(title = stringResource(R.string.llm_auth_settings_page_section_provider)) {
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             API_KEY_PROVIDERS.forEachIndexed { index, provider ->
                 SegmentedButton(
@@ -418,7 +422,7 @@ private fun ApiKeyTabContent(
     Spacer(modifier = Modifier.height(20.dp))
 
     if (selectedProvider == LLMProvider.OTHER) {
-        SettingsSection(title = "Base URL") {
+        SettingsSection(title = stringResource(R.string.llm_auth_settings_page_base_url)) {
             OtherBaseUrlField(
                 value = otherBaseUrlText,
                 onValueChange = { value ->
@@ -429,7 +433,7 @@ private fun ApiKeyTabContent(
         }
         Spacer(modifier = Modifier.height(20.dp))
 
-        SettingsSection(title = "Custom Model Id") {
+        SettingsSection(title = stringResource(R.string.llm_auth_settings_page_custom_model_id)) {
             OtherModelIdField(
                 value = otherModelIdText,
                 onValueChange = { value ->
@@ -441,7 +445,7 @@ private fun ApiKeyTabContent(
         Spacer(modifier = Modifier.height(20.dp))
     }
 
-    SettingsSection(title = "Cloud Model") {
+    SettingsSection(title = stringResource(R.string.llm_auth_settings_page_section_cloud_model)) {
         if (selectedProvider == LLMProvider.OPENROUTER || selectedProvider == LLMProvider.OTHER) {
             SearchableGroupedModelPicker(
                 entries = modelCatalog.modelsFor(selectedProvider),
@@ -486,16 +490,16 @@ private fun ApiKeyTabContent(
     Spacer(modifier = Modifier.height(20.dp))
 
     // Provider-linked API key field — value backed by AuthStore.
-    SettingsSection(title = "API Key") {
-        val label = when (selectedProvider) {
-            LLMProvider.OPENAI_API -> "OpenAI Key"
-            LLMProvider.OPENROUTER -> "OpenRouter Key"
-            LLMProvider.OTHER -> "API Key"
+    SettingsSection(title = stringResource(R.string.llm_auth_settings_page_api_key)) {
+        val labelRes = when (selectedProvider) {
+            LLMProvider.OPENAI_API -> R.string.llm_auth_settings_page_openai_key
+            LLMProvider.OPENROUTER -> R.string.llm_auth_settings_page_openrouter_key
+            LLMProvider.OTHER -> R.string.llm_auth_settings_page_api_key
             LLMProvider.OPENAI_CODEX, LLMProvider.LOCAL_LFM -> null
         }
-        if (label != null) {
+        if (labelRes != null) {
             ApiKeyField(
-                label = label,
+                label = stringResource(labelRes),
                 value = apiKeyText,
                 onValueChange = { key ->
                     apiKeyText = key
@@ -571,15 +575,14 @@ private fun LocalTabContent(
         shape = MaterialTheme.shapes.medium
     ) {
         Text(
-            text = "Experimental: local models are slow and underpowered, " +
-                "and will not reliably drive the agent. Use a cloud model for real work.",
+            text = stringResource(R.string.llm_auth_settings_page_local_warning),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onErrorContainer,
             modifier = Modifier.padding(MaterialTheme.closePaw.spacing.md)
         )
     }
     Spacer(modifier = Modifier.height(16.dp))
-    SettingsSection(title = "Local Model") {
+    SettingsSection(title = stringResource(R.string.llm_auth_settings_page_section_local_model)) {
         Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.closePaw.spacing.md)) {
             LocalModelDropdown(
                 selectedModelId = selectedLocalModel,
@@ -616,7 +619,7 @@ private fun OtherBaseUrlField(value: String, onValueChange: (String) -> Unit) {
         value = value,
         onValueChange = onValueChange,
         modifier = Modifier.fillMaxWidth(),
-        label = { Text("Base URL") },
+        label = { Text(stringResource(R.string.llm_auth_settings_page_base_url)) },
         placeholder = {
             Text(
                 "https://api.example.com/v1",
@@ -643,7 +646,7 @@ private fun OtherModelIdField(value: String, onValueChange: (String) -> Unit) {
         value = value,
         onValueChange = onValueChange,
         modifier = Modifier.fillMaxWidth(),
-        label = { Text("Custom Model Id") },
+        label = { Text(stringResource(R.string.llm_auth_settings_page_custom_model_id)) },
         placeholder = {
             Text(
                 "vendor/model-id",

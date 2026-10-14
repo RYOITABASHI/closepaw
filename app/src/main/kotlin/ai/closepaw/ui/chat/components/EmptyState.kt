@@ -1,5 +1,7 @@
 package ai.closepaw.ui.chat.components
 
+import androidx.compose.ui.res.stringResource
+import androidx.annotation.StringRes
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
@@ -41,14 +43,33 @@ import ai.closepaw.ui.theme.Fraunces
 import ai.closepaw.ui.theme.closePaw
 import kotlinx.coroutines.delay
 
-private data class Suggestion(val verb: String, val gloss: String) {
-    val full: String get() = "$verb $gloss"
-}
+/**
+ * A suggestion rendered as an emphasized [verb] line over an italic [gloss]
+ * line; tapping submits [full] (localized separately because word order
+ * differs between languages).
+ */
+private data class Suggestion(
+    @StringRes val verb: Int,
+    @StringRes val gloss: Int,
+    @StringRes val full: Int,
+)
 
 private val SUGGESTIONS = listOf(
-    Suggestion("Get me", "a ride home"),
-    Suggestion("Catch me up", "on emails and messages"),
-    Suggestion("Search", "for nearby restaurants"),
+    Suggestion(
+        R.string.empty_state_suggestion_ride_verb,
+        R.string.empty_state_suggestion_ride_gloss,
+        R.string.empty_state_suggestion_ride_full,
+    ),
+    Suggestion(
+        R.string.empty_state_suggestion_catch_up_verb,
+        R.string.empty_state_suggestion_catch_up_gloss,
+        R.string.empty_state_suggestion_catch_up_full,
+    ),
+    Suggestion(
+        R.string.empty_state_suggestion_search_verb,
+        R.string.empty_state_suggestion_search_gloss,
+        R.string.empty_state_suggestion_search_full,
+    ),
 )
 
 /**
@@ -82,7 +103,7 @@ fun EmptyState(
         ) {
             StaggeredReveal(index = 0) {
                 Text(
-                    text = "What can I\nhelp you with?",
+                    text = stringResource(R.string.empty_state_title),
                     style = TextStyle(
                         fontFamily = Fraunces,
                         fontStyle = FontStyle.Italic,
@@ -107,10 +128,11 @@ fun EmptyState(
 
             SUGGESTIONS.forEachIndexed { i, s ->
                 StaggeredReveal(index = 2 + i) {
+                    val fullText = stringResource(s.full)
                     MarginaliaSuggestion(
-                        verb = s.verb,
-                        gloss = s.gloss,
-                        onClick = { onSuggestionClick(s.full) },
+                        verb = stringResource(s.verb),
+                        gloss = stringResource(s.gloss),
+                        onClick = { onSuggestionClick(fullText) },
                     )
                 }
             }

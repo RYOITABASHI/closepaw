@@ -56,8 +56,8 @@ sealed interface ApiKeyStepState : OnboardingStepState {
     data object Empty : ApiKeyStepState
     data class Editing(val key: String) : ApiKeyStepState
     data class Validating(val key: String) : ApiKeyStepState
-    data class Invalid(val key: String, val message: String) : ApiKeyStepState
-    data class TransientError(val key: String, val message: String) : ApiKeyStepState
+    data class Invalid(val key: String, val message: OnboardingText) : ApiKeyStepState
+    data class TransientError(val key: String, val message: OnboardingText) : ApiKeyStepState
     data class Valid(val key: String) : ApiKeyStepState
 
     // OAuth states

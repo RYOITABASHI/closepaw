@@ -33,6 +33,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import ai.closepaw.BuildConfig
 import ai.closepaw.auth.AuthCredential
 import ai.closepaw.auth.AuthStore
@@ -65,6 +67,7 @@ import ai.closepaw.session.AgentSession
 import ai.closepaw.session.SessionCoordinator
 import ai.closepaw.session.SubmitResult
 import ai.closepaw.tool.AppClassifierHolder
+import ai.closepaw.ui.chat.ChatStrings
 import ai.closepaw.ui.chat.ChatViewModel
 import ai.closepaw.ui.onboarding.OnboardingScreen
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
@@ -195,6 +198,7 @@ class MainActivity : ComponentActivity() {
                 modelCatalog = modelCatalog,
                 permissionMonitor = PermissionStateMonitor(applicationContext),
                 demoController = OnboardingDemoController(
+                    context = applicationContext,
                     settingsState = settingsState,
                     scope = lifecycleScope
                 ),
@@ -211,7 +215,8 @@ class MainActivity : ComponentActivity() {
                 ChatViewModel(
                         sessionProvider = { coordinator.currentSession },
                         sessionHistoryManager = sessionHistoryManager,
-                        onSessionNeeded = { text -> ensureSessionAndSend(text) }
+                        onSessionNeeded = { text -> ensureSessionAndSend(text) },
+                        strings = ChatStrings.from(applicationContext),
                 )
 
         setContent {
@@ -329,7 +334,7 @@ class MainActivity : ComponentActivity() {
                                 tonalElevation = 2.dp,
                             ) {
                                 Text(
-                                    text = "Started by Shelly",
+                                    text = stringResource(R.string.main_activity_started_by_shelly),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
@@ -341,19 +346,19 @@ class MainActivity : ComponentActivity() {
                 pendingGoalForConfirmation?.let { goal ->
                     AlertDialog(
                         onDismissRequest = { pendingGoalForConfirmation = null },
-                        title = { Text("External Goal") },
-                        text = { Text("An external app wants to run:\n\"$goal\"") },
+                        title = { Text(stringResource(R.string.main_activity_external_goal_title)) },
+                        text = { Text(stringResource(R.string.main_activity_external_goal_message, goal)) },
                         confirmButton = {
                             TextButton(onClick = {
                                 val confirmed = goal
                                 pendingGoalForConfirmation = null
                                 ensureSessionAndSend(confirmed)
-                            }) { Text("Run") }
+                            }) { Text(stringResource(R.string.main_activity_external_goal_run)) }
                         },
                         dismissButton = {
                             TextButton(onClick = {
                                 pendingGoalForConfirmation = null
-                            }) { Text("Cancel") }
+                            }) { Text(stringResource(R.string.main_activity_external_goal_cancel)) }
                         }
                     )
                 }
@@ -521,7 +526,7 @@ class MainActivity : ComponentActivity() {
             clearCurrentSession()
             viewModel.startNewSession(settingsState.selectedModel, BuildConfig.VERSION_NAME)
             shellyStartedIndicatorTick += 1
-            Toast.makeText(this@MainActivity, "Started by Shelly", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@MainActivity, getString(R.string.main_activity_started_by_shelly), Toast.LENGTH_SHORT).show()
             ensureSessionAndSend(goal, launchPolicy = SessionLaunchPolicy.FORCE_FRESH)
         }
     }
@@ -581,7 +586,7 @@ class MainActivity : ComponentActivity() {
         if (!validateCloudKeysForSelectedModels()) return
 
         if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "Please grant Overlay permission", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.main_activity_grant_overlay), Toast.LENGTH_LONG).show()
             openOverlaySettings(this)
             return
         }
@@ -589,7 +594,7 @@ class MainActivity : ComponentActivity() {
         val service = AgentService.instance
         if (service == null) {
             pendingAutoStartGoal = text
-            Toast.makeText(this, "Please enable the Accessibility Service", Toast.LENGTH_LONG)
+            Toast.makeText(this, getString(R.string.main_activity_enable_accessibility), Toast.LENGTH_LONG)
                     .show()
             openAccessibilitySettings(this)
             return
@@ -650,10 +655,10 @@ class MainActivity : ComponentActivity() {
                 Log.e(TAG, "Failed to create session", e)
                 if (settingsState.llmBackend == LLMBackendType.LOCAL) {
                     modelLoadingStatusHolder.update(
-                            ModelLoadingStatus.Error(e.message ?: "Unknown error")
+                            ModelLoadingStatus.Error(e.message ?: getString(R.string.main_activity_unknown_error))
                     )
                 }
-                val errMsg = e.message ?: "Unknown error"
+                val errMsg = e.message ?: getString(R.string.main_activity_unknown_error)
                 val deepLink = when (e) {
                     is ai.closepaw.auth.MissingCredential,
                     is ai.closepaw.auth.OAuthRefreshFailed,
@@ -672,7 +677,7 @@ class MainActivity : ComponentActivity() {
                 viewModel.reportStartupFailure(text, errMsg, deepLink)
                 Toast.makeText(
                                 this@MainActivity,
-                                "Failed to start: $errMsg",
+                                getString(R.string.main_activity_failed_to_start, errMsg),
                                 Toast.LENGTH_LONG
                         )
                         .show()
@@ -719,7 +724,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 Log.w(TAG, "Explicit resume failed for ${selectedForReload.id}, checkpoint not reloadable")
                 coordinator.selectedSessionForReload = null
-                Toast.makeText(this, "Session from previous version — start a new session.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.main_activity_session_previous_version), Toast.LENGTH_SHORT).show()
                 return null
             }
         } else {
@@ -839,7 +844,7 @@ class MainActivity : ComponentActivity() {
             val localClient = session.getServices().llmClient as? LFMLLMClient
             if (localClient == null) {
                 modelLoadingStatusHolder.update(
-                        ModelLoadingStatus.Error("Local LLM client unavailable")
+                        ModelLoadingStatus.Error(getString(R.string.main_activity_local_llm_unavailable))
                 )
             } else {
                 localClient.loadModel { state ->
@@ -877,7 +882,11 @@ class MainActivity : ComponentActivity() {
 
         if (missing.isEmpty()) return true
 
-        Toast.makeText(this, "Missing credential(s): ${missing.joinToString("; ") { it.message }}", Toast.LENGTH_LONG)
+        Toast.makeText(
+            this,
+            getString(R.string.main_activity_missing_credentials, missing.joinToString("; ") { it.message(this) }),
+            Toast.LENGTH_LONG
+        )
                 .show()
         pendingSettingsDeepLink = ai.closepaw.ui.chat.SettingsDeepLink(
             page = ai.closepaw.ui.chat.SettingsPage.LLM_AUTH,
@@ -979,7 +988,7 @@ class MainActivity : ComponentActivity() {
                     try {
                         startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                     } catch (_: Exception) {
-                        Toast.makeText(this, "Unable to open battery settings", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, getString(R.string.main_activity_battery_settings_unavailable), Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -987,7 +996,7 @@ class MainActivity : ComponentActivity() {
                 try {
                     startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 } catch (_: Exception) {
-                    Toast.makeText(this, "Unable to open battery settings", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, getString(R.string.main_activity_battery_settings_unavailable), Toast.LENGTH_SHORT).show()
                 }
             }
             OnboardingEffect.BringMainActivityToFront -> {
@@ -1002,7 +1011,7 @@ class MainActivity : ComponentActivity() {
                     startActivity(intent)
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to launch OAuth browser", e)
-                    Toast.makeText(this, "Unable to open browser for sign-in", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, getString(R.string.main_activity_browser_sign_in_unavailable), Toast.LENGTH_SHORT).show()
                     onboardingViewModel?.cancelOAuth()
                 }
             }

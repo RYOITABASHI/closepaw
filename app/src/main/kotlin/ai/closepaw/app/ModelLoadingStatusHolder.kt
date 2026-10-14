@@ -1,6 +1,7 @@
 package ai.closepaw.app
 
 import android.content.Context
+import ai.closepaw.R
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -74,7 +75,9 @@ class ModelLoadingStatusHolder(
                 throw e
             } catch (e: Exception) {
                 if (generation == downloadGeneration) {
-                    status = ModelLoadingStatus.Error(e.message ?: "Download failed")
+                    status = ModelLoadingStatus.Error(
+                        e.message ?: context.getString(R.string.model_loading_status_holder_download_failed)
+                    )
                 }
             } finally {
                 // Disk cache is warm; release the runner so we don't hold tensor

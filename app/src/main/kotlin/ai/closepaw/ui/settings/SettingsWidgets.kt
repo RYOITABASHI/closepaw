@@ -28,6 +28,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import androidx.compose.ui.unit.dp
 import com.composables.icons.lucide.ChevronRight
 import com.composables.icons.lucide.Lucide
@@ -59,7 +61,7 @@ internal fun ModelLoadingStatusIndicator(status: ModelLoadingStatus) {
                         horizontalArrangement = Arrangement.spacedBy(MaterialTheme.closePaw.spacing.sm)
                     ) {
                         Text(
-                            text = "Downloading model...",
+                            text = stringResource(R.string.settings_widgets_downloading_model),
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Text(
@@ -92,7 +94,7 @@ internal fun ModelLoadingStatusIndicator(status: ModelLoadingStatus) {
                         modifier = Modifier.weight(1f)
                     )
                     Text(
-                        text = "Loading model...",
+                        text = stringResource(R.string.settings_widgets_loading_model),
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -118,7 +120,7 @@ internal fun ModelLoadingStatusIndicator(status: ModelLoadingStatus) {
                             .background(MaterialTheme.colorScheme.secondary)
                     )
                     Text(
-                        text = "Model ready",
+                        text = stringResource(R.string.settings_widgets_model_ready),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.secondary
                     )
@@ -127,7 +129,7 @@ internal fun ModelLoadingStatusIndicator(status: ModelLoadingStatus) {
         }
         is ModelLoadingStatus.Error -> {
             SettingsAlertCard(
-                message = "Error: ${status.message}",
+                message = stringResource(R.string.settings_widgets_model_error, status.message),
                 tone = AlertTone.Error,
             )
         }
@@ -201,7 +203,7 @@ internal fun SettingsRow(
                         .background(dotColor)
                 )
                 Text(
-                    text = if (isEnabled) "Enabled" else "Required",
+                    text = stringResource(if (isEnabled) R.string.settings_widgets_enabled else R.string.settings_widgets_required),
                     style = MaterialTheme.typography.labelMedium,
                     color = labelColor
                 )
@@ -266,19 +268,19 @@ internal fun PerceptionModeSelector(
     val options = listOf(
         PerceptionOption(
             value = "accessibility_only",
-            label = "Screen Transcript",
-            subtitle = "Reads text and layout. Fast, cheap, works for most apps.",
+            label = stringResource(R.string.settings_widgets_perception_transcript),
+            subtitle = stringResource(R.string.settings_widgets_perception_transcript_subtitle),
             recommended = true,
         ),
         PerceptionOption(
             value = "screenshot_only",
-            label = "Screen Image",
-            subtitle = "Reads screenshots only. Slower; best for maps, canvas, or visual apps.",
+            label = stringResource(R.string.settings_widgets_perception_image),
+            subtitle = stringResource(R.string.settings_widgets_perception_image_subtitle),
         ),
         PerceptionOption(
             value = "hybrid",
-            label = "Transcript + Image",
-            subtitle = "Text + screenshots. Most reliable but slowest.",
+            label = stringResource(R.string.settings_widgets_perception_hybrid),
+            subtitle = stringResource(R.string.settings_widgets_perception_hybrid_subtitle),
         ),
     )
 
@@ -340,7 +342,7 @@ private fun RecommendedChip() {
         shape = MaterialTheme.shapes.small,
     ) {
         Text(
-            text = "Recommended",
+            text = stringResource(R.string.settings_widgets_recommended),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.secondary,
             modifier = Modifier.padding(horizontal = MaterialTheme.closePaw.spacing.sm, vertical = 2.dp),

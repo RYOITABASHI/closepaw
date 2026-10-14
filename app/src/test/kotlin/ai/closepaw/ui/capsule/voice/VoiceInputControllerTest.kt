@@ -1,5 +1,6 @@
 package ai.closepaw.ui.capsule.voice
 
+import ai.closepaw.R
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -17,9 +18,9 @@ class VoiceInputControllerTest {
         override fun invoke(s: String) { calls.add(s) }
     }
 
-    private class CapturingOnToast : (String) -> Unit {
-        val calls = mutableListOf<String>()
-        override fun invoke(s: String) { calls.add(s) }
+    private class CapturingOnToast : (Int) -> Unit {
+        val calls = mutableListOf<Int>()
+        override fun invoke(res: Int) { calls.add(res) }
     }
 
     private fun newController(
@@ -193,7 +194,7 @@ class VoiceInputControllerTest {
 
         factory.created.last().callbacks.onError(VoiceError.ServiceDied)
         assertThat(c.state).isEqualTo(VoiceState.Unavailable)
-        assertThat(onToast.calls).containsExactly("Voice unavailable").inOrder()
+        assertThat(onToast.calls).containsExactly(R.string.voice_input_controller_unavailable).inOrder()
 
         // Subsequent start() must be a no-op — the recognizer is terminally unusable on this
         // device, so we must not bind it again on every mic tap.
@@ -212,7 +213,7 @@ class VoiceInputControllerTest {
         factory.created.last().callbacks.onError(VoiceError.Unknown)
 
         assertThat(c.state).isEqualTo(VoiceState.Unavailable)
-        assertThat(onToast.calls).containsExactly("Voice unavailable").inOrder()
+        assertThat(onToast.calls).containsExactly(R.string.voice_input_controller_unavailable).inOrder()
     }
 
     @Test
@@ -226,7 +227,7 @@ class VoiceInputControllerTest {
         cb.onError(VoiceError.ServiceDied)
 
         assertThat(c.state).isEqualTo(VoiceState.Idle)
-        assertThat(onToast.calls).containsExactly("Voice unavailable").inOrder()
+        assertThat(onToast.calls).containsExactly(R.string.voice_input_controller_unavailable).inOrder()
     }
 }
 

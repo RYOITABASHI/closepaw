@@ -1,5 +1,6 @@
 package ai.closepaw.ui.capsule.voice
 
+import ai.closepaw.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -36,7 +37,8 @@ class VoiceInputController(
     private val factory: RecognizerFactory,
     private val languageTag: String,
     private val onText: (String) -> Unit,
-    private val onToast: (String) -> Unit = {},
+    /** Receives a localized string resource id; resolved by the UI layer. */
+    private val onToast: (Int) -> Unit = {},
 ) {
     var state: VoiceState by mutableStateOf(
         if (factory.isAvailable()) VoiceState.Idle else VoiceState.Unavailable
@@ -155,17 +157,17 @@ class VoiceInputController(
         }
         VoiceError.InsufficientPermissions -> {
             onText(baseText)
-            onToast("Microphone permission revoked — re-enable in Settings")
+            onToast(R.string.voice_input_controller_permission_revoked)
             VoiceState.Idle
         }
         VoiceError.LanguageUnavailable -> {
             onText(baseText)
-            onToast("Voice not available for this language")
+            onToast(R.string.voice_input_controller_language_unavailable)
             VoiceState.Unavailable
         }
         VoiceError.Network, VoiceError.NetworkTimeout -> {
             onText(baseText)
-            onToast("Voice needs network for this language")
+            onToast(R.string.voice_input_controller_needs_network)
             VoiceState.Idle
         }
         VoiceError.Busy, VoiceError.ServiceDied, VoiceError.Unknown -> {
@@ -176,10 +178,10 @@ class VoiceInputController(
             // and the user stops seeing the toast on every tap. Once we've seen at least one
             // partial/final, the same errors are treated as transient (network dropped etc.).
             if (!sessionGotAnyCallback) {
-                onToast("Voice unavailable")
+                onToast(R.string.voice_input_controller_unavailable)
                 VoiceState.Unavailable
             } else {
-                onToast("Voice unavailable")
+                onToast(R.string.voice_input_controller_unavailable)
                 VoiceState.Idle
             }
         }
@@ -198,7 +200,7 @@ fun rememberVoiceInputController(
     factory: RecognizerFactory,
     languageTag: String = Locale.getDefault().toLanguageTag(),
     onText: (String) -> Unit,
-    onToast: (String) -> Unit = {},
+    onToast: (Int) -> Unit = {},
 ): VoiceInputController {
     val controller = remember(factory, languageTag) {
         VoiceInputController(factory, languageTag, onText, onToast)

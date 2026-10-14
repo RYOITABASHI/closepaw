@@ -1,5 +1,6 @@
 package ai.closepaw.app
 
+import ai.closepaw.R
 import ai.closepaw.auth.AuthStore
 import ai.closepaw.llm.LLMProvider
 import ai.closepaw.llm.ModelCatalog
@@ -57,7 +58,7 @@ class MainActivityModelValidationTest {
         val missing = findMissingCloudKeys(settings(), catalog, emptyAuthStore())
         assertThat(missing).hasSize(1)
         assertThat(missing[0].provider).isEqualTo(LLMProvider.OPENAI_API)
-        assertThat(missing[0].message).contains("OpenAI API key required")
+        assertThat(missing[0].messageRes).isEqualTo(R.string.main_activity_model_validation_openai_key_required)
     }
 
     @Test
@@ -69,7 +70,7 @@ class MainActivityModelValidationTest {
         )
         assertThat(missing).hasSize(1)
         assertThat(missing[0].provider).isEqualTo(LLMProvider.OPENAI_CODEX)
-        assertThat(missing[0].message).contains("ChatGPT sign-in required")
+        assertThat(missing[0].messageRes).isEqualTo(R.string.main_activity_model_validation_chatgpt_sign_in_required)
     }
 
     @Test
@@ -81,7 +82,8 @@ class MainActivityModelValidationTest {
         )
         assertThat(missing).hasSize(1)
         assertThat(missing[0].provider).isEqualTo(LLMProvider.OPENAI_API)
-        assertThat(missing[0].message).contains("Unknown model: ghost-model")
+        assertThat(missing[0].messageRes).isEqualTo(R.string.main_activity_model_validation_unknown_model)
+        assertThat(missing[0].messageArgs).containsExactly("ghost-model")
     }
 
     @Test
@@ -104,10 +106,11 @@ class MainActivityModelValidationTest {
             LLMProvider.OTHER,
             LLMProvider.OTHER,
         )
-        val messages = missing.map { it.message }
-        assertThat(messages.any { it.contains("API key required") }).isTrue()
-        assertThat(messages.any { it.contains("base URL required") }).isTrue()
-        assertThat(messages.any { it.contains("custom model id required") }).isTrue()
+        assertThat(missing.map { it.messageRes }).containsExactly(
+            R.string.main_activity_model_validation_other_api_key_required,
+            R.string.main_activity_model_validation_other_base_url_required,
+            R.string.main_activity_model_validation_other_model_id_required,
+        )
     }
 
     @Test
@@ -124,7 +127,7 @@ class MainActivityModelValidationTest {
             store,
         )
         assertThat(missing).hasSize(1)
-        assertThat(missing[0].message).contains("base URL invalid")
+        assertThat(missing[0].messageRes).isEqualTo(R.string.main_activity_model_validation_other_base_url_invalid)
     }
 
     @Test
@@ -158,7 +161,7 @@ class MainActivityModelValidationTest {
         )
         assertThat(missing).hasSize(1)
         assertThat(missing[0].provider).isEqualTo(LLMProvider.OTHER)
-        assertThat(missing[0].message).isEqualTo("Refresh or select a model for this endpoint")
+        assertThat(missing[0].messageRes).isEqualTo(R.string.main_activity_model_validation_refresh_model)
     }
 
     @Test
@@ -182,6 +185,7 @@ class MainActivityModelValidationTest {
         )
         assertThat(missing).hasSize(1)
         assertThat(missing[0].provider).isEqualTo(LLMProvider.OTHER)
-        assertThat(missing[0].message).contains("API key required")
+        assertThat(missing[0].messageRes).isEqualTo(R.string.main_activity_model_validation_api_key_required)
+        assertThat(missing[0].messageArgs).containsExactly("Vendor X")
     }
 }

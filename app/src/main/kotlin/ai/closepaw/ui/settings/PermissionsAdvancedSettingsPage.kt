@@ -37,6 +37,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.annotation.StringRes
+import ai.closepaw.R
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ai.closepaw.BuildConfig
@@ -62,31 +65,31 @@ internal fun PermissionsAdvancedSettingsPage(
     onClose: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        PageMastheadDrillDown(title = "System & Debug", onBack = onBack, onClose = onClose)
+        PageMastheadDrillDown(title = stringResource(R.string.permissions_advanced_settings_page_title), onBack = onBack, onClose = onClose)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = MaterialTheme.closePaw.spacing.lg)
         ) {
-            SettingsSection(title = "Permissions") {
+            SettingsSection(title = stringResource(R.string.permissions_advanced_settings_page_section_permissions)) {
                 Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.closePaw.spacing.md)) {
                     SettingsRow(
                         icon = Icons.Outlined.Settings,
-                        title = "Accessibility Service",
+                        title = stringResource(R.string.permissions_advanced_settings_page_accessibility_service),
                         isEnabled = isAccessibilityEnabled,
                         onClick = onAccessibilityClick
                     )
                     SettingsRow(
                         icon = Icons.Outlined.Layers,
-                        title = "Overlay Permission",
+                        title = stringResource(R.string.permissions_advanced_settings_page_overlay_permission),
                         isEnabled = isOverlayEnabled,
                         onClick = onOverlayClick
                     )
                 }
             }
             Spacer(modifier = Modifier.height(20.dp))
-            SettingsSection(title = "Debug") {
+            SettingsSection(title = stringResource(R.string.permissions_advanced_settings_page_section_debug)) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = MaterialTheme.colorScheme.surfaceVariant,
@@ -105,11 +108,11 @@ internal fun PermissionsAdvancedSettingsPage(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Debug Mode",
+                                text = stringResource(R.string.permissions_advanced_settings_page_debug_mode),
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Text(
-                                text = "Enable verbose logging",
+                                text = stringResource(R.string.permissions_advanced_settings_page_debug_mode_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -132,7 +135,7 @@ internal fun PermissionsAdvancedSettingsPage(
             )
             Spacer(modifier = Modifier.height(24.dp))
             Text(
-                text = "Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                text = stringResource(R.string.permissions_advanced_settings_page_version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -151,7 +154,7 @@ private sealed interface ClearDataState {
     data object Idle : ClearDataState
     data object Clearing : ClearDataState
     data object Cleared : ClearDataState
-    data class Failed(val message: String) : ClearDataState
+    data class Failed(@StringRes val messageRes: Int, @StringRes val labelRes: Int) : ClearDataState
 }
 
 @Composable
@@ -171,7 +174,7 @@ private fun DataStorageSection(
         traceClearState = ClearDataState.Clearing
         scope.launch {
             traceClearState = withContext(Dispatchers.IO) {
-                clearDirectory(context.getExternalFilesDir(TRACE_DIR), label = "traces")
+                clearDirectory(context.getExternalFilesDir(TRACE_DIR), labelRes = R.string.permissions_advanced_settings_page_label_traces)
             }
         }
     }
@@ -181,7 +184,7 @@ private fun DataStorageSection(
         sessionClearState = ClearDataState.Clearing
         scope.launch {
             sessionClearState = withContext(Dispatchers.IO) {
-                clearDirectory(File(context.filesDir, SESSIONS_DIR), label = "session history")
+                clearDirectory(File(context.filesDir, SESSIONS_DIR), labelRes = R.string.permissions_advanced_settings_page_label_session_history)
             }
         }
     }
@@ -189,8 +192,8 @@ private fun DataStorageSection(
     if (showClearTracesConfirm) {
         AlertDialog(
             onDismissRequest = { showClearTracesConfirm = false },
-            title = { Text("Clear Traces") },
-            text = { Text("All recorded execution traces will be permanently deleted. This cannot be undone.") },
+            title = { Text(stringResource(R.string.permissions_advanced_settings_page_clear_traces)) },
+            text = { Text(stringResource(R.string.permissions_advanced_settings_page_clear_traces_message)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -200,10 +203,10 @@ private fun DataStorageSection(
                     colors = ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     )
-                ) { Text("Clear") }
+                ) { Text(stringResource(R.string.permissions_advanced_settings_page_clear)) }
             },
             dismissButton = {
-                TextButton(onClick = { showClearTracesConfirm = false }) { Text("Cancel") }
+                TextButton(onClick = { showClearTracesConfirm = false }) { Text(stringResource(R.string.permissions_advanced_settings_page_cancel)) }
             }
         )
     }
@@ -211,8 +214,8 @@ private fun DataStorageSection(
     if (showClearSessionsConfirm) {
         AlertDialog(
             onDismissRequest = { showClearSessionsConfirm = false },
-            title = { Text("Clear Session History") },
-            text = { Text("All saved sessions and chat history will be permanently deleted. This cannot be undone.") },
+            title = { Text(stringResource(R.string.permissions_advanced_settings_page_clear_sessions)) },
+            text = { Text(stringResource(R.string.permissions_advanced_settings_page_clear_sessions_message)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -222,15 +225,15 @@ private fun DataStorageSection(
                     colors = ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     )
-                ) { Text("Clear") }
+                ) { Text(stringResource(R.string.permissions_advanced_settings_page_clear)) }
             },
             dismissButton = {
-                TextButton(onClick = { showClearSessionsConfirm = false }) { Text("Cancel") }
+                TextButton(onClick = { showClearSessionsConfirm = false }) { Text(stringResource(R.string.permissions_advanced_settings_page_cancel)) }
             }
         )
     }
 
-    SettingsSection(title = "Data & Storage") {
+    SettingsSection(title = stringResource(R.string.permissions_advanced_settings_page_section_data_storage)) {
         Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.closePaw.spacing.md)) {
             // Trace toggle
             Surface(
@@ -249,11 +252,11 @@ private fun DataStorageSection(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Session Traces",
+                                text = stringResource(R.string.permissions_advanced_settings_page_session_traces),
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Text(
-                                text = "Save step-by-step session logs",
+                                text = stringResource(R.string.permissions_advanced_settings_page_session_traces_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -275,7 +278,7 @@ private fun DataStorageSection(
                             shape = MaterialTheme.shapes.small
                         ) {
                             Text(
-                                text = "Traces may include screenshots and inputs. Turn off when done.",
+                                text = stringResource(R.string.permissions_advanced_settings_page_traces_warning),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onErrorContainer,
                                 modifier = Modifier.padding(horizontal = MaterialTheme.closePaw.spacing.md, vertical = MaterialTheme.closePaw.spacing.sm)
@@ -287,7 +290,7 @@ private fun DataStorageSection(
 
             // Clear traces button
             ClearDataButton(
-                label = clearDataButtonLabel(traceClearState, idle = "Clear Traces", clearing = "Clearing Traces", cleared = "Traces Cleared"),
+                label = clearDataButtonLabel(traceClearState, idle = R.string.permissions_advanced_settings_page_clear_traces, clearing = R.string.permissions_advanced_settings_page_clearing_traces, cleared = R.string.permissions_advanced_settings_page_traces_cleared),
                 enabled = traceClearState !is ClearDataState.Clearing && traceClearState !is ClearDataState.Cleared,
                 onClick = { showClearTracesConfirm = true }
             )
@@ -295,7 +298,7 @@ private fun DataStorageSection(
 
             // Clear session history button
             ClearDataButton(
-                label = clearDataButtonLabel(sessionClearState, idle = "Clear Session History", clearing = "Clearing Sessions", cleared = "Sessions Cleared"),
+                label = clearDataButtonLabel(sessionClearState, idle = R.string.permissions_advanced_settings_page_clear_sessions, clearing = R.string.permissions_advanced_settings_page_clearing_sessions, cleared = R.string.permissions_advanced_settings_page_sessions_cleared),
                 enabled = sessionClearState !is ClearDataState.Clearing && sessionClearState !is ClearDataState.Cleared,
                 onClick = { showClearSessionsConfirm = true }
             )
@@ -304,42 +307,43 @@ private fun DataStorageSection(
     }
 }
 
-private fun clearDirectory(directory: File?, label: String): ClearDataState {
+private fun clearDirectory(directory: File?, @StringRes labelRes: Int): ClearDataState {
     if (directory == null) {
-        return ClearDataState.Failed("Could not access $label storage. Retry from Settings.")
+        return ClearDataState.Failed(R.string.permissions_advanced_settings_page_error_access, labelRes)
     }
     return try {
         if (directory.deleteRecursively()) {
             ClearDataState.Cleared
         } else {
-            ClearDataState.Failed("Could not clear $label. Retry from Settings.")
+            ClearDataState.Failed(R.string.permissions_advanced_settings_page_error_clear, labelRes)
         }
     } catch (e: SecurityException) {
-        ClearDataState.Failed("Could not clear $label because storage access was denied.")
+        ClearDataState.Failed(R.string.permissions_advanced_settings_page_error_denied, labelRes)
     }
 }
 
+@Composable
 private fun clearDataButtonLabel(
     state: ClearDataState,
-    idle: String,
-    clearing: String,
-    cleared: String,
+    @StringRes idle: Int,
+    @StringRes clearing: Int,
+    @StringRes cleared: Int,
 ): String = when (state) {
     ClearDataState.Idle,
-    is ClearDataState.Failed -> idle
-    ClearDataState.Clearing -> "$clearing..."
-    ClearDataState.Cleared -> cleared
+    is ClearDataState.Failed -> stringResource(idle)
+    ClearDataState.Clearing -> stringResource(clearing)
+    ClearDataState.Cleared -> stringResource(cleared)
 }
 
 @Composable
 private fun ClearFailureAlert(state: ClearDataState, onRetry: () -> Unit) {
     val failed = state as? ClearDataState.Failed ?: return
     SettingsAlertCard(
-        message = failed.message,
+        message = stringResource(failed.messageRes, stringResource(failed.labelRes)),
         tone = AlertTone.Error,
         action = {
             TextButton(onClick = onRetry) {
-                Text("Retry")
+                Text(stringResource(R.string.permissions_advanced_settings_page_retry))
             }
         },
     )

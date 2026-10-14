@@ -159,7 +159,7 @@ class MemoryFileEditorTest {
         compose.waitUntil(5_000) { gate.memoryEditLocked.value }
 
         compose.onNodeWithTag(MEMORY_EDITOR_BANNER_TAG).assertIsDisplayed()
-        compose.onNodeWithText(MEMORY_EDIT_LOCKED_BANNER).assertIsDisplayed()
+        compose.onNodeWithText("Session is open. Stop the session to edit memory.").assertIsDisplayed()
         compose.onNodeWithTag(MEMORY_EDITOR_SAVE_TAG).assertIsNotEnabled()
         compose.onNodeWithTag(MEMORY_EDITOR_DISCARD_TAG).assertIsNotEnabled()
 
@@ -436,7 +436,7 @@ class MemoryFileEditorTest {
         compose.onNodeWithTag(MEMORY_EDITOR_SAVE_TAG).assertIsNotEnabled()
         compose.onNodeWithTag(MEMORY_EDITOR_DISCARD_TAG).assertIsNotEnabled()
         compose.onNodeWithTag(MEMORY_EDITOR_BANNER_TAG).assertIsDisplayed()
-        compose.onNodeWithText(MEMORY_EDIT_RELOADING_BANNER).assertIsDisplayed()
+        compose.onNodeWithText("Refreshing memory from disk…").assertIsDisplayed()
 
         // (2) Clicking Save during the reload window is a no-op: the button
         //     is disabled, no IO is dispatched, and the file is unchanged.

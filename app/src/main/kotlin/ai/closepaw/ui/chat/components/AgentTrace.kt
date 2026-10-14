@@ -1,5 +1,7 @@
 package ai.closepaw.ui.chat.components
 
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -179,11 +181,11 @@ internal fun ActionRow(
         ActionState.Skipped -> Lucide.Ban
     }
     val statusDescription = when (data.state) {
-        ActionState.Proposed -> "Proposed"
-        ActionState.Executing -> "Executing"
-        ActionState.Success -> "Success"
-        ActionState.Failed -> "Failed"
-        ActionState.Skipped -> "Skipped"
+        ActionState.Proposed -> stringResource(R.string.agent_trace_state_proposed)
+        ActionState.Executing -> stringResource(R.string.agent_trace_state_executing)
+        ActionState.Success -> stringResource(R.string.agent_trace_state_success)
+        ActionState.Failed -> stringResource(R.string.agent_trace_state_failed)
+        ActionState.Skipped -> stringResource(R.string.agent_trace_state_skipped)
     }
     val statusColor = when (data.state) {
         ActionState.Success -> MaterialTheme.colorScheme.secondary

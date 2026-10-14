@@ -21,7 +21,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import ai.closepaw.R
 import ai.closepaw.protocol.compactThought
 import ai.closepaw.ui.capsule.surface.StatusPawGlyph
 import ai.closepaw.ui.theme.ClosePawMotion
@@ -39,17 +41,19 @@ fun StatusIslandCompose(
     val shape = MaterialTheme.shapes.large
     val spacing = MaterialTheme.closePaw.spacing
     val reducedMotion = ClosePawMotion.reducedMotion()
+    val openAppLabel = stringResource(R.string.status_island_compose_open_current_app)
+    val statusDescription = stringResource(R.string.status_island_compose_status, text)
     Surface(
         modifier = modifier
             .minimumInteractiveComponentSize()
             .clip(shape)
             .clickable(
                 role = Role.Button,
-                onClickLabel = "Open current app",
+                onClickLabel = openAppLabel,
                 onClick = onClick,
             )
             .semantics {
-                contentDescription = "Status: $text"
+                contentDescription = statusDescription
             },
         shape = shape,
         color = MaterialTheme.colorScheme.surface,

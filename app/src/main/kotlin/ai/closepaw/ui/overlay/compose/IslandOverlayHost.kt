@@ -8,15 +8,20 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.WindowManager
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.LifecycleOwner
 import androidx.savedstate.SavedStateRegistryOwner
+import ai.closepaw.R
 import ai.closepaw.protocol.TurnPhase
 import ai.closepaw.ui.capsule.surface.toStatusColor
 import ai.closepaw.ui.overlay.CapsuleStateHolder
 import ai.closepaw.ui.overlay.model.CapsuleMode
 import ai.closepaw.ui.overlay.model.deriveGlowState
+import ai.closepaw.ui.overlay.model.resolveMessage
+import ai.closepaw.ui.overlay.model.resolveThought
 import kotlinx.coroutines.CoroutineScope
 
 class IslandOverlayHost(
@@ -46,7 +51,7 @@ class IslandOverlayHost(
             val holder = stateHolder
             if (holder == null) {
                 StatusIslandCompose(
-                    text = "Working...",
+                    text = stringResource(R.string.island_overlay_host_working),
                     dotColor = MaterialTheme.colorScheme.primary,
                     pulsing = true,
                     onClick = onExpandCapsule,
@@ -57,7 +62,7 @@ class IslandOverlayHost(
                 val text = modeText(mode)
                 val glowState = deriveGlowState(mode, turnPhase)
                 StatusIslandCompose(
-                    text = if (text.isBlank()) "Working..." else text,
+                    text = if (text.isBlank()) stringResource(R.string.island_overlay_host_working) else text,
                     dotColor = glowState.toStatusColor(),
                     pulsing = mode is CapsuleMode.Running,
                     onClick = onExpandCapsule,
@@ -82,15 +87,19 @@ class IslandOverlayHost(
         composeHost.dispose()
     }
 
+    @Composable
     private fun modeText(mode: CapsuleMode): String = when (mode) {
-        is CapsuleMode.Running -> mode.thought
-        is CapsuleMode.TakeoverPending -> "Handing over..."
-        is CapsuleMode.Takeover -> "Paused"
-        is CapsuleMode.WaitingForInput -> "Awaiting response"
-        is CapsuleMode.WaitingForAction -> "Action needed"
-        is CapsuleMode.WaitingForApproval -> "Allow ClosePaw to operate ${mode.appLabel}?"
-        is CapsuleMode.Done -> "Done: ${mode.message.take(18)}"
-        is CapsuleMode.Error -> "Error: ${mode.message.take(18)}"
+        is CapsuleMode.Running -> mode.resolveThought()
+        is CapsuleMode.TakeoverPending -> stringResource(R.string.island_overlay_host_handing_over)
+        is CapsuleMode.Takeover -> stringResource(R.string.island_overlay_host_paused)
+        is CapsuleMode.WaitingForInput -> stringResource(R.string.island_overlay_host_awaiting_response)
+        is CapsuleMode.WaitingForAction -> stringResource(R.string.island_overlay_host_action_needed)
+        is CapsuleMode.WaitingForApproval ->
+            stringResource(R.string.island_overlay_host_approval_prompt, mode.appLabel)
+        is CapsuleMode.Done ->
+            stringResource(R.string.island_overlay_host_done, mode.resolveMessage().take(18))
+        is CapsuleMode.Error ->
+            stringResource(R.string.island_overlay_host_error, mode.resolveMessage().take(18))
         is CapsuleMode.Hidden -> ""
     }
 

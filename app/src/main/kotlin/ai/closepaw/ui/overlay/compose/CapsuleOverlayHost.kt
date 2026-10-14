@@ -25,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.LifecycleOwner
 import androidx.savedstate.SavedStateRegistryOwner
+import ai.closepaw.R
 import ai.closepaw.app.AgentService
 import ai.closepaw.protocol.ApprovalDecision
 import ai.closepaw.protocol.ApprovalScope
@@ -278,11 +279,13 @@ class CapsuleOverlayHost(
     }
 
     fun flashSupplementConfirmation(isAgentMidTurn: Boolean) {
-        val message = if (isAgentMidTurn) {
-            "✓ Received, will apply next step"
-        } else {
-            "✓ Received"
-        }
+        val message = service.getString(
+            if (isAgentMidTurn) {
+                R.string.capsule_overlay_host_supplement_received_next_step
+            } else {
+                R.string.capsule_overlay_host_supplement_received
+            }
+        )
         val durationMs = if (isAgentMidTurn) 2000L else 1500L
         transientThoughtJob?.cancel()
         transientThoughtJob = scope.launch {

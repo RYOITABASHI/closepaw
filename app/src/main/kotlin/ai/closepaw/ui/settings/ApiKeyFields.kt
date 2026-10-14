@@ -19,6 +19,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -55,7 +57,11 @@ internal fun ApiKeyField(
             IconButton(onClick = { visible = !visible }) {
                 Icon(
                     imageVector = if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                    contentDescription = if (visible) "Hide" else "Show",
+                    contentDescription = if (visible) {
+                        stringResource(R.string.api_key_fields_hide)
+                    } else {
+                        stringResource(R.string.api_key_fields_show)
+                    },
                     modifier = Modifier.size(20.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )

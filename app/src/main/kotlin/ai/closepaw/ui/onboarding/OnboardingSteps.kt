@@ -46,14 +46,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.annotation.StringRes
+import ai.closepaw.R
 import ai.closepaw.onboarding.ApiKeyAuthMethod
 import ai.closepaw.onboarding.ApiKeyStepState
 import ai.closepaw.onboarding.DemoStepState
 import ai.closepaw.onboarding.OnboardingProvider
+import ai.closepaw.onboarding.OnboardingText
 import ai.closepaw.onboarding.PermissionStepState
 import ai.closepaw.onboarding.StepOutcome
 import ai.closepaw.onboarding.StepOutcomes
@@ -85,7 +89,7 @@ fun PermissionStepContent(
 
         // Description
         Text(
-            text = copy.description,
+            text = stringResource(copy.description),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -93,11 +97,15 @@ fun PermissionStepContent(
         // Optional expandable disclosure (LLM data flow + privacy policy).
         if (copy.extendedDescription != null) {
             TextButton(onClick = { detailsExpanded = !detailsExpanded }) {
-                Text(if (detailsExpanded) "Hide details" else "Data & privacy details")
+                Text(
+                    stringResource(
+                        if (detailsExpanded) R.string.onboarding_steps_hide_details else R.string.onboarding_steps_privacy_details
+                    )
+                )
             }
             if (detailsExpanded) {
                 Text(
-                    text = copy.extendedDescription,
+                    text = stringResource(copy.extendedDescription),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -107,14 +115,14 @@ fun PermissionStepContent(
         Spacer(modifier = Modifier.height(24.dp))
 
         // Status card
-        StatusCard(state = state, consequence = copy.consequence)
+        StatusCard(state = state, consequence = stringResource(copy.consequence))
 
         Spacer(modifier = Modifier.weight(1f))
 
         // Primary CTA
         when (state) {
             PermissionStepState.Checking -> {
-                LoadingButton(text = "Checking...")
+                LoadingButton(text = stringResource(R.string.onboarding_steps_checking))
             }
             PermissionStepState.Satisfied -> {
                 Button(
@@ -127,7 +135,7 @@ fun PermissionStepContent(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Continue")
+                    Text(stringResource(R.string.onboarding_steps_continue))
                 }
             }
             else -> {
@@ -136,7 +144,7 @@ fun PermissionStepContent(
                     modifier = Modifier.fillMaxWidth(),
                     enabled = state != PermissionStepState.OpeningSettings
                 ) {
-                    Text(copy.ctaLabel)
+                    Text(stringResource(copy.ctaLabel))
                 }
             }
         }
@@ -149,7 +157,7 @@ fun PermissionStepContent(
                     .fillMaxWidth()
                     .padding(top = 8.dp)
             ) {
-                Text("Continue without this")
+                Text(stringResource(R.string.onboarding_steps_continue_without))
             }
         }
 
@@ -195,7 +203,7 @@ fun ApiKeyStepContent(
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "Choose your provider to connect.",
+            text = stringResource(R.string.onboarding_steps_choose_provider),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -261,7 +269,7 @@ private fun ColumnScope.OAuthContent(
     when (state) {
         is ApiKeyStepState.OAuthReady -> {
             Text(
-                text = "Sign in with your OpenAI account. Uses your existing ChatGPT subscription — no API key needed.",
+                text = stringResource(R.string.onboarding_steps_oauth_intro),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -272,14 +280,14 @@ private fun ColumnScope.OAuthContent(
                 onClick = onStartOAuth,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Sign in with OpenAI")
+                Text(stringResource(R.string.onboarding_steps_sign_in_openai))
             }
 
             TextButton(
                 onClick = onSwitchToManual,
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
             ) {
-                Text("or enter API key manually")
+                Text(stringResource(R.string.onboarding_steps_enter_key_manually))
             }
         }
 
@@ -296,7 +304,7 @@ private fun ColumnScope.OAuthContent(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Complete sign-in in your browser.\nYou'll return here automatically.",
+                text = stringResource(R.string.onboarding_steps_oauth_in_progress),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth()
@@ -308,7 +316,7 @@ private fun ColumnScope.OAuthContent(
                 onClick = onCancelOAuth,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Cancel")
+                Text(stringResource(R.string.onboarding_steps_cancel))
             }
         }
 
@@ -325,7 +333,7 @@ private fun ColumnScope.OAuthContent(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Browser sign-in complete.\nFinishing up with OpenAI — this can take ~20 seconds.",
+                text = stringResource(R.string.onboarding_steps_oauth_finishing),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth()
@@ -338,8 +346,11 @@ private fun ColumnScope.OAuthContent(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = if (state.email.isNotBlank()) "Signed in as ${state.email}"
-                    else "Signed in successfully",
+                text = if (state.email.isNotBlank()) {
+                    stringResource(R.string.onboarding_steps_signed_in_as, state.email)
+                } else {
+                    stringResource(R.string.onboarding_steps_signed_in)
+                },
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.secondary
             )
@@ -356,7 +367,7 @@ private fun ColumnScope.OAuthContent(
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Continue")
+                Text(stringResource(R.string.onboarding_steps_continue))
             }
         }
 
@@ -375,14 +386,14 @@ private fun ColumnScope.OAuthContent(
                 onClick = onRetry,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Try Again")
+                Text(stringResource(R.string.onboarding_steps_try_again))
             }
 
             TextButton(
                 onClick = onSwitchToManual,
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
             ) {
-                Text("or enter API key manually")
+                Text(stringResource(R.string.onboarding_steps_enter_key_manually))
             }
         }
 
@@ -411,7 +422,7 @@ private fun ColumnScope.ManualApiKeyContent(
     OutlinedTextField(
         value = currentKey,
         onValueChange = onKeyChanged,
-        label = { Text("API Key") },
+        label = { Text(stringResource(R.string.onboarding_steps_api_key_label)) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         enabled = state !is ApiKeyStepState.Validating && state !is ApiKeyStepState.Valid,
@@ -423,7 +434,9 @@ private fun ColumnScope.ManualApiKeyContent(
                 Icon(
                     imageVector = if (passwordVisible) Icons.Outlined.VisibilityOff
                         else Icons.Outlined.Visibility,
-                    contentDescription = if (passwordVisible) "Hide" else "Show"
+                    contentDescription = stringResource(
+                        if (passwordVisible) R.string.onboarding_steps_hide else R.string.onboarding_steps_show
+                    )
                 )
             }
         },
@@ -433,7 +446,7 @@ private fun ColumnScope.ManualApiKeyContent(
     // Security note
     Spacer(modifier = Modifier.height(8.dp))
     Text(
-        text = "Your key is encrypted on-device. Never sent anywhere except the LLM provider.",
+        text = stringResource(R.string.onboarding_steps_key_security_note),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
@@ -442,11 +455,11 @@ private fun ColumnScope.ManualApiKeyContent(
     when (state) {
         is ApiKeyStepState.Invalid -> {
             Spacer(modifier = Modifier.height(8.dp))
-            Text(text = state.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Text(text = state.message.asString(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
         is ApiKeyStepState.TransientError -> {
             Spacer(modifier = Modifier.height(8.dp))
-            Text(text = state.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Text(text = state.message.asString(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
         else -> {}
     }
@@ -455,17 +468,17 @@ private fun ColumnScope.ManualApiKeyContent(
 
     // CTA
     when (state) {
-        is ApiKeyStepState.Validating -> LoadingButton(text = "Validating...")
-        is ApiKeyStepState.Valid -> SuccessButton(text = "Key verified")
+        is ApiKeyStepState.Validating -> LoadingButton(text = stringResource(R.string.onboarding_steps_validating))
+        is ApiKeyStepState.Valid -> SuccessButton(text = stringResource(R.string.onboarding_steps_key_verified))
         is ApiKeyStepState.TransientError -> {
-            Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text("Retry") }
+            Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.onboarding_steps_retry)) }
         }
         else -> {
             Button(
                 onClick = onValidate,
                 modifier = Modifier.fillMaxWidth(),
                 enabled = currentKey.isNotBlank()
-            ) { Text("Validate & Continue") }
+            ) { Text(stringResource(R.string.onboarding_steps_validate_continue)) }
         }
     }
 
@@ -474,7 +487,7 @@ private fun ColumnScope.ManualApiKeyContent(
             onClick = onSwitchToOAuth,
             modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
         ) {
-            Text("or sign in with OpenAI")
+            Text(stringResource(R.string.onboarding_steps_sign_in_openai_alt))
         }
     }
 
@@ -503,14 +516,14 @@ fun DemoStepContent(
         when (state) {
             DemoStepState.Ready, DemoStepState.Preflight -> {
                 Text(
-                    text = "We'll open the Settings app to prove everything works. This does not change any device setting.",
+                    text = stringResource(R.string.onboarding_steps_demo_intro),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             DemoStepState.Running -> {
                 Text(
-                    text = "Opening Settings...",
+                    text = stringResource(R.string.onboarding_steps_demo_opening),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -538,7 +551,7 @@ fun DemoStepContent(
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = "Credential problem",
+                            text = stringResource(R.string.onboarding_steps_credential_problem),
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.onErrorContainer
                         )
@@ -559,7 +572,7 @@ fun DemoStepContent(
         when (state) {
             DemoStepState.Ready -> {
                 Button(onClick = onRunDemo, modifier = Modifier.fillMaxWidth()) {
-                    Text("Run Demo")
+                    Text(stringResource(R.string.onboarding_steps_run_demo))
                 }
                 TextButton(
                     onClick = onSkip,
@@ -567,15 +580,15 @@ fun DemoStepContent(
                         .fillMaxWidth()
                         .padding(top = 8.dp)
                 ) {
-                    Text("Skip for now")
+                    Text(stringResource(R.string.onboarding_steps_skip_for_now))
                 }
             }
             DemoStepState.Preflight, DemoStepState.Running -> {
-                LoadingButton(text = "Running...")
+                LoadingButton(text = stringResource(R.string.onboarding_steps_running))
             }
             is DemoStepState.Failure -> {
                 Button(onClick = onRunDemo, modifier = Modifier.fillMaxWidth()) {
-                    Text("Try Again")
+                    Text(stringResource(R.string.onboarding_steps_try_again))
                 }
                 TextButton(
                     onClick = onSkip,
@@ -583,12 +596,16 @@ fun DemoStepContent(
                         .fillMaxWidth()
                         .padding(top = 8.dp)
                 ) {
-                    Text("Skip for now")
+                    Text(stringResource(R.string.onboarding_steps_skip_for_now))
                 }
             }
             is DemoStepState.CredentialError -> {
                 Button(onClick = onGoToAuthStep, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (state.isOAuth) "Sign in again" else "Re-enter API key")
+                    Text(
+                        stringResource(
+                            if (state.isOAuth) R.string.onboarding_steps_sign_in_again else R.string.onboarding_steps_reenter_key
+                        )
+                    )
                 }
                 TextButton(
                     onClick = onSkip,
@@ -596,11 +613,11 @@ fun DemoStepContent(
                         .fillMaxWidth()
                         .padding(top = 8.dp)
                 ) {
-                    Text("Skip for now")
+                    Text(stringResource(R.string.onboarding_steps_skip_for_now))
                 }
             }
             is DemoStepState.Success, DemoStepState.Skipped -> {
-                SuccessButton(text = "Demo complete")
+                SuccessButton(text = stringResource(R.string.onboarding_steps_demo_complete))
             }
         }
 
@@ -634,13 +651,15 @@ fun CompleteStepContent(
 
         // Checklist — permission rows reflect live state (auto-skipped steps
         // never write StepOutcome.Done, so reading `outcomes` here would lie).
-        LiveStatusRow("Accessibility service", accessibilityGranted)
-        LiveStatusRow("Display overlay", overlayGranted)
-        LiveStatusRow("Battery optimization", batteryGranted)
-        val apiKeyLabel = if (authMethod == ApiKeyAuthMethod.OAUTH) "Signed in with OpenAI"
-            else "API key verified"
+        LiveStatusRow(stringResource(R.string.onboarding_steps_row_accessibility), accessibilityGranted)
+        LiveStatusRow(stringResource(R.string.onboarding_steps_row_overlay), overlayGranted)
+        LiveStatusRow(stringResource(R.string.onboarding_steps_row_battery), batteryGranted)
+        val apiKeyLabel = stringResource(
+            if (authMethod == ApiKeyAuthMethod.OAUTH) R.string.onboarding_steps_row_signed_in_openai
+            else R.string.onboarding_steps_row_api_key_verified
+        )
         OutcomeRow(apiKeyLabel, outcomes.apiKey)
-        OutcomeRow("Demo task", outcomes.demo)
+        OutcomeRow(stringResource(R.string.onboarding_steps_row_demo), outcomes.demo)
 
         Spacer(modifier = Modifier.weight(1f))
 
@@ -648,7 +667,7 @@ fun CompleteStepContent(
             onClick = onFinish,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Start Using ClosePaw")
+            Text(stringResource(R.string.onboarding_steps_start_using))
         }
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -660,12 +679,12 @@ fun CompleteStepContent(
 @Composable
 private fun StatusCard(state: PermissionStepState, consequence: String) {
     val (label, color) = when (state) {
-        PermissionStepState.Checking -> "Checking..." to MaterialTheme.colorScheme.onSurfaceVariant
-        PermissionStepState.Ready -> "Not enabled" to MaterialTheme.colorScheme.error
-        PermissionStepState.OpeningSettings -> "Waiting..." to MaterialTheme.colorScheme.onSurfaceVariant
-        PermissionStepState.Satisfied -> "Enabled" to MaterialTheme.colorScheme.secondary
-        PermissionStepState.Unsatisfied -> "Not enabled" to MaterialTheme.colorScheme.error
-        PermissionStepState.Skipped -> "Skipped" to MaterialTheme.colorScheme.onSurfaceVariant
+        PermissionStepState.Checking -> stringResource(R.string.onboarding_steps_checking) to MaterialTheme.colorScheme.onSurfaceVariant
+        PermissionStepState.Ready -> stringResource(R.string.onboarding_steps_status_not_enabled) to MaterialTheme.colorScheme.error
+        PermissionStepState.OpeningSettings -> stringResource(R.string.onboarding_steps_status_waiting) to MaterialTheme.colorScheme.onSurfaceVariant
+        PermissionStepState.Satisfied -> stringResource(R.string.onboarding_steps_status_enabled) to MaterialTheme.colorScheme.secondary
+        PermissionStepState.Unsatisfied -> stringResource(R.string.onboarding_steps_status_not_enabled) to MaterialTheme.colorScheme.error
+        PermissionStepState.Skipped -> stringResource(R.string.onboarding_steps_status_skipped) to MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Card(
@@ -674,7 +693,7 @@ private fun StatusCard(state: PermissionStepState, consequence: String) {
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = "Status: $label",
+                text = stringResource(R.string.onboarding_steps_status_label, label),
                 style = MaterialTheme.typography.bodyMedium,
                 color = color
             )
@@ -764,21 +783,21 @@ private fun OutcomeRow(label: String, outcome: StepOutcome) {
             .padding(vertical = 6.dp, horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val (icon, tint, suffix) = when (outcome) {
+        val (icon, tint, rowText) = when (outcome) {
             StepOutcome.Done -> Triple(
                 Icons.Filled.Check,
                 MaterialTheme.colorScheme.secondary,
-                ""
+                label
             )
             StepOutcome.Skipped -> Triple(
                 Icons.Filled.Close,
                 MaterialTheme.colorScheme.onSurfaceVariant,
-                " (skipped)"
+                stringResource(R.string.onboarding_steps_outcome_skipped, label)
             )
             StepOutcome.Pending -> Triple(
                 Icons.Filled.Close,
                 MaterialTheme.colorScheme.error,
-                ""
+                label
             )
         }
 
@@ -790,7 +809,7 @@ private fun OutcomeRow(label: String, outcome: StepOutcome) {
         )
         Spacer(modifier = Modifier.width(12.dp))
         Text(
-            text = "$label$suffix",
+            text = rowText,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onBackground
         )
@@ -801,34 +820,39 @@ private fun OutcomeRow(label: String, outcome: StepOutcome) {
 
 private data class PermissionCopy(
     val icon: ImageVector,
-    val description: String,
-    val consequence: String,
-    val ctaLabel: String,
-    val extendedDescription: String? = null
+    @StringRes val description: Int,
+    @StringRes val consequence: Int,
+    @StringRes val ctaLabel: Int,
+    @StringRes val extendedDescription: Int? = null
 )
 
 private fun permissionStepCopy(step: WizardStep): PermissionCopy = when (step) {
     WizardStep.Accessibility -> PermissionCopy(
         icon = Icons.Outlined.Security,
-        description = "Android only allows trusted automation through Accessibility. " +
-            "ClosePaw uses it to read the screen and perform taps so it can complete the tasks you ask for.",
-        consequence = "Without Accessibility, ClosePaw cannot automate tasks.",
-        ctaLabel = "Open Accessibility Settings",
-        extendedDescription = "Active only when you start a task — ClosePaw does not run in the background or " +
-            "monitor other apps. Screen content read during a task is sent to the LLM provider you chose " +
-            "(e.g. OpenAI, Anthropic) so the agent can pick the next step. See our Privacy Policy: https://imoonkey.github.io/closepaw/privacy/"
+        description = R.string.onboarding_steps_accessibility_description,
+        consequence = R.string.onboarding_steps_accessibility_consequence,
+        ctaLabel = R.string.onboarding_steps_accessibility_cta,
+        extendedDescription = R.string.onboarding_steps_accessibility_extended
     )
     WizardStep.Overlay -> PermissionCopy(
         icon = Icons.Outlined.Layers,
-        description = "The floating capsule shows progress and lets you stop, take over, or return to ClosePaw.",
-        consequence = "Without Overlay, you won't see controls while the agent works in other apps.",
-        ctaLabel = "Grant Overlay Permission"
+        description = R.string.onboarding_steps_overlay_description,
+        consequence = R.string.onboarding_steps_overlay_consequence,
+        ctaLabel = R.string.onboarding_steps_overlay_cta
     )
     WizardStep.Battery -> PermissionCopy(
         icon = Icons.Outlined.BatteryChargingFull,
-        description = "Some phones aggressively stop background work. Allowing unrestricted battery use makes long tasks reliable.\n\nThis is optional but recommended.",
-        consequence = "Long tasks may stop when the app is backgrounded.",
-        ctaLabel = "Allow Background Running"
+        description = R.string.onboarding_steps_battery_description,
+        consequence = R.string.onboarding_steps_battery_consequence,
+        ctaLabel = R.string.onboarding_steps_battery_cta
     )
     else -> error("Not a permission step: $step")
+}
+
+/** Resolves view-model-provided [OnboardingText] at the UI layer. */
+@Composable
+private fun OnboardingText.asString(): String = when (this) {
+    is OnboardingText.Res ->
+        if (args.isEmpty()) stringResource(id) else stringResource(id, *args.toTypedArray())
+    is OnboardingText.Raw -> text
 }

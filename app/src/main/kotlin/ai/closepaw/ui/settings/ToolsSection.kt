@@ -1,5 +1,6 @@
 package ai.closepaw.ui.settings
 
+import ai.closepaw.R
 import ai.closepaw.app.AppSettingsStore
 import ai.closepaw.browser.setup.ChromeCdpProbe
 import ai.closepaw.browser.setup.ChromeFlagDeepLink
@@ -37,6 +38,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -65,7 +67,7 @@ internal fun ToolsSection(
     onBrowserScriptEnabledChange: (Boolean) -> Unit,
     isSessionRunning: Boolean = false,
 ) {
-    SettingsSection(title = "Tools") {
+    SettingsSection(title = stringResource(R.string.tools_section_title)) {
         Column(verticalArrangement = Arrangement.spacedBy(MaterialTheme.closePaw.spacing.md)) {
             TermuxShellSettingsRow()
             BrowserScriptToolRow(
@@ -166,14 +168,14 @@ private fun TermuxShellSettingsRow() {
         }
 
     val rowClickLabel = when (displayedStatus) {
-        TermuxBridgeStatus.NotInstalled -> "Install Termux"
-        is TermuxBridgeStatus.NeedsSetup -> "Fix Termux setup"
-        TermuxBridgeStatus.Ready -> "Restart Termux bridge"
+        TermuxBridgeStatus.NotInstalled -> stringResource(R.string.tools_section_install_termux)
+        is TermuxBridgeStatus.NeedsSetup -> stringResource(R.string.tools_section_fix_termux_setup)
+        TermuxBridgeStatus.Ready -> stringResource(R.string.tools_section_restart_termux_bridge)
         else -> null
     }
 
     ToolSettingsCard(
-        title = "Termux Shell",
+        title = stringResource(R.string.tools_section_termux_shell),
         status = statusUi,
         switchChecked = termuxShellEnabled,
         onSwitchChange = { enabled ->
@@ -227,20 +229,20 @@ private fun android.content.Context.openTermuxInstallPage() {
     try {
         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(TERMUX_INSTALL_URL)))
     } catch (_: ActivityNotFoundException) {
-        Toast.makeText(this, "Unable to open Termux install page", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.tools_section_toast_install_page_failed), Toast.LENGTH_SHORT).show()
     }
 }
 
 private fun android.content.Context.launchTermux() {
     val intent = packageManager.getLaunchIntentForPackage(TERMUX_PACKAGE)
     if (intent == null) {
-        Toast.makeText(this, "Termux is not installed", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.tools_section_toast_termux_not_installed), Toast.LENGTH_SHORT).show()
         return
     }
     try {
         startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     } catch (_: ActivityNotFoundException) {
-        Toast.makeText(this, "Unable to launch Termux", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.tools_section_toast_launch_failed), Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -300,7 +302,7 @@ private fun BrowserScriptToolRow(
         RowAction.None, null -> null
     }
     val rowClickLabel = when (statusResult.rowAction) {
-        RowAction.ClearErrorAndRetry -> "Retry Shizuku setup"
+        RowAction.ClearErrorAndRetry -> stringResource(R.string.tools_section_retry_shizuku_setup)
         RowAction.None, null -> null
     }
 
@@ -312,7 +314,7 @@ private fun BrowserScriptToolRow(
                 probeState is BrowserScriptProbeState.Unknown)
 
     ToolSettingsCard(
-        title = "Browser Script",
+        title = stringResource(R.string.tools_section_browser_script),
         status = statusResult.status,
         switchChecked = enabled,
         switchEnabled = !gate.pending,
@@ -339,7 +341,7 @@ private fun BrowserScriptToolRow(
                             ),
                         ) {
                             Text(
-                                text = "Open chrome://flags →",
+                                text = stringResource(R.string.tools_section_open_chrome_flags),
                                 style = MaterialTheme.typography.labelLarge,
                             )
                         }
@@ -354,7 +356,7 @@ private fun BrowserScriptToolRow(
                             val ok = deepLink.copyFlagUrlToClipboard()
                             Toast.makeText(
                                 context,
-                                if (ok) "URL copied to clipboard" else "Copy failed — try again",
+                                context.getString(if (ok) R.string.tools_section_url_copied else R.string.tools_section_copy_failed),
                                 Toast.LENGTH_SHORT,
                             ).show()
                         },
@@ -364,7 +366,7 @@ private fun BrowserScriptToolRow(
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.large,
                     ) {
-                        Text(text = "Re-check", style = MaterialTheme.typography.labelLarge)
+                        Text(text = stringResource(R.string.tools_section_recheck), style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }
@@ -386,7 +388,7 @@ private fun FlagUrlInlineHelp(onCopy: () -> Unit) {
     ) {
         Column(modifier = Modifier.padding(horizontal = MaterialTheme.closePaw.spacing.md, vertical = 10.dp)) {
             Text(
-                text = "Chrome didn't open the flags page? Paste this URL manually:",
+                text = stringResource(R.string.tools_section_flags_manual_help),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -402,7 +404,7 @@ private fun FlagUrlInlineHelp(onCopy: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.large,
             ) {
-                Text(text = "Copy URL", style = MaterialTheme.typography.labelLarge)
+                Text(text = stringResource(R.string.tools_section_copy_url), style = MaterialTheme.typography.labelLarge)
             }
         }
     }

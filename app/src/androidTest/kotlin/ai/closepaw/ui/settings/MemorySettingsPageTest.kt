@@ -120,7 +120,7 @@ class MemorySettingsPageTest {
         compose.waitUntil(5_000) { gate.memoryEditLocked.value }
 
         compose.onNodeWithTag(MEMORY_SETTINGS_BANNER_TAG).assertIsDisplayed()
-        compose.onNodeWithText(MEMORY_EDIT_LOCKED_BANNER).assertIsDisplayed()
+        compose.onNodeWithText("Session is open. Stop the session to edit memory.").assertIsDisplayed()
     }
 
     @Test fun tapping_user_row_opens_unbounded_memory_file_editor() {

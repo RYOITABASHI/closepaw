@@ -40,7 +40,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import ai.closepaw.R
 import ai.closepaw.protocol.ApprovalDecision
 import ai.closepaw.protocol.compactThought
 import ai.closepaw.protocol.ApprovalScope
@@ -50,6 +52,7 @@ import ai.closepaw.ui.overlay.model.CapsuleContext
 import ai.closepaw.ui.overlay.model.CapsuleMode
 import ai.closepaw.ui.overlay.model.CapsuleRenderSpec
 import ai.closepaw.ui.overlay.model.NavSpec
+import ai.closepaw.ui.overlay.model.resolveText
 import ai.closepaw.ui.theme.ClosePawMotion
 import ai.closepaw.ui.theme.closePaw
 import ai.closepaw.ui.theme.foldedPaper
@@ -222,6 +225,8 @@ private fun StartupErrorBanner(
     onDismiss: () -> Unit,
     onClick: (() -> Unit)? = null,
 ) {
+    val openErrorLabel = stringResource(R.string.smart_capsule_surface_open_startup_error)
+    val errorDescription = stringResource(R.string.smart_capsule_surface_startup_error, message)
     val surfaceModifier = Modifier
         .fillMaxWidth()
         .padding(vertical = 4.dp)
@@ -231,11 +236,11 @@ private fun StartupErrorBanner(
                     .minimumInteractiveComponentSize()
                     .clickable(
                         role = Role.Button,
-                        onClickLabel = "Open startup error",
+                        onClickLabel = openErrorLabel,
                     ) {
                         onClick()
                     }
-                    .semantics { contentDescription = "Startup error: $message" }
+                    .semantics { contentDescription = errorDescription }
             } else {
                 it
             }
@@ -276,7 +281,7 @@ private fun StartupErrorBanner(
             IconButton(onClick = onDismiss) {
                 Icon(
                     imageVector = Icons.Rounded.Close,
-                    contentDescription = "Dismiss error",
+                    contentDescription = stringResource(R.string.smart_capsule_surface_dismiss_error),
                     tint = MaterialTheme.colorScheme.onErrorContainer,
                 )
             }
@@ -291,6 +296,9 @@ private fun CapsuleStatusLine(
     elapsedLabel: String?,
     onClick: (() -> Unit)?,
 ) {
+    val thoughtText = spec.thought.resolveText()
+    val openAppLabel = stringResource(R.string.smart_capsule_surface_open_current_app)
+    val statusDescription = stringResource(R.string.smart_capsule_surface_capsule_status, thoughtText)
     val rowModifier = if (onClick != null) {
         Modifier
             .fillMaxWidth()
@@ -298,11 +306,11 @@ private fun CapsuleStatusLine(
             .clip(MaterialTheme.shapes.medium)
             .clickable(
                 role = Role.Button,
-                onClickLabel = "Open current app",
+                onClickLabel = openAppLabel,
             ) {
                 onClick()
             }
-            .semantics { contentDescription = "Capsule status: ${spec.thought.text}" }
+            .semantics { contentDescription = statusDescription }
             .padding(vertical = 2.dp)
     } else {
         Modifier.fillMaxWidth()
@@ -344,7 +352,7 @@ private fun CapsuleStatusLine(
         )
         if (reducedMotion) {
             Text(
-                text = compactThought(spec.thought.text),
+                text = compactThought(thoughtText),
                 style = MaterialTheme.typography.titleMedium,
                 color = textColor,
                 maxLines = 1,
@@ -353,7 +361,7 @@ private fun CapsuleStatusLine(
             )
         } else {
             Text(
-                text = spec.thought.text,
+                text = thoughtText,
                 style = MaterialTheme.typography.titleMedium,
                 color = textColor,
                 maxLines = 1,

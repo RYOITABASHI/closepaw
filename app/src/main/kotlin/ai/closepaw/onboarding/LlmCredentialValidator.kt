@@ -8,8 +8,8 @@ package ai.closepaw.onboarding
 interface LlmCredentialValidator {
     sealed interface Result {
         data object Valid : Result
-        data class InvalidKey(val message: String) : Result
-        data class TransientError(val message: String) : Result
+        data class InvalidKey(val message: OnboardingText) : Result
+        data class TransientError(val message: OnboardingText) : Result
     }
 
     suspend fun validate(key: String): Result

@@ -27,7 +27,7 @@ import ai.closepaw.R
  */
 class ShellyRunNotifier(context: Context) {
     private val context = context.applicationContext
-    private val text = ShellyRunText(isJapanese(this.context))
+    private val text = ShellyRunText(this.context)
     private var lastToastKey: String? = null
 
     companion object {
@@ -42,9 +42,6 @@ class ShellyRunNotifier(context: Context) {
         private const val COLOR_ATTENTION = 0xFFF9A825.toInt()
         private const val COLOR_DONE = 0xFF1565C0.toInt()
         private const val COLOR_STOPPED = 0xFF757575.toInt()
-
-        fun isJapanese(context: Context): Boolean =
-            context.resources.configuration.locales.takeIf { !it.isEmpty }?.get(0)?.language == "ja"
     }
 
     private fun ensureChannels(nm: NotificationManager) {

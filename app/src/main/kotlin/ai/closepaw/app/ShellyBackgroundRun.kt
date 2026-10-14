@@ -1,5 +1,6 @@
 package ai.closepaw.app
 
+import ai.closepaw.R
 import ai.closepaw.protocol.AgentEvent
 import ai.closepaw.protocol.ActionExecuted
 import ai.closepaw.protocol.ApprovalRequired
@@ -237,124 +238,76 @@ class ShellyRunTracker(
     }
 }
 
-/** User-facing text for [ShellyRunState] (en / ja; the rest of ClosePaw is English-only). */
-class ShellyRunText(private val japanese: Boolean) {
+/**
+ * User-facing text for [ShellyRunState]. All strings live in `res/values{,-ja}/strings_shelly.xml`;
+ * [res] resolves a string resource with format args (production: `context::getString`), which
+ * keeps this class testable on the JVM.
+ */
+class ShellyRunText(private val res: (id: Int, args: Array<out Any>) -> String) {
+    constructor(context: android.content.Context) :
+        this({ id, args -> context.getString(id, *args) })
+
     data class Content(val title: String, val body: String)
 
-    private fun t(en: String, ja: String) = if (japanese) ja else en
+    private fun s(id: Int, vararg args: Any) = res(id, args)
 
-    private fun quote(label: String) = if (japanese) "「$label」" else "\"$label\""
+    private fun quote(label: String) = s(R.string.shelly_quoted_app, label)
 
     fun render(state: ShellyRunState, labelOf: (String) -> String): Content = when (state) {
         is ShellyRunState.Working ->
             if (state.onMainDisplay) {
-                Content(
-                    t(
-                        "ClosePaw is controlling the screen — please don't touch",
-                        "ClosePawが画面を操作中 — 画面に触れないでください",
-                    ),
-                    t(
-                        "The virtual display is unavailable, so ClosePaw is running on your main screen. Tap Stop to end it.",
-                        "仮想ディスプレイが使えないため、メイン画面で実行しています。終了するには「停止」を押してください。",
-                    ),
-                )
+                Content(s(R.string.shelly_main_display_title), s(R.string.shelly_main_display_body))
             } else {
                 val apps = state.appPackages.map(labelOf).map(::quote)
                 Content(
-                    t(
-                        "ClosePaw is working in the background — you can keep using your phone",
-                        "ClosePawがバックグラウンドで作業中 — スマホはそのまま使えます",
-                    ),
+                    s(R.string.shelly_background_title),
                     if (apps.isEmpty()) {
-                        t(
-                            "Don't open the app ClosePaw is operating until it finishes.",
-                            "完了するまで、ClosePawが操作中のアプリは開かないでください。",
-                        )
+                        s(R.string.shelly_background_body_generic)
                     } else {
-                        t(
-                            "Don't open ${apps.joinToString(", ")} until ClosePaw finishes.",
-                            "完了するまで${apps.joinToString("、")}は開かないでください。",
-                        )
+                        s(R.string.shelly_background_body_apps, apps.joinToString(s(R.string.shelly_list_separator)))
                     },
                 )
             }
         is ShellyRunState.WaitingForApproval -> {
-            val app = quote(labelOf(state.packageName))
+            val ask = s(R.string.shelly_approval_body, quote(labelOf(state.packageName)))
             Content(
-                t("Waiting for your approval", "承認待ちです"),
-                t("Allow ClosePaw to operate $app?", "ClosePawに$app の操作を許可しますか？") +
-                    (state.description.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: ""),
+                s(R.string.shelly_approval_title),
+                ask + (state.description.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: ""),
             )
         }
-        is ShellyRunState.Paused -> {
-            val app = state.packageName?.let { quote(labelOf(it)) }
-            Content(
-                t("ClosePaw paused", "ClosePawを一時停止しました"),
-                if (app != null) {
-                    t(
-                        "You opened $app, which ClosePaw was using. Tap Resume when you're done with it, or Stop.",
-                        "ClosePawが使用中の$app が開かれたため一時停止しました。使い終わったら「再開」、やめる場合は「停止」を押してください。",
-                    )
-                } else {
-                    t("Tap Resume to continue, or Stop.", "続けるには「再開」、やめる場合は「停止」を押してください。")
-                },
-            )
-        }
+        is ShellyRunState.Paused -> Content(
+            s(R.string.shelly_paused_title),
+            state.packageName?.let { s(R.string.shelly_paused_body_app, quote(labelOf(it))) }
+                ?: s(R.string.shelly_paused_body_generic),
+        )
         is ShellyRunState.Finished -> when (state.kind) {
-            ShellyRunState.Finished.Kind.DONE ->
-                Content(t("ClosePaw finished", "ClosePawの作業が完了しました"), state.message ?: "")
-            ShellyRunState.Finished.Kind.STOPPED ->
-                Content(t("ClosePaw stopped", "ClosePawを停止しました"), state.message ?: "")
-            ShellyRunState.Finished.Kind.FAILED ->
-                Content(t("ClosePaw couldn't finish", "ClosePawの作業が失敗しました"), state.message ?: "")
+            ShellyRunState.Finished.Kind.DONE -> Content(s(R.string.shelly_done_title), state.message ?: "")
+            ShellyRunState.Finished.Kind.STOPPED -> Content(s(R.string.shelly_stopped_title), state.message ?: "")
+            ShellyRunState.Finished.Kind.FAILED -> Content(s(R.string.shelly_failed_title), state.message ?: "")
         }
     }
 
     fun blocked(block: ShellyBackgroundRun.Block): Content = when (block) {
-        ShellyBackgroundRun.Block.ACCESSIBILITY_OFF -> Content(
-            t("ClosePaw can't run the Shelly task", "Shellyからの依頼を実行できません"),
-            t("Enable ClosePaw's accessibility service, then try again.", "ClosePawのユーザー補助サービスを有効にしてから再度お試しください。"),
-        )
-        ShellyBackgroundRun.Block.ONBOARDING_REQUIRED -> Content(
-            t("ClosePaw can't run the Shelly task", "Shellyからの依頼を実行できません"),
-            t("Finish ClosePaw setup first. Tap to open ClosePaw.", "先にClosePawの初期設定を完了してください。タップで開きます。"),
-        )
-        ShellyBackgroundRun.Block.OVERLAY_PERMISSION_MISSING -> Content(
-            t("ClosePaw can't run the Shelly task", "Shellyからの依頼を実行できません"),
-            t("ClosePaw needs the \"display over other apps\" permission. Tap to open ClosePaw.", "ClosePawに「他のアプリの上に表示」の権限が必要です。タップで開きます。"),
-        )
-        ShellyBackgroundRun.Block.CREDENTIALS_MISSING -> Content(
-            t("ClosePaw can't run the Shelly task", "Shellyからの依頼を実行できません"),
-            t("Sign in or add an API key for the selected model. Tap to open ClosePaw.", "選択中のモデルのサインインまたはAPIキー設定が必要です。タップで開きます。"),
-        )
-        ShellyBackgroundRun.Block.BUSY -> Content(
-            t("ClosePaw is busy", "ClosePawは別の作業中です"),
-            t("Another task is running. Stop it or wait, then ask Shelly again.", "別のタスクを実行中です。停止するか完了を待ってから、もう一度Shellyから依頼してください。"),
-        )
-        ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE -> Content(
-            t("Shizuku isn't running — task not started", "Shizukuが動いていないため開始しませんでした"),
-            t(
-                "Background mode needs Shizuku. Start Shizuku and ask again, or tap to run it in the foreground (ClosePaw will take over the screen).",
-                "バックグラウンド実行にはShizukuが必要です。Shizukuを起動して再度依頼するか、タップしてフォアグラウンドで実行してください（画面を操作します）。",
-            ),
-        )
+        ShellyBackgroundRun.Block.ACCESSIBILITY_OFF ->
+            Content(s(R.string.shelly_blocked_title), s(R.string.shelly_blocked_accessibility))
+        ShellyBackgroundRun.Block.ONBOARDING_REQUIRED ->
+            Content(s(R.string.shelly_blocked_title), s(R.string.shelly_blocked_onboarding))
+        ShellyBackgroundRun.Block.OVERLAY_PERMISSION_MISSING ->
+            Content(s(R.string.shelly_blocked_title), s(R.string.shelly_blocked_overlay))
+        ShellyBackgroundRun.Block.CREDENTIALS_MISSING ->
+            Content(s(R.string.shelly_blocked_title), s(R.string.shelly_blocked_credentials))
+        ShellyBackgroundRun.Block.BUSY ->
+            Content(s(R.string.shelly_busy_title), s(R.string.shelly_busy_body))
+        ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE ->
+            Content(s(R.string.shelly_no_vd_title), s(R.string.shelly_no_vd_body))
     }
 
-    val actionStop get() = t("Stop", "停止")
-    val actionResume get() = t("Resume", "再開")
-    val actionAllowAlways get() = t("Always allow", "常に許可")
-    val actionAllowSession get() = t("Allow this time", "今回のみ許可")
-    val actionReject get() = t("Reject", "拒否")
-    val lockScreenSummary get() = t("Shelly task — unlock for details", "Shellyタスク — 詳細はロック解除後に表示")
-    val mainDisplaySettingTitle get() = t("Allow Shelly to control the main screen", "Shellyにメイン画面の操作を許可")
-    val mainDisplaySettingOn get() = t(
-        "When the virtual display (Shizuku) is unavailable, Shelly may run tasks on your main screen. ClosePaw will take over the screen.",
-        "仮想ディスプレイ（Shizuku）が使えないとき、Shellyからの依頼をメイン画面で実行します。ClosePawが画面を操作します。",
-    )
-    val mainDisplaySettingOff get() = t(
-        "Shelly tasks only run in the background on the virtual display; without Shizuku they are refused.",
-        "Shellyからの依頼は仮想ディスプレイ上でのみ実行します。Shizukuが使えないときは実行しません。",
-    )
-    val channelStatus get() = t("Shelly tasks (status)", "Shellyタスク（状態）")
-    val channelAttention get() = t("Shelly tasks (needs attention)", "Shellyタスク（要対応）")
+    val actionStop get() = s(R.string.shelly_action_stop)
+    val actionResume get() = s(R.string.shelly_action_resume)
+    val actionAllowAlways get() = s(R.string.shelly_action_allow_always)
+    val actionAllowSession get() = s(R.string.shelly_action_allow_session)
+    val actionReject get() = s(R.string.shelly_action_reject)
+    val lockScreenSummary get() = s(R.string.shelly_lock_screen_summary)
+    val channelStatus get() = s(R.string.shelly_channel_status)
+    val channelAttention get() = s(R.string.shelly_channel_attention)
 }

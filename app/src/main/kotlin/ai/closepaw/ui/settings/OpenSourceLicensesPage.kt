@@ -1,8 +1,10 @@
 package ai.closepaw.ui.settings
 
+import ai.closepaw.R
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.annotation.StringRes
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -30,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import ai.closepaw.ui.theme.Fleuron
 import ai.closepaw.ui.theme.PageMastheadDrillDown
@@ -78,7 +81,7 @@ internal suspend fun loadLicenseEntries(context: Context): List<LicenseEntry> =
 private sealed interface LicenseLoadState {
     data object Loading : LicenseLoadState
     data class Loaded(val rows: List<LicenseEntry>) : LicenseLoadState
-    data class Error(val message: String) : LicenseLoadState
+    data class Error(@StringRes val messageRes: Int) : LicenseLoadState
 }
 
 @Composable
@@ -96,11 +99,11 @@ internal fun OpenSourceLicensesPage(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        PageMastheadDrillDown(title = "Open Source Licenses", onBack = onBack, onClose = onClose)
+        PageMastheadDrillDown(title = stringResource(R.string.open_source_licenses_page_title), onBack = onBack, onClose = onClose)
         when (val state = loadState) {
             LicenseLoadState.Loading -> LoadingNotice()
             is LicenseLoadState.Error -> ErrorNotice(
-                message = state.message,
+                message = stringResource(state.messageRes),
                 onRetry = { reloadKey += 1 },
             )
             is LicenseLoadState.Loaded -> {
@@ -120,16 +123,16 @@ private suspend fun loadLicenseState(context: Context): LicenseLoadState =
             .sortedBy { (it.project ?: it.dependency ?: "").lowercase() }
         LicenseLoadState.Loaded(rows)
     } catch (e: IOException) {
-        LicenseLoadState.Error("Could not open the generated license asset. Retry from Settings.")
+        LicenseLoadState.Error(R.string.open_source_licenses_page_error_open)
     } catch (e: SerializationException) {
-        LicenseLoadState.Error("Could not read the generated license asset. Retry from Settings.")
+        LicenseLoadState.Error(R.string.open_source_licenses_page_error_read)
     }
 
 @Composable
 private fun LoadingNotice() {
     LicenseNoticeCard(
-        title = "Loading licenses",
-        message = "Reading the generated dependency license list.",
+        title = stringResource(R.string.open_source_licenses_page_loading_title),
+        message = stringResource(R.string.open_source_licenses_page_loading_message),
         loading = true,
     )
 }
@@ -137,19 +140,19 @@ private fun LoadingNotice() {
 @Composable
 private fun EmptyNotice() {
     LicenseNoticeCard(
-        title = "No license entries",
-        message = "The generated license asset is empty.",
+        title = stringResource(R.string.open_source_licenses_page_empty_title),
+        message = stringResource(R.string.open_source_licenses_page_empty_message),
     )
 }
 
 @Composable
 private fun ErrorNotice(message: String, onRetry: () -> Unit) {
     LicenseNoticeCard(
-        title = "Could not load licenses",
+        title = stringResource(R.string.open_source_licenses_page_error_title),
         message = message,
         action = {
             TextButton(onClick = onRetry) {
-                Text("Retry")
+                Text(stringResource(R.string.open_source_licenses_page_retry))
             }
         },
     )
@@ -232,14 +235,12 @@ private fun LicensesPreamble() {
     ) {
         Column(modifier = Modifier.padding(MaterialTheme.closePaw.spacing.cardPadding), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "ClosePaw is licensed under the Apache License 2.0. The list below " +
-                    "is generated at build time from every runtime dependency.",
+                text = stringResource(R.string.open_source_licenses_page_preamble),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "Note: ai.liquid.leap:leap-sdk is proprietary (Leap Terms of Use); " +
-                    "see NOTICE in the repository root for redistribution implications.",
+                text = stringResource(R.string.open_source_licenses_page_leap_note),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -249,11 +250,12 @@ private fun LicensesPreamble() {
 
 @Composable
 private fun LicenseCard(entry: LicenseEntry, onOpenUrl: (String) -> Unit) {
+    val unknownLicense = stringResource(R.string.open_source_licenses_page_unknown_license)
     val title = entry.project?.takeIf { it.isNotBlank() } ?: entry.dependency.orEmpty()
     val coordinates = entry.dependency.orEmpty()
     val licenseLine = entry.licenses.mapNotNull { it.license?.takeIf(String::isNotBlank) }
         .joinToString(", ")
-        .ifBlank { "Unknown license" }
+        .ifBlank { unknownLicense }
     val urlForClick = entry.licenses.firstNotNullOfOrNull { it.licenseUrl?.takeIf(String::isNotBlank) }
         ?: entry.url?.takeIf(String::isNotBlank)
 

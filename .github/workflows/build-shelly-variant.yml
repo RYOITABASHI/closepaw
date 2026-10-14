@@ -42,6 +42,7 @@ jobs:
           --tests 'ai.closepaw.app.AgentServiceEventHandlerTest'
           --tests 'ai.closepaw.tool.PolicyEngineTest'
           --tests 'ai.closepaw.tool.ToolRouterTest'
+          --tests 'ai.closepaw.l10n.HardcodedUiStringsTest'
 
       - name: Decode keystore
         env:

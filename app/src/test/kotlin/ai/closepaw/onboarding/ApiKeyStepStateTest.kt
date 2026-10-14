@@ -1,5 +1,6 @@
 package ai.closepaw.onboarding
 
+import ai.closepaw.R
 import ai.closepaw.app.AppSettingsState
 import ai.closepaw.auth.AuthCredential
 import ai.closepaw.auth.AuthStore
@@ -343,7 +344,9 @@ class ApiKeyStepStateTest {
         vm.validateApiKey(); drain(scope, this)
         val state = vm.stepState
         assertThat(state).isInstanceOf(ApiKeyStepState.TransientError::class.java)
-        assertThat((state as ApiKeyStepState.TransientError).message).contains("No model found")
+        assertThat((state as ApiKeyStepState.TransientError).message).isEqualTo(
+            OnboardingText.Res(R.string.onboarding_view_model_no_model_found, listOf("OpenAI"))
+        )
         scope.coroutineContext.job.cancel()
     }
 

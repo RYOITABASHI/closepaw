@@ -29,15 +29,34 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.annotation.StringRes
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import ai.closepaw.ui.theme.closePaw
 import ai.closepaw.ui.theme.foldedPaper
 
+/**
+ * Display state for [ToolSettingsCard]. Text can be supplied either as already-resolved
+ * strings ([label] / [subtitle]) or as string resource ids ([labelRes] / [subtitleRes]);
+ * a non-zero resource id wins and is resolved in the composable layer so pure mappers stay
+ * Context-free (and JVM-testable by id).
+ */
 internal data class ToolStatusUi(
-    val label: String,
-    val subtitle: String,
+    val label: String = "",
+    val subtitle: String = "",
     val tone: ToolStatusTone,
     val showSpinner: Boolean = false,
+    @StringRes val labelRes: Int = 0,
+    @StringRes val subtitleRes: Int = 0,
 )
+
+@Composable
+private fun ToolStatusUi.resolvedLabel(): String =
+    if (labelRes != 0) stringResource(labelRes) else label
+
+@Composable
+private fun ToolStatusUi.resolvedSubtitle(): String =
+    if (subtitleRes != 0) stringResource(subtitleRes) else subtitle
 
 internal enum class ToolStatusTone { Positive, Neutral, Warning }
 
@@ -97,7 +116,7 @@ internal fun ToolSettingsCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Text(
-                            text = status.label,
+                            text = status.resolvedLabel(),
                             style = MaterialTheme.typography.labelMedium,
                             color = status.tone.labelColor(),
                         )
@@ -109,7 +128,7 @@ internal fun ToolSettingsCard(
                         }
                     }
                     Text(
-                        text = status.subtitle,
+                        text = status.resolvedSubtitle(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -118,7 +137,8 @@ internal fun ToolSettingsCard(
                 Spacer(modifier = Modifier.width(12.dp))
 
                 if (trailingInfoIcon != null) {
-                    val infoLabel = trailingInfoIconLabel ?: "View $title details"
+                    val infoLabel = trailingInfoIconLabel
+                        ?: stringResource(R.string.tool_settings_card_view_details, title)
                     IconButton(onClick = trailingInfoIcon) {
                         Icon(
                             imageVector = Icons.Outlined.Info,

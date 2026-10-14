@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shelly background runs: notification, toasts, settings row -->
+    <string name="shelly_quoted_app">\"%1$s\"</string>
+    <string name="shelly_list_separator">", "</string>
+    <string name="shelly_main_display_title">ClosePaw is controlling the screen — please don\'t touch</string>
+    <string name="shelly_main_display_body">The virtual display is unavailable, so ClosePaw is running on your main screen. Tap Stop to end it.</string>
+    <string name="shelly_background_title">ClosePaw is working in the background — you can keep using your phone</string>
+    <string name="shelly_background_body_generic">Don\'t open the app ClosePaw is operating until it finishes.</string>
+    <string name="shelly_background_body_apps">Don\'t open %1$s until ClosePaw finishes.</string>
+    <string name="shelly_approval_title">Waiting for your approval</string>
+    <string name="shelly_approval_body">Allow ClosePaw to operate %1$s?</string>
+    <string name="shelly_paused_title">ClosePaw paused</string>
+    <string name="shelly_paused_body_app">You opened %1$s, which ClosePaw was using. Tap Resume when you\'re done with it, or Stop.</string>
+    <string name="shelly_paused_body_generic">Tap Resume to continue, or Stop.</string>
+    <string name="shelly_done_title">ClosePaw finished</string>
+    <string name="shelly_stopped_title">ClosePaw stopped</string>
+    <string name="shelly_failed_title">ClosePaw couldn\'t finish</string>
+    <string name="shelly_blocked_title">ClosePaw can\'t run the Shelly task</string>
+    <string name="shelly_blocked_accessibility">Enable ClosePaw\'s accessibility service, then try again.</string>
+    <string name="shelly_blocked_onboarding">Finish ClosePaw setup first. Tap to open ClosePaw.</string>
+    <string name="shelly_blocked_overlay">ClosePaw needs the \"display over other apps\" permission. Tap to open ClosePaw.</string>
+    <string name="shelly_blocked_credentials">Sign in or add an API key for the selected model. Tap to open ClosePaw.</string>
+    <string name="shelly_busy_title">ClosePaw is busy</string>
+    <string name="shelly_busy_body">Another task is running. Stop it or wait, then ask Shelly again.</string>
+    <string name="shelly_no_vd_title">Shizuku isn\'t running — task not started</string>
+    <string name="shelly_no_vd_body">Background mode needs Shizuku. Start Shizuku and ask again, or tap to run it in the foreground (ClosePaw will take over the screen).</string>
+    <string name="shelly_action_stop">Stop</string>
+    <string name="shelly_action_resume">Resume</string>
+    <string name="shelly_action_allow_always">Always allow</string>
+    <string name="shelly_action_allow_session">Allow this time</string>
+    <string name="shelly_action_reject">Reject</string>
+    <string name="shelly_lock_screen_summary">Shelly task — unlock for details</string>
+    <string name="shelly_channel_status">Shelly tasks (status)</string>
+    <string name="shelly_channel_attention">Shelly tasks (needs attention)</string>
+    <string name="shelly_main_display_setting_title">Allow Shelly to control the main screen</string>
+    <string name="shelly_main_display_setting_on_label">On</string>
+    <string name="shelly_main_display_setting_off_label">Off</string>
+    <string name="shelly_main_display_setting_on">When the virtual display (Shizuku) is unavailable, Shelly may run tasks on your main screen. ClosePaw will take over the screen.</string>
+    <string name="shelly_main_display_setting_off">Shelly tasks only run in the background on the virtual display; without Shizuku they are refused.</string>
+</resources>

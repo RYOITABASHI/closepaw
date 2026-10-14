@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -110,7 +111,7 @@ fun PageMastheadIdentity(
                 IconButton(onClick = onClose) {
                     Icon(
                         imageVector = Icons.Rounded.Close,
-                        contentDescription = "Close",
+                        contentDescription = stringResource(R.string.ornaments_close),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -133,7 +134,7 @@ fun PageMastheadDrillDown(
             IconButton(onClick = onBack) {
                 Icon(
                     imageVector = Icons.Rounded.ChevronLeft,
-                    contentDescription = "Back",
+                    contentDescription = stringResource(R.string.ornaments_back),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -142,7 +143,7 @@ fun PageMastheadDrillDown(
             IconButton(onClick = onClose) {
                 Icon(
                     imageVector = Icons.Rounded.Close,
-                    contentDescription = "Close",
+                    contentDescription = stringResource(R.string.ornaments_close),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

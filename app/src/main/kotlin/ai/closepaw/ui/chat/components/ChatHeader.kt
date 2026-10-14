@@ -1,5 +1,7 @@
 package ai.closepaw.ui.chat.components
 
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -52,7 +54,7 @@ fun ChatHeader(
         ) {
             Icon(
                 imageVector = Icons.Rounded.Menu,
-                contentDescription = "Open menu",
+                contentDescription = stringResource(R.string.chat_header_open_menu),
                 modifier = Modifier.size(24.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -61,7 +63,7 @@ fun ChatHeader(
         Spacer(modifier = Modifier.width(4.dp))
 
         PageMasthead(
-            title = "ClosePaw",
+            title = "ClosePaw", // l10n-ok: brand wordmark
             modifier = Modifier.weight(1f),
             trailingSlot = {
                 if (showNewChatButton && onNewChatClick != null) {
@@ -71,7 +73,7 @@ fun ChatHeader(
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Add,
-                            contentDescription = "New conversation",
+                            contentDescription = stringResource(R.string.chat_header_new_conversation),
                             modifier = Modifier.size(24.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )

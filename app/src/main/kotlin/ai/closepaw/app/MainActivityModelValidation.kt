@@ -1,5 +1,8 @@
 package ai.closepaw.app
 
+import android.content.Context
+import androidx.annotation.StringRes
+import ai.closepaw.R
 import ai.closepaw.auth.AuthStore
 import ai.closepaw.llm.LLMProvider
 import ai.closepaw.llm.ModelCatalog
@@ -8,11 +11,21 @@ import ai.closepaw.llm.ModelIdValidator
 import ai.closepaw.llm.OtherBaseUrlValidator
 import ai.closepaw.protocol.LLMBackendType
 
-/** Deep-link target for a missing-credential banner tap. */
+/**
+ * Deep-link target for a missing-credential banner tap.
+ *
+ * The user-visible message is carried as a string resource id + format args so this
+ * Context-free validator stays unit-testable; resolve it with [message].
+ */
 data class MissingCredentialTarget(
     val provider: LLMProvider,
-    val message: String,
-)
+    @StringRes val messageRes: Int,
+    val messageArgs: List<String> = emptyList(),
+) {
+    fun message(context: Context): String =
+        if (messageArgs.isEmpty()) context.getString(messageRes)
+        else context.getString(messageRes, *messageArgs.toTypedArray())
+}
 
 /**
  * Validate that a credential exists for the main model selected for the next session.
@@ -49,25 +62,29 @@ internal fun findMissingCloudKeys(
         return listOf(
             MissingCredentialTarget(
                 LLMProvider.OTHER,
-                "Refresh or select a model for this endpoint",
+                R.string.main_activity_model_validation_refresh_model,
             )
         )
     }
 
     val entry = modelCatalog.resolveOrNull(modelName)
-        ?: return listOf(MissingCredentialTarget(LLMProvider.OPENAI_API, "Unknown model: $modelName"))
+        ?: return listOf(MissingCredentialTarget(
+            LLMProvider.OPENAI_API,
+            R.string.main_activity_model_validation_unknown_model,
+            listOf(modelName),
+        ))
     val provider = entry.provider
     if (provider == LLMProvider.LOCAL_LFM) return emptyList()
     if (authStore.has(provider)) return emptyList()
 
-    val label = when (provider) {
-        LLMProvider.OPENAI_CODEX -> "ChatGPT sign-in required"
-        LLMProvider.OPENAI_API -> "OpenAI API key required"
-        LLMProvider.OPENROUTER -> "OpenRouter API key required"
-        LLMProvider.OTHER -> "API key required"
+    val labelRes = when (provider) {
+        LLMProvider.OPENAI_CODEX -> R.string.main_activity_model_validation_chatgpt_sign_in_required
+        LLMProvider.OPENAI_API -> R.string.main_activity_model_validation_openai_key_required
+        LLMProvider.OPENROUTER -> R.string.main_activity_model_validation_openrouter_key_required
+        LLMProvider.OTHER -> R.string.main_activity_model_validation_api_key_required
         LLMProvider.LOCAL_LFM -> return emptyList()
     }
-    return listOf(MissingCredentialTarget(provider, "${entry.displayName}: $label"))
+    return listOf(MissingCredentialTarget(provider, labelRes, listOf(entry.displayName)))
 }
 
 private const val DISCOVERED_OTHER_PREFIX = "other:"
@@ -78,19 +95,19 @@ private fun findOtherMissing(
 ): List<MissingCredentialTarget> {
     val missing = mutableListOf<MissingCredentialTarget>()
     if (!authStore.has(LLMProvider.OTHER)) {
-        missing += MissingCredentialTarget(LLMProvider.OTHER, "Other: API key required")
+        missing += MissingCredentialTarget(LLMProvider.OTHER, R.string.main_activity_model_validation_other_api_key_required)
     }
     val baseUrl = settingsState.otherBaseUrl
     if (baseUrl.isBlank()) {
-        missing += MissingCredentialTarget(LLMProvider.OTHER, "Other: base URL required")
+        missing += MissingCredentialTarget(LLMProvider.OTHER, R.string.main_activity_model_validation_other_base_url_required)
     } else if (OtherBaseUrlValidator.validate(baseUrl).isFailure) {
-        missing += MissingCredentialTarget(LLMProvider.OTHER, "Other: base URL invalid")
+        missing += MissingCredentialTarget(LLMProvider.OTHER, R.string.main_activity_model_validation_other_base_url_invalid)
     }
     val modelId = settingsState.otherModelId
     if (modelId.isBlank()) {
-        missing += MissingCredentialTarget(LLMProvider.OTHER, "Other: custom model id required")
+        missing += MissingCredentialTarget(LLMProvider.OTHER, R.string.main_activity_model_validation_other_model_id_required)
     } else if (ModelIdValidator.validate(modelId).isFailure) {
-        missing += MissingCredentialTarget(LLMProvider.OTHER, "Other: custom model id invalid")
+        missing += MissingCredentialTarget(LLMProvider.OTHER, R.string.main_activity_model_validation_other_model_id_invalid)
     }
     return missing
 }

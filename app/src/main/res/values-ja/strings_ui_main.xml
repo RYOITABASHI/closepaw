@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- CapsuleStateHolder -->
+    <string name="capsule_state_holder_processing">処理中…</string>
+    <string name="capsule_state_holder_thinking">考え中…</string>
+    <string name="capsule_state_holder_processing_response">返答を処理中…</string>
+    <string name="capsule_state_holder_task_completed">タスクが完了しました</string>
+    <string name="capsule_state_holder_task_impossible">このタスクは実行できません</string>
+    <string name="capsule_state_holder_stopped">停止しました</string>
+    <string name="capsule_state_holder_error_occurred">エラーが発生しました</string>
+
+    <!-- CapsuleRenderSpec -->
+    <string name="capsule_render_spec_thinking">考え中…</string>
+    <string name="capsule_render_spec_takeover">操作を代わる</string>
+    <string name="capsule_render_spec_note_hint">アイデアがあればメモを追加…</string>
+    <string name="capsule_render_spec_add_note">メモを追加</string>
+    <string name="capsule_render_spec_handing_over_status">操作を引き継いでいます…</string>
+    <string name="capsule_render_spec_handing_over">引き継ぎ中</string>
+    <string name="capsule_render_spec_paused">一時停止中</string>
+    <string name="capsule_render_spec_resume">再開</string>
+    <string name="capsule_render_spec_awaiting_response">返答を待っています</string>
+    <string name="capsule_render_spec_response_hint">返答を入力…</string>
+    <string name="capsule_render_spec_send">送信</string>
+    <string name="capsule_render_spec_action_needed">操作が必要です</string>
+    <string name="capsule_render_spec_done">完了</string>
+    <string name="capsule_render_spec_approval_prompt">ClosePaw に %1$s の操作を許可しますか？</string>
+    <string name="capsule_render_spec_always">常に許可</string>
+    <string name="capsule_render_spec_session">今回のみ</string>
+    <string name="capsule_render_spec_reject">拒否</string>
+    <string name="capsule_render_spec_close">閉じる</string>
+    <string name="capsule_render_spec_task_hint">何をお手伝いしましょうか？</string>
+    <string name="capsule_render_spec_stopping">停止中…</string>
+    <string name="capsule_render_spec_stop">停止</string>
+
+    <!-- IslandOverlayHost -->
+    <string name="island_overlay_host_working">作業中…</string>
+    <string name="island_overlay_host_handing_over">操作を引き継いでいます…</string>
+    <string name="island_overlay_host_paused">一時停止中</string>
+    <string name="island_overlay_host_awaiting_response">返答を待っています</string>
+    <string name="island_overlay_host_action_needed">操作が必要です</string>
+    <string name="island_overlay_host_approval_prompt">ClosePaw に %1$s の操作を許可しますか？</string>
+    <string name="island_overlay_host_done">完了: %1$s</string>
+    <string name="island_overlay_host_error">エラー: %1$s</string>
+
+    <!-- StatusIslandCompose -->
+    <string name="status_island_compose_open_current_app">現在のアプリを開く</string>
+    <string name="status_island_compose_status">ステータス: %1$s</string>
+
+    <!-- CapsuleOverlayHost -->
+    <string name="capsule_overlay_host_supplement_received_next_step">✓ 受け付けました。次のステップで反映します</string>
+    <string name="capsule_overlay_host_supplement_received">✓ 受け付けました</string>
+
+    <!-- SmartCapsuleSurface -->
+    <string name="smart_capsule_surface_open_startup_error">起動エラーを開く</string>
+    <string name="smart_capsule_surface_startup_error">起動エラー: %1$s</string>
+    <string name="smart_capsule_surface_dismiss_error">エラーを閉じる</string>
+    <string name="smart_capsule_surface_open_current_app">現在のアプリを開く</string>
+    <string name="smart_capsule_surface_capsule_status">カプセルのステータス: %1$s</string>
+
+    <!-- CapsuleControlBar -->
+    <string name="capsule_control_bar_minimize">最小化</string>
+    <string name="capsule_control_bar_open_app">アプリを開く</string>
+    <string name="capsule_control_bar_open_viewer">ビューアを開く</string>
+
+    <!-- CapsuleInputBar -->
+    <string name="capsule_input_bar_mic_permission_denied">マイクの権限が拒否されました</string>
+    <string name="capsule_input_bar_listening">聞き取り中…</string>
+    <string name="capsule_input_bar_take_over_to_type">メモを入力するには操作を代わってください</string>
+    <string name="capsule_input_bar_mic_permission_disabled">マイクの権限が無効になっています。Android の設定で有効にしてください。</string>
+    <string name="capsule_input_bar_mic_permission_required">マイクの権限が必要です</string>
+    <string name="capsule_input_bar_start_voice">音声入力を開始</string>
+    <string name="capsule_input_bar_stop_voice">音声入力を停止</string>
+    <string name="capsule_input_bar_stopping_voice">音声入力を停止しています</string>
+
+    <!-- VoiceInputController -->
+    <string name="voice_input_controller_permission_revoked">マイクの権限が取り消されました。設定で有効にしてください</string>
+    <string name="voice_input_controller_language_unavailable">この言語では音声入力を利用できません</string>
+    <string name="voice_input_controller_needs_network">この言語の音声入力にはネットワーク接続が必要です</string>
+    <string name="voice_input_controller_unavailable">音声入力を利用できません</string>
+
+    <!-- ChatViewModel -->
+    <string name="chat_view_model_task_completed">タスクが完了しました</string>
+    <string name="chat_view_model_failed_to_start">開始できませんでした: %1$s</string>
+
+    <!-- ChatScreen -->
+    <string name="chat_screen_jump_to_live">最新へ</string>
+
+    <!-- ChatHeader -->
+    <string name="chat_header_open_menu">メニューを開く</string>
+    <string name="chat_header_new_conversation">新しい会話</string>
+
+    <!-- AgentRow (accessibility state descriptions) -->
+    <string name="agent_row_state_live">実行中</string>
+    <string name="agent_row_state_waiting">待機中</string>
+    <string name="agent_row_state_collapsed">折りたたみ</string>
+    <string name="agent_row_state_expanded">展開</string>
+    <string name="agent_row_state_error">エラー</string>
+
+    <!-- AgentSummary -->
+    <plurals name="agent_summary_action_count">
+        <item quantity="other">%1$d 件の操作</item>
+    </plurals>
+
+    <!-- AgentTrace -->
+    <string name="agent_trace_state_proposed">提案済み</string>
+    <string name="agent_trace_state_executing">実行中</string>
+    <string name="agent_trace_state_success">成功</string>
+    <string name="agent_trace_state_failed">失敗</string>
+    <string name="agent_trace_state_skipped">スキップ</string>
+
+    <!-- CollapsePill -->
+    <string name="collapse_pill_state_expanded">展開</string>
+    <string name="collapse_pill_state_collapsed">折りたたみ</string>
+
+    <!-- CompletionHandoffCtaRow -->
+    <string name="completion_handoff_cta_row_open_app">%1$s を開く</string>
+
+    <!-- EmptyState -->
+    <string name="empty_state_title">何をお手伝い\nしましょうか？</string>
+    <string name="empty_state_suggestion_ride_verb">配車を手配</string>
+    <string name="empty_state_suggestion_ride_gloss">家まで帰る車を呼ぶ</string>
+    <string name="empty_state_suggestion_ride_full">家まで帰る車を手配して</string>
+    <string name="empty_state_suggestion_catch_up_verb">まとめて確認</string>
+    <string name="empty_state_suggestion_catch_up_gloss">メールやメッセージの新着</string>
+    <string name="empty_state_suggestion_catch_up_full">メールやメッセージの新着をまとめて教えて</string>
+    <string name="empty_state_suggestion_search_verb">検索</string>
+    <string name="empty_state_suggestion_search_gloss">近くのレストラン</string>
+    <string name="empty_state_suggestion_search_full">近くのレストランを検索して</string>
+
+    <!-- ThinkingIndicator -->
+    <string name="thinking_indicator_description">考え中</string>
+    <string name="thinking_indicator_label">考え中…</string>
+
+    <!-- NavigationDrawer -->
+    <string name="navigation_drawer_recent">最近</string>
+    <string name="navigation_drawer_sessions_title">セッション</string>
+    <string name="navigation_drawer_new_conversation">新しい会話</string>
+    <string name="navigation_drawer_corrupted_state_description">セッションファイルを読み込めないため、開けません。</string>
+    <string name="navigation_drawer_corrupted_status">セッションファイルを読み込めません</string>
+    <string name="navigation_drawer_active_session">進行中のセッション</string>
+    <string name="navigation_drawer_open_session">セッションを開く</string>
+    <string name="navigation_drawer_delete_dialog_title">セッションを削除</string>
+    <string name="navigation_drawer_delete_dialog_message">このセッションとそのメッセージは完全に削除されます。</string>
+    <string name="navigation_drawer_delete">削除</string>
+    <string name="navigation_drawer_cancel">キャンセル</string>
+    <string name="navigation_drawer_delete_session">セッションを削除</string>
+    <string name="navigation_drawer_empty_title">保存されたセッションはありません</string>
+    <string name="navigation_drawer_empty_message">チャット履歴はここに表示されます</string>
+    <string name="navigation_drawer_settings">設定</string>
+
+    <!-- TimeUtils -->
+    <string name="time_utils_just_now">たった今</string>
+    <string name="time_utils_yesterday">昨日</string>
+    <plurals name="time_utils_minutes_ago">
+        <item quantity="other">%1$d 分前</item>
+    </plurals>
+    <plurals name="time_utils_hours_ago">
+        <item quantity="other">%1$d 時間前</item>
+    </plurals>
+    <plurals name="time_utils_days_ago">
+        <item quantity="other">%1$d 日前</item>
+    </plurals>
+    <plurals name="time_utils_message_count">
+        <item quantity="other">%1$d 件のメッセージ</item>
+    </plurals>
+
+    <!-- Ornaments -->
+    <string name="ornaments_close">閉じる</string>
+    <string name="ornaments_back">戻る</string>
+</resources>

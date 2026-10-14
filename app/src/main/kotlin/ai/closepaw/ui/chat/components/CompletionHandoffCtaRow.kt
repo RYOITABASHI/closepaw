@@ -1,5 +1,7 @@
 package ai.closepaw.ui.chat.components
 
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -66,7 +68,7 @@ internal fun CompletionHandoffCtaRow(
                 .testTag("qa-handoff-open-app"),
         ) {
             Text(
-                text = "Open $label",
+                text = stringResource(R.string.completion_handoff_cta_row_open_app, label),
                 style = MaterialTheme.typography.labelLarge,
             )
         }

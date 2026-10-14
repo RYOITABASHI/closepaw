@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- AgentBehaviorSettingsPage -->
+    <string name="agent_behavior_settings_page_title">Agent Behavior</string>
+    <string name="agent_behavior_settings_page_section_perception">Perception</string>
+    <string name="agent_behavior_settings_page_section_approval">Approval</string>
+    <string name="agent_behavior_settings_page_approval_per_app">Per-App</string>
+    <string name="agent_behavior_settings_page_approval_per_app_desc">Ask before risky actions, based on each app\'s access rules</string>
+    <string name="agent_behavior_settings_page_approval_auto">Auto-Approve</string>
+    <string name="agent_behavior_settings_page_approval_auto_desc">Run allowed actions without asking. Rejected apps stay blocked.</string>
+    <string name="agent_behavior_settings_page_app_access_rules_title">App Access Rules</string>
+    <string name="agent_behavior_settings_page_app_access_rules_subtitle">Set allow, ask, or reject for each app</string>
+
+    <!-- AgentSkillToggleRows -->
+    <string name="agent_skill_toggle_rows_next_session">Takes effect next session</string>
+    <string name="agent_skill_toggle_rows_section_title">Agent Skills</string>
+    <string name="agent_skill_toggle_rows_enabled">Enabled</string>
+    <string name="agent_skill_toggle_rows_disabled">Disabled</string>
+    <string name="agent_skill_toggle_rows_view_prompt">View %1$s prompt</string>
+    <string name="agent_skill_toggle_rows_close">Close</string>
+
+    <!-- ApiKeyFields -->
+    <string name="api_key_fields_hide">Hide</string>
+    <string name="api_key_fields_show">Show</string>
+
+    <!-- AppAccessSettingsPage -->
+    <string name="app_access_settings_page_title">App Access</string>
+    <string name="app_access_settings_page_tier_all">All</string>
+    <string name="app_access_settings_page_tier_allow">Allow</string>
+    <string name="app_access_settings_page_tier_ask">Ask</string>
+    <string name="app_access_settings_page_tier_reject">Reject</string>
+    <string name="app_access_settings_page_memory_create_failed">Could not create app memory. Try again.</string>
+    <string name="app_access_settings_page_error_permission">ClosePaw does not have permission to read the installed app list.</string>
+    <string name="app_access_settings_page_error_read">Could not read the installed app list. Retry from Settings.</string>
+    <string name="app_access_settings_page_app_memory_title">App Memory</string>
+    <string name="app_access_settings_page_auto_approve_warning">Auto-Approve is on. Per-app rules below only apply in Per-App mode.</string>
+    <string name="app_access_settings_page_search_hint">Search apps or package name</string>
+    <string name="app_access_settings_page_expand_app_details_named">Expand %1$s app details</string>
+    <string name="app_access_settings_page_collapse_app_details_named">Collapse %1$s app details</string>
+    <string name="app_access_settings_page_expand_app_details">Expand app details</string>
+    <string name="app_access_settings_page_collapse_app_details">Collapse app details</string>
+    <string name="app_access_settings_page_state_expanded">Expanded</string>
+    <string name="app_access_settings_page_state_collapsed">Collapsed</string>
+    <string name="app_access_settings_page_loading_title">Loading apps</string>
+    <string name="app_access_settings_page_loading_message">Reading installed apps and access rules.</string>
+    <string name="app_access_settings_page_load_error_title">Could not load apps</string>
+    <string name="app_access_settings_page_retry">Retry</string>
+    <string name="app_access_settings_page_no_match_title">No apps match</string>
+    <string name="app_access_settings_page_no_match_message">Try a different search or filter.</string>
+    <string name="app_access_settings_page_sensitive_app">Sensitive app</string>
+    <string name="app_access_settings_page_chip_memory">Memory</string>
+    <string name="app_access_settings_page_chip_skill">Skill</string>
+    <string name="app_access_settings_page_permanently_restricted">Permanently restricted</string>
+    <string name="app_access_settings_page_create_memory">Create app memory</string>
+    <string name="app_access_settings_page_create_memory_locked">Disabled while memory edits are locked</string>
+    <string name="app_access_settings_page_selected">Selected</string>
+    <string name="app_access_settings_page_not_selected">Not selected</string>
+
+    <!-- AppRowExpansion -->
+    <string name="app_row_expansion_app_memory">App Memory</string>
+    <string name="app_row_expansion_app_skill">App Skill</string>
+    <string name="app_row_expansion_blocked_warning">This app is set to Reject. Reject only blocks the agent from writing this memory; saved entries are still recalled when this app is foreground.</string>
+    <string name="app_row_expansion_add_memory">Memory</string>
+
+    <!-- BrowserScriptStatusMapper -->
+    <string name="browser_script_status_mapper_setting_up">Setting up…</string>
+    <string name="browser_script_status_mapper_checking_shizuku">Checking Shizuku…</string>
+    <string name="browser_script_status_mapper_needs_setup">Needs Setup</string>
+    <string name="browser_script_status_mapper_disabled">Disabled</string>
+    <string name="browser_script_status_mapper_toggle_to_enable">Toggle to enable</string>
+    <string name="browser_script_status_mapper_checking">Checking…</string>
+    <string name="browser_script_status_mapper_checking_socket">Checking Chrome devtools socket…</string>
+    <string name="browser_script_status_mapper_ready">Ready</string>
+    <string name="browser_script_status_mapper_active">browser_script active</string>
+    <string name="browser_script_status_mapper_socket_not_exposed">Chrome devtools socket not exposed. Enable the flag and restart Chrome.</string>
+    <string name="browser_script_status_mapper_not_available">Not available</string>
+    <string name="browser_script_status_mapper_cannot_probe">Cannot probe socket on this device — the agent will still try to connect when needed.</string>
+
+    <!-- BrowserScriptToggleGate -->
+    <string name="browser_script_toggle_gate_shizuku_unavailable">Shizuku is not running. Start Shizuku first, then enable browser_script.</string>
+    <string name="browser_script_toggle_gate_permission_denied">Permission denied. Tap to retry, or re-grant in Shizuku Manager.</string>
+    <string name="browser_script_toggle_gate_write_failed">Could not write Chrome\'s command-line file. Check Shizuku and try again.</string>
+
+    <!-- DisplaySection -->
+    <string name="display_section_title">Display Mode</string>
+    <string name="display_section_virtual_display">Virtual Display</string>
+    <string name="display_section_retry_setup">Retry Virtual Display setup</string>
+    <string name="display_section_grant_shizuku">Grant Shizuku permission</string>
+
+    <!-- LlmAuthDiscoveryUi -->
+    <string name="llm_auth_discovery_ui_search_models">Search models</string>
+    <string name="llm_auth_discovery_ui_no_match">No models match \"%1$s\"</string>
+    <string name="llm_auth_discovery_ui_no_models">No models available</string>
+    <string name="llm_auth_discovery_ui_group_search">(search)</string>
+    <string name="llm_auth_discovery_ui_group_other">(other)</string>
+    <string name="llm_auth_discovery_ui_selected">Selected</string>
+    <string name="llm_auth_discovery_ui_refreshing">Refreshing…</string>
+    <string name="llm_auth_discovery_ui_refresh_models">Refresh models</string>
+    <string name="llm_auth_discovery_ui_last_refreshed">Last refreshed: %1$s</string>
+    <string name="llm_auth_discovery_ui_refresh_disabled">Refresh disabled: %1$s</string>
+
+    <!-- LlmAuthSettingsPage -->
+    <string name="llm_auth_settings_page_title">LLM &amp; Authentication</string>
+    <string name="llm_auth_settings_page_tab_sign_in">Sign In</string>
+    <string name="llm_auth_settings_page_tab_api_key">API Key</string>
+    <string name="llm_auth_settings_page_tab_local">Local</string>
+    <string name="llm_auth_settings_page_section_cloud_model">Cloud Model</string>
+    <string name="llm_auth_settings_page_section_authentication">Authentication</string>
+    <string name="llm_auth_settings_page_section_provider">Provider</string>
+    <string name="llm_auth_settings_page_base_url">Base URL</string>
+    <string name="llm_auth_settings_page_custom_model_id">Custom Model Id</string>
+    <string name="llm_auth_settings_page_api_key">API Key</string>
+    <string name="llm_auth_settings_page_openai_key">OpenAI Key</string>
+    <string name="llm_auth_settings_page_openrouter_key">OpenRouter Key</string>
+    <string name="llm_auth_settings_page_local_warning">Experimental: local models are slow and underpowered, and will not reliably drive the agent. Use a cloud model for real work.</string>
+    <string name="llm_auth_settings_page_section_local_model">Local Model</string>
+
+    <!-- MemoryFileEditor -->
+    <string name="memory_file_editor_locked_banner">Session is open. Stop the session to edit memory.</string>
+    <string name="memory_file_editor_abort_toast">Memory edit aborted — a session just started.</string>
+    <string name="memory_file_editor_reload_toast">Memory updated during session — reloaded from disk.</string>
+    <string name="memory_file_editor_reloading_banner">Refreshing memory from disk…</string>
+    <string name="memory_file_editor_too_large">Memory files cap at %1$d bytes. Trim and try again.</string>
+    <string name="memory_file_editor_invalid_scope">Invalid memory target.</string>
+    <string name="memory_file_editor_save_failed">Save failed: %1$s</string>
+    <string name="memory_file_editor_delete_failed">Delete failed.</string>
+    <string name="memory_file_editor_content_description">Memory file content</string>
+    <string name="memory_file_editor_empty">No memory yet.</string>
+    <string name="memory_file_editor_loading">Loading…</string>
+    <string name="memory_file_editor_open_full">↗ Open</string>
+    <string name="memory_file_editor_edit">Edit</string>
+    <string name="memory_file_editor_delete">Delete</string>
+    <string name="memory_file_editor_discard">Discard</string>
+    <string name="memory_file_editor_save">Save</string>
+    <string name="memory_file_editor_delete_title">Delete memory?</string>
+    <string name="memory_file_editor_delete_message">This removes the file. The agent may write a new one later.</string>
+    <string name="memory_file_editor_cancel">Cancel</string>
+
+    <!-- MemorySettingsPage -->
+    <string name="memory_settings_page_title">Memory</string>
+    <string name="memory_settings_page_user_memory">User Memory</string>
+    <string name="memory_settings_page_user_memory_subtitle">Facts and preferences shared across every session</string>
+    <string name="memory_settings_page_device_memory">Device Memory</string>
+    <string name="memory_settings_page_device_memory_subtitle">Facts, pitfalls, and verification notes about this device</string>
+    <string name="memory_settings_page_app_memory">App Memory</string>
+
+    <!-- OpenAiAuthCard -->
+    <string name="open_ai_auth_card_not_signed_in">Not signed in</string>
+    <string name="open_ai_auth_card_sign_in">Sign in with OpenAI</string>
+    <string name="open_ai_auth_card_signing_in">Signing in…</string>
+    <string name="open_ai_auth_card_cancel">Cancel</string>
+    <string name="open_ai_auth_card_finishing">Finishing up with OpenAI…</string>
+    <string name="open_ai_auth_card_signed_in">Signed in with OpenAI</string>
+    <string name="open_ai_auth_card_sign_out">Sign Out</string>
+    <string name="open_ai_auth_card_try_again">Try Again</string>
+
+    <!-- OpenSourceLicensesPage -->
+    <string name="open_source_licenses_page_title">Open Source Licenses</string>
+    <string name="open_source_licenses_page_error_open">Could not open the generated license asset. Retry from Settings.</string>
+    <string name="open_source_licenses_page_error_read">Could not read the generated license asset. Retry from Settings.</string>
+    <string name="open_source_licenses_page_loading_title">Loading licenses</string>
+    <string name="open_source_licenses_page_loading_message">Reading the generated dependency license list.</string>
+    <string name="open_source_licenses_page_empty_title">No license entries</string>
+    <string name="open_source_licenses_page_empty_message">The generated license asset is empty.</string>
+    <string name="open_source_licenses_page_error_title">Could not load licenses</string>
+    <string name="open_source_licenses_page_retry">Retry</string>
+    <string name="open_source_licenses_page_preamble">ClosePaw is licensed under the Apache License 2.0. The list below is generated at build time from every runtime dependency.</string>
+    <string name="open_source_licenses_page_leap_note">Note: ai.liquid.leap:leap-sdk is proprietary (Leap Terms of Use); see NOTICE in the repository root for redistribution implications.</string>
+    <string name="open_source_licenses_page_unknown_license">Unknown license</string>
+</resources>

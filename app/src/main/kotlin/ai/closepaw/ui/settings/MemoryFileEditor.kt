@@ -1,5 +1,6 @@
 package ai.closepaw.ui.settings
 
+import ai.closepaw.R
 import ai.closepaw.app.MemoryEditGate
 import ai.closepaw.memory.MemoryScope
 import ai.closepaw.memory.MemoryStore
@@ -35,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -79,18 +81,6 @@ import kotlinx.coroutines.withContext
  * `SessionCoordinator.currentSessionState.value` directly, bypassing the
  * map-collector tick that `memoryEditLocked` rides on.
  */
-
-internal const val MEMORY_EDIT_LOCKED_BANNER =
-    "Session is open. Stop the session to edit memory."
-
-internal const val MEMORY_EDIT_ABORT_TOAST =
-    "Memory edit aborted — a session just started."
-
-internal const val MEMORY_EDIT_RELOAD_TOAST =
-    "Memory updated during session — reloaded from disk."
-
-internal const val MEMORY_EDIT_RELOADING_BANNER =
-    "Refreshing memory from disk…"
 
 internal const val MEMORY_EDITOR_TEXTFIELD_TAG = "memory-editor-textfield"
 internal const val MEMORY_EDITOR_OPEN_FULL_TAG = "memory-editor-open-full"
@@ -174,7 +164,11 @@ internal fun MemoryFileEditor(
                 loaded = disk
                 buffer = disk.orEmpty()
                 if (wasDirty) {
-                    Toast.makeText(context, MEMORY_EDIT_RELOAD_TOAST, Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.memory_file_editor_reload_toast),
+                        Toast.LENGTH_SHORT,
+                    ).show()
                 }
             } finally {
                 reloading = false
@@ -201,7 +195,11 @@ internal fun MemoryFileEditor(
     val dirty = mode == Mode.EDIT && buffer != loaded.orEmpty()
 
     fun abort() {
-        Toast.makeText(context, MEMORY_EDIT_ABORT_TOAST, Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            context.getString(R.string.memory_file_editor_abort_toast),
+            Toast.LENGTH_SHORT,
+        ).show()
         onAborted?.invoke()
     }
 
@@ -230,11 +228,17 @@ internal fun MemoryFileEditor(
                     onSaved?.invoke()
                 }
                 SaveResult.TooLarge ->
-                    inlineError = "Memory files cap at ${memoryStore.maxFileBytes} bytes. Trim and try again."
+                    inlineError = context.getString(
+                        R.string.memory_file_editor_too_large,
+                        memoryStore.maxFileBytes,
+                    )
                 SaveResult.InvalidScope ->
-                    inlineError = "Invalid memory target."
+                    inlineError = context.getString(R.string.memory_file_editor_invalid_scope)
                 is SaveResult.IoError ->
-                    inlineError = "Save failed: ${result.message}"
+                    inlineError = context.getString(
+                        R.string.memory_file_editor_save_failed,
+                        result.message,
+                    )
             }
         }
     }
@@ -265,7 +269,7 @@ internal fun MemoryFileEditor(
                     mode = Mode.VIEW
                     onDeleted?.invoke()
                 }
-                false -> inlineError = "Delete failed."
+                false -> inlineError = context.getString(R.string.memory_file_editor_delete_failed)
             }
         }
     }
@@ -280,7 +284,11 @@ internal fun MemoryFileEditor(
                 shape = MaterialTheme.shapes.small,
             ) {
                 Text(
-                    text = if (locked) MEMORY_EDIT_LOCKED_BANNER else MEMORY_EDIT_RELOADING_BANNER,
+                    text = if (locked) {
+                        stringResource(R.string.memory_file_editor_locked_banner)
+                    } else {
+                        stringResource(R.string.memory_file_editor_reloading_banner)
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onErrorContainer,
                     modifier = Modifier.padding(horizontal = MaterialTheme.closePaw.spacing.md, vertical = MaterialTheme.closePaw.spacing.sm),
@@ -295,10 +303,11 @@ internal fun MemoryFileEditor(
         // dirty-vs-not signal and so the user can't type into a buffer that
         // is about to be overwritten by the disk read.
         val readOnly = mode == Mode.VIEW || locked || reloading
+        val contentLabel = stringResource(R.string.memory_file_editor_content_description)
         val textFieldModifier = Modifier
             .fillMaxWidth()
             .testTag(MEMORY_EDITOR_TEXTFIELD_TAG)
-            .semantics { contentDescription = "Memory file content" }
+            .semantics { contentDescription = contentLabel }
             .let { base ->
                 // Bounded variant caps the text field height so 8 KB content
                 // does not stretch the row. Internal scroll handles overflow.
@@ -312,7 +321,11 @@ internal fun MemoryFileEditor(
             modifier = textFieldModifier,
             placeholder = {
                 Text(
-                    if (loadingDone) "No memory yet." else "Loading…",
+                    if (loadingDone) {
+                        stringResource(R.string.memory_file_editor_empty)
+                    } else {
+                        stringResource(R.string.memory_file_editor_loading)
+                    },
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                 )
             },
@@ -356,7 +369,7 @@ internal fun MemoryFileEditor(
                     onClick = onOpenFull,
                     enabled = !dirty,
                     modifier = Modifier.testTag(MEMORY_EDITOR_OPEN_FULL_TAG),
-                ) { Text("↗ Open") }
+                ) { Text(stringResource(R.string.memory_file_editor_open_full)) }
             }
 
             when (mode) {
@@ -365,24 +378,24 @@ internal fun MemoryFileEditor(
                         onClick = { if (!locked && !reloading) mode = Mode.EDIT },
                         enabled = !locked && !reloading && loadingDone,
                         modifier = Modifier.testTag(MEMORY_EDITOR_EDIT_TAG),
-                    ) { Text("Edit") }
+                    ) { Text(stringResource(R.string.memory_file_editor_edit)) }
                     TextButton(
                         onClick = { if (!locked && !reloading && !writing) showDeleteConfirm = true },
                         enabled = !locked && !reloading && !writing && loaded != null,
                         modifier = Modifier.testTag(MEMORY_EDITOR_DELETE_TAG),
-                    ) { Text("Delete") }
+                    ) { Text(stringResource(R.string.memory_file_editor_delete)) }
                 }
                 Mode.EDIT -> {
                     TextButton(
                         onClick = onDiscard,
                         enabled = !locked && !reloading && !writing,
                         modifier = Modifier.testTag(MEMORY_EDITOR_DISCARD_TAG),
-                    ) { Text("Discard") }
+                    ) { Text(stringResource(R.string.memory_file_editor_discard)) }
                     TextButton(
                         onClick = onSave,
                         enabled = !locked && !reloading && !writing,
                         modifier = Modifier.testTag(MEMORY_EDITOR_SAVE_TAG),
-                    ) { Text("Save") }
+                    ) { Text(stringResource(R.string.memory_file_editor_save)) }
                 }
             }
         }
@@ -391,10 +404,10 @@ internal fun MemoryFileEditor(
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { if (!writing) showDeleteConfirm = false },
-            title = { Text("Delete memory?") },
+            title = { Text(stringResource(R.string.memory_file_editor_delete_title)) },
             text = {
                 Text(
-                    "This removes the file. The agent may write a new one later.",
+                    stringResource(R.string.memory_file_editor_delete_message),
                 )
             },
             confirmButton = {
@@ -402,12 +415,12 @@ internal fun MemoryFileEditor(
                     onClick = onConfirmDelete,
                     enabled = !locked && !reloading && !writing,
                     modifier = Modifier.testTag(MEMORY_EDITOR_DELETE_CONFIRM_TAG),
-                ) { Text("Delete") }
+                ) { Text(stringResource(R.string.memory_file_editor_delete)) }
             },
             dismissButton = {
                 TextButton(
                     onClick = { if (!writing) showDeleteConfirm = false },
-                ) { Text("Cancel") }
+                ) { Text(stringResource(R.string.memory_file_editor_cancel)) }
             },
         )
     }

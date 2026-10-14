@@ -1,6 +1,8 @@
 package ai.closepaw.onboarding
 
+import android.content.Context
 import android.util.Log
+import ai.closepaw.R
 import ai.closepaw.app.AgentService
 import ai.closepaw.app.AppSettingsState
 import ai.closepaw.app.AuthStoreHolder
@@ -40,6 +42,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * synthesized bridge, no legacy settings fields.
  */
 class OnboardingDemoController(
+    context: Context,
     private val settingsState: AppSettingsState,
     private val scope: CoroutineScope
 ) {
@@ -63,6 +66,9 @@ class OnboardingDemoController(
             } else emptyMap()
     }
 
+    /** Application context used only to resolve user-visible demo messages. */
+    private val appContext: Context = context.applicationContext
+
     private val mutex = Mutex()
     private var demoJob: Job? = null
     private var demoSession: AgentSession? = null
@@ -79,7 +85,7 @@ class OnboardingDemoController(
             val service = AgentService.instance
             if (service == null) {
                 withContext(Dispatchers.Main) {
-                    onFailure("Accessibility service not available")
+                    onFailure(appContext.getString(R.string.onboarding_demo_controller_a11y_unavailable))
                 }
                 return@launch
             }
@@ -160,16 +166,21 @@ class OnboardingDemoController(
                         if (isGoalAchieved && isSettingsOpen) {
                             Log.d(TAG, "Demo succeeded: Settings app opened")
                             onBringToFront()
-                            onSuccess("Settings app opened successfully!")
+                            onSuccess(appContext.getString(R.string.onboarding_demo_controller_settings_opened))
                         } else if (isGoalAchieved) {
                             Log.w(TAG, "Demo goal achieved but package=$lastPackageName")
                             onBringToFront()
-                            onSuccess("Demo task completed!")
+                            onSuccess(appContext.getString(R.string.onboarding_demo_controller_task_completed))
                         } else {
                             val reason = when (completed.outcome) {
-                                TaskOutcome.ERROR -> "Demo encountered an error"
-                                TaskOutcome.TASK_IMPOSSIBLE -> "Demo could not complete the task"
-                                else -> "Demo ended: ${completed.outcome}"
+                                TaskOutcome.ERROR ->
+                                    appContext.getString(R.string.onboarding_demo_controller_error)
+                                TaskOutcome.TASK_IMPOSSIBLE ->
+                                    appContext.getString(R.string.onboarding_demo_controller_impossible)
+                                else -> appContext.getString(
+                                    R.string.onboarding_demo_controller_ended,
+                                    completed.outcome.toString()
+                                )
                             }
                             Log.w(TAG, "Demo failed: ${completed.outcome}")
                             onBringToFront()
@@ -178,14 +189,17 @@ class OnboardingDemoController(
                     } else {
                         Log.w(TAG, "Demo timed out after ${TIMEOUT_MS}ms")
                         onBringToFront()
-                        onFailure("The demo timed out before opening Settings.")
+                        onFailure(appContext.getString(R.string.onboarding_demo_controller_timeout))
                     }
                 }
             } catch (e: MissingCredential) {
                 Log.w(TAG, "Demo credential missing for ${e.provider}")
                 withContext(Dispatchers.Main) {
                     onCredentialError(
-                        "No ${e.provider.displayName()} credential found. Sign in again.",
+                        appContext.getString(
+                            R.string.onboarding_demo_controller_no_credential,
+                            e.provider.displayName()
+                        ),
                         e.provider == LLMProvider.OPENAI_CODEX,
                     )
                 }
@@ -193,7 +207,7 @@ class OnboardingDemoController(
                 Log.w(TAG, "Demo OAuth refresh failed for ${e.provider}: ${e.message}")
                 withContext(Dispatchers.Main) {
                     onCredentialError(
-                        "Sign-in expired. Please sign in again.",
+                        appContext.getString(R.string.onboarding_demo_controller_sign_in_expired),
                         true,
                     )
                 }
@@ -201,14 +215,19 @@ class OnboardingDemoController(
                 Log.w(TAG, "Demo wrong credential type for ${e.provider}: expected ${e.expected}")
                 withContext(Dispatchers.Main) {
                     onCredentialError(
-                        "Credential mismatch for ${e.provider.displayName()}. Re-enter it.",
+                        appContext.getString(
+                            R.string.onboarding_demo_controller_credential_mismatch,
+                            e.provider.displayName()
+                        ),
                         e.provider == LLMProvider.OPENAI_CODEX,
                     )
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Demo failed with exception", e)
                 withContext(Dispatchers.Main) {
-                    onFailure("Demo failed: ${e.message}")
+                    onFailure(
+                        appContext.getString(R.string.onboarding_demo_controller_failed, e.message.orEmpty())
+                    )
                 }
             } finally {
                 shutdownSession()

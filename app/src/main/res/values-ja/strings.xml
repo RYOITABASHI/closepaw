@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">ClosePawは端末上で動作する自動操作エージェントです。許可された場合、あなたがタスクを開始したときに限り、画面上の要素を読み取り、タップ・スワイプ・文字入力を行います。バックグラウンドで他のアプリを監視することはありません。</string>
+</resources>

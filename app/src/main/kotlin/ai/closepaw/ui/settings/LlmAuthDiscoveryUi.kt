@@ -41,9 +41,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import ai.closepaw.R
 import ai.closepaw.llm.LLMProvider
 import ai.closepaw.llm.ModelCatalogRepository
 import ai.closepaw.llm.ModelEntry
@@ -86,7 +88,7 @@ internal fun SearchableGroupedModelPicker(
             onValueChange = { query = it },
             singleLine = true,
             leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-            placeholder = { Text("Search models") },
+            placeholder = { Text(stringResource(R.string.llm_auth_discovery_ui_search_models)) },
             shape = MaterialTheme.shapes.small,
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = MaterialTheme.colorScheme.primary,
@@ -109,7 +111,11 @@ internal fun SearchableGroupedModelPicker(
         ) {
             if (state.groups.isEmpty()) {
                 Text(
-                    text = if (state.isSearching) "No models match \"$query\"" else "No models available",
+                    text = if (state.isSearching) {
+                        stringResource(R.string.llm_auth_discovery_ui_no_match, query)
+                    } else {
+                        stringResource(R.string.llm_auth_discovery_ui_no_models)
+                    },
                     modifier = Modifier
                         .align(Alignment.Center)
                         .padding(MaterialTheme.closePaw.spacing.cardPadding),
@@ -168,7 +174,11 @@ private fun GroupHeaderRow(
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = label,
+            text = when (label) {
+                ModelPicker.SEARCH_GROUP_KEY -> stringResource(R.string.llm_auth_discovery_ui_group_search)
+                ModelPicker.OTHER_GROUP_KEY -> stringResource(R.string.llm_auth_discovery_ui_group_other)
+                else -> label
+            },
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
         )
@@ -212,7 +222,7 @@ private fun PickerRow(
             if (selected) {
                 Icon(
                     imageVector = Icons.Outlined.Check,
-                    contentDescription = "Selected",
+                    contentDescription = stringResource(R.string.llm_auth_discovery_ui_selected),
                     modifier = Modifier.size(18.dp),
                     tint = MaterialTheme.colorScheme.primary,
                 )
@@ -260,17 +270,17 @@ internal fun RefreshModelsRow(
                     strokeWidth = 2.dp,
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("Refreshing…")
+                Text(stringResource(R.string.llm_auth_discovery_ui_refreshing))
             } else {
                 Icon(Icons.Outlined.Refresh, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
-                Text("Refresh models")
+                Text(stringResource(R.string.llm_auth_discovery_ui_refresh_models))
             }
         }
         val timestamp = discoveryState.lastFetchedAt[provider]
         if (timestamp != null) {
             Text(
-                text = "Last refreshed: ${formatTimestamp(timestamp)}",
+                text = stringResource(R.string.llm_auth_discovery_ui_last_refreshed, formatTimestamp(timestamp)),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = MaterialTheme.closePaw.spacing.xs),
@@ -286,7 +296,7 @@ internal fun RefreshModelsRow(
             )
         } else if (reason != null) {
             Text(
-                text = "Refresh disabled: $reason",
+                text = stringResource(R.string.llm_auth_discovery_ui_refresh_disabled, reason),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(top = MaterialTheme.closePaw.spacing.xs),

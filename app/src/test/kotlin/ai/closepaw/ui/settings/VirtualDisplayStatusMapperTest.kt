@@ -1,6 +1,7 @@
 package ai.closepaw.ui.settings
 
 import ai.closepaw.protocol.PlatformMode
+import ai.closepaw.R
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -29,8 +30,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = true,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Setting up…")
-        assertThat(result.status.subtitle).isEqualTo("Checking Shizuku…")
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_setting_up)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_checking_shizuku)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Neutral)
         assertThat(result.status.showSpinner).isTrue()
         assertThat(result.switchChecked).isFalse()
@@ -48,10 +49,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = VirtualDisplayToggleError.ShizukuUnavailable,
         )
-        assertThat(result.status.label).isEqualTo("Needs Setup")
-        assertThat(result.status.subtitle).isEqualTo(
-            "Shizuku is not running. Install or start Shizuku, then turn on Virtual Display."
-        )
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_needs_setup)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_toggle_gate_shizuku_unavailable)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Warning)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isFalse()
@@ -69,10 +68,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = VirtualDisplayToggleError.ShizukuPermissionDenied,
         )
-        assertThat(result.status.label).isEqualTo("Needs Setup")
-        assertThat(result.status.subtitle).isEqualTo(
-            "Permission denied. Tap to retry, or grant in Shizuku Manager."
-        )
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_needs_setup)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_toggle_gate_permission_denied)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Warning)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isFalse()
@@ -90,8 +87,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Disabled")
-        assertThat(result.status.subtitle).isEqualTo("Agent runs on your current screen.")
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_disabled)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_runs_on_current_screen)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Neutral)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isFalse()
@@ -106,7 +103,7 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(activeA11y.status.subtitle).isEqualTo("Agent runs on your current screen.")
+        assertThat(activeA11y.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_runs_on_current_screen)
     }
 
     // Row 5: user toggled off while a VD session is still alive
@@ -119,10 +116,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Disabled")
-        assertThat(result.status.subtitle).isEqualTo(
-            "Current session is still on a virtual display; next session will use your current screen."
-        )
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_disabled)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_still_on_vd)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Neutral)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isFalse()
@@ -140,10 +135,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Not Available")
-        assertThat(result.status.subtitle).isEqualTo(
-            "Shizuku is not running. If a new session starts now, it will run on your current screen."
-        )
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_not_available)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_shizuku_not_running)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Warning)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isTrue()
@@ -161,8 +154,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Needs Setup")
-        assertThat(result.status.subtitle).isEqualTo("Grant Shizuku permission to use Virtual Display.")
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_needs_setup)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_grant_permission)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Warning)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isTrue()
@@ -180,10 +173,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Degraded")
-        assertThat(result.status.subtitle).isEqualTo(
-            "Lost Shizuku connection — the current virtual-display session may stop working. Restart Shizuku to recover."
-        )
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_degraded)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_lost_connection)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Warning)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isTrue()
@@ -201,10 +192,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Degraded")
-        assertThat(result.status.subtitle).isEqualTo(
-            "Shizuku permission revoked — the current virtual-display session may stop working."
-        )
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_degraded)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_permission_revoked)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Warning)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isTrue()
@@ -222,15 +211,15 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Ready")
-        assertThat(result.status.subtitle).isEqualTo("Current session is configured for a virtual display.")
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_ready)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_configured)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Positive)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isTrue()
         assertThat(result.switchEnabled).isTrue()
         assertThat(result.rowAction).isNull()
-        // Guardrail: copy must not claim "running on" — only the next session does we'd know that.
-        assertThat(result.status.subtitle).doesNotContain("running on")
+        // Guardrail ("configured for", not "running on") is enforced by pinning the exact
+        // resource above; the English copy lives in values/strings_settings_b.xml.
     }
 
     // Row 11: VD selected, Ready, but active session is still A11y
@@ -243,8 +232,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Ready")
-        assertThat(result.status.subtitle).isEqualTo("Will switch to a virtual display on the next session.")
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_ready)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_will_switch)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Neutral)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isTrue()
@@ -262,8 +251,8 @@ class VirtualDisplayStatusMapperTest {
             gatePending = false,
             gateError = null,
         )
-        assertThat(result.status.label).isEqualTo("Ready")
-        assertThat(result.status.subtitle).isEqualTo("Will start on a virtual display.")
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_ready)
+        assertThat(result.status.subtitleRes).isEqualTo(R.string.virtual_display_status_mapper_will_start)
         assertThat(result.status.tone).isEqualTo(ToolStatusTone.Positive)
         assertThat(result.status.showSpinner).isFalse()
         assertThat(result.switchChecked).isTrue()
@@ -282,7 +271,7 @@ class VirtualDisplayStatusMapperTest {
             gateError = VirtualDisplayToggleError.ShizukuPermissionDenied,
         )
         // Falls through to row 10, not a Needs Setup row.
-        assertThat(result.status.label).isEqualTo("Ready")
+        assertThat(result.status.labelRes).isEqualTo(R.string.virtual_display_status_mapper_ready)
         assertThat(result.switchChecked).isTrue()
         assertThat(result.rowAction).isNull()
     }

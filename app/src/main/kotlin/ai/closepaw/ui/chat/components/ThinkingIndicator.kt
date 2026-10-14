@@ -1,5 +1,7 @@
 package ai.closepaw.ui.chat.components
 
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -42,19 +44,20 @@ import ai.closepaw.ui.theme.closePaw
 @Composable
 fun ThinkingIndicator(modifier: Modifier = Modifier) {
     val spacing = MaterialTheme.closePaw.spacing
+    val thinkingDescription = stringResource(R.string.thinking_indicator_description)
     Row(
         modifier = modifier
             .testTag("qa-thinking-indicator")
             .semantics {
                 liveRegion = LiveRegionMode.Polite
-                contentDescription = "Thinking"
+                contentDescription = thinkingDescription
             },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(spacing.sm),
     ) {
         PawToeSequence(tint = THINKING_INDICATOR_TINT.resolve())
         Text(
-            text = "Thinking…",
+            text = stringResource(R.string.thinking_indicator_label),
             style = MaterialTheme.closePaw.bodyItalic,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

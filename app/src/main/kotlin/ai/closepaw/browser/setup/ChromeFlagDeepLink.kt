@@ -8,6 +8,8 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import android.widget.Toast
+import androidx.annotation.StringRes
+import ai.closepaw.R
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -54,7 +56,7 @@ class ChromeFlagDeepLink(
                 // the chrome:// URL after handing the user to its homepage. Copy + hint so the
                 // user has a one-paste recovery without re-tapping the CTA.
                 copyUrlToClipboard()
-                showToast(LAUNCH_HINT_TOAST)
+                showToast(R.string.chrome_flag_deep_link_launch_hint)
                 Strategy.ActionView
             }
             ActionViewOutcome.NoHandler, ActionViewOutcome.Threw -> {
@@ -63,11 +65,11 @@ class ChromeFlagDeepLink(
                     // Chrome later refuses or drops the navigation. Always copy + hint so the
                     // user has a manual recovery.
                     copyUrlToClipboard()
-                    showToast(LAUNCH_HINT_TOAST)
+                    showToast(R.string.chrome_flag_deep_link_launch_hint)
                     Strategy.ShizukuAmStart
                 } else {
                     copyUrlToClipboard()
-                    showToast(FALLBACK_TOAST)
+                    showToast(R.string.chrome_flag_deep_link_fallback)
                     Strategy.Clipboard
                 }
             }
@@ -144,7 +146,7 @@ class ChromeFlagDeepLink(
         false
     }
 
-    private fun showToast(message: String) {
+    private fun showToast(@StringRes messageRes: Int) {
         // open() runs on Dispatchers.IO, which has no Looper — Toast.makeText fails with
         // "Can't toast on a thread that has not called Looper.prepare()". Hop to the main
         // looper so the toast actually renders. The inline help in ToolsSection is the
@@ -153,7 +155,7 @@ class ChromeFlagDeepLink(
         try {
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 runCatching {
-                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, context.getString(messageRes), Toast.LENGTH_LONG).show()
                 }.onFailure { Log.w(TAG, "toast failed", it) }
             }
         } catch (e: Throwable) {
@@ -166,10 +168,6 @@ class ChromeFlagDeepLink(
             "chrome://flags/#enable-command-line-on-non-rooted-devices"
         const val CHROME_PACKAGE = "com.android.chrome"
         const val CHROME_MAIN_ACTIVITY = "com.google.android.apps.chrome.Main"
-        const val LAUNCH_HINT_TOAST =
-            "If Chrome didn't open chrome://flags, paste the URL from your clipboard into the address bar."
-        const val FALLBACK_TOAST =
-            "URL copied — paste in Chrome's address bar to open the flag page"
         private const val TAG = "ChromeFlagDeepLink"
 
         /**

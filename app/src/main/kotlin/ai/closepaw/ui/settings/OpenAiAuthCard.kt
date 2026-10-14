@@ -24,7 +24,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import ai.closepaw.R
 import ai.closepaw.ui.theme.closePaw
 import ai.closepaw.ui.theme.foldedPaper
 
@@ -66,7 +68,7 @@ internal fun OpenAiAuthCard(
 @Composable
 private fun SignedOutContent(onStartOAuth: () -> Unit) {
     Text(
-        text = "Not signed in",
+        text = stringResource(R.string.open_ai_auth_card_not_signed_in),
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
@@ -75,7 +77,7 @@ private fun SignedOutContent(onStartOAuth: () -> Unit) {
         onClick = onStartOAuth,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Text("Sign in with OpenAI")
+        Text(stringResource(R.string.open_ai_auth_card_sign_in))
     }
 }
 
@@ -87,14 +89,14 @@ private fun InProgressContent(onCancelOAuth: () -> Unit) {
     ) {
         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         Text(
-            text = "Signing in...",
+            text = stringResource(R.string.open_ai_auth_card_signing_in),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
     Spacer(modifier = Modifier.height(12.dp))
     TextButton(onClick = onCancelOAuth) {
-        Text("Cancel")
+        Text(stringResource(R.string.open_ai_auth_card_cancel))
     }
 }
 
@@ -106,7 +108,7 @@ private fun FinishingContent() {
     ) {
         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         Text(
-            text = "Finishing up with OpenAI...",
+            text = stringResource(R.string.open_ai_auth_card_finishing),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -126,7 +128,7 @@ private fun SignedInContent(email: String?, onSignOut: () -> Unit) {
                 .background(MaterialTheme.colorScheme.secondary)
         )
         Text(
-            text = "Signed in with OpenAI",
+            text = stringResource(R.string.open_ai_auth_card_signed_in),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.secondary
         )
@@ -146,7 +148,7 @@ private fun SignedInContent(email: String?, onSignOut: () -> Unit) {
             contentColor = MaterialTheme.colorScheme.error
         )
     ) {
-        Text("Sign Out")
+        Text(stringResource(R.string.open_ai_auth_card_sign_out))
     }
 }
 
@@ -159,6 +161,6 @@ private fun ErrorContent(message: String, onRetry: () -> Unit) {
     )
     Spacer(modifier = Modifier.height(12.dp))
     Button(onClick = onRetry, modifier = Modifier.fillMaxWidth()) {
-        Text("Try Again")
+        Text(stringResource(R.string.open_ai_auth_card_try_again))
     }
 }

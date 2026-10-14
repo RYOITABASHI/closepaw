@@ -1,6 +1,7 @@
 package ai.closepaw.onboarding
 
 import android.util.Log
+import ai.closepaw.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -61,40 +62,40 @@ class HttpLlmCredentialValidator(
                     code == 200 -> LlmCredentialValidator.Result.Valid
                     code == 401 || code == 403 ->
                         LlmCredentialValidator.Result.InvalidKey(
-                            "That key was rejected. Check the value and try again."
+                            OnboardingText.Res(R.string.http_llm_credential_validator_key_rejected)
                         )
                     code == 408 || code == 429 || code >= 500 ->
                         LlmCredentialValidator.Result.TransientError(
-                            "We couldn't reach the model provider. Try again in a moment."
+                            OnboardingText.Res(R.string.http_llm_credential_validator_unreachable)
                         )
                     code == 400 || code == 404 ->
                         LlmCredentialValidator.Result.TransientError(
-                            "Provider configuration issue. Please try again."
+                            OnboardingText.Res(R.string.http_llm_credential_validator_provider_config)
                         )
                     else ->
                         LlmCredentialValidator.Result.TransientError(
-                            "Unexpected response (HTTP $code). Please try again."
+                            OnboardingText.Res(R.string.http_llm_credential_validator_unexpected_response, listOf(code))
                         )
                 }
             } catch (e: SocketTimeoutException) {
                 Log.w(TAG, "Validation timeout", e)
                 LlmCredentialValidator.Result.TransientError(
-                    "Request timed out. Check your internet connection."
+                    OnboardingText.Res(R.string.http_llm_credential_validator_timeout)
                 )
             } catch (e: SSLException) {
                 Log.w(TAG, "SSL error during validation", e)
                 LlmCredentialValidator.Result.TransientError(
-                    "Secure connection failed. Check your internet connection."
+                    OnboardingText.Res(R.string.http_llm_credential_validator_ssl_failed)
                 )
             } catch (e: IOException) {
                 Log.w(TAG, "Network error during validation", e)
                 LlmCredentialValidator.Result.TransientError(
-                    "Check your internet connection and try again."
+                    OnboardingText.Res(R.string.http_llm_credential_validator_no_connection)
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Unexpected validation error", e)
                 LlmCredentialValidator.Result.TransientError(
-                    "Validation failed: ${e.message}"
+                    OnboardingText.Res(R.string.http_llm_credential_validator_failed, listOf(e.message.orEmpty()))
                 )
             } finally {
                 connection?.disconnect()

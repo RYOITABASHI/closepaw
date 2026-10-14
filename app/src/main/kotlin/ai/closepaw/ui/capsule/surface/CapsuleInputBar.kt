@@ -40,10 +40,13 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import ai.closepaw.R
 import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.ui.capsule.voice.RecognizerFactory
 import ai.closepaw.ui.capsule.voice.VoicePermissionDisposition
@@ -131,6 +134,7 @@ internal fun CapsuleInputBar(
     // detected as a delta from controller output.
     val controllerLastText = remember { mutableStateOf("") }
     val reportVoiceFeedback by rememberUpdatedState(LocalVoiceFeedback.current)
+    val androidContext = LocalContext.current
     val voiceController = if (voice != null) {
         rememberVoiceInputController(
             factory = voice.factory,
@@ -138,8 +142,8 @@ internal fun CapsuleInputBar(
                 controllerLastText.value = newText
                 inputText = newText
             },
-            onToast = { msg ->
-                reportVoiceFeedback(msg)
+            onToast = { msgRes ->
+                reportVoiceFeedback(androidContext.getString(msgRes))
             },
         )
     } else {
@@ -155,7 +159,7 @@ internal fun CapsuleInputBar(
             if (granted) {
                 voiceController?.start(baseText = inputText)
             } else {
-                reportVoiceFeedback("Microphone permission denied")
+                reportVoiceFeedback(androidContext.getString(R.string.capsule_input_bar_mic_permission_denied))
             }
         }
     } else {
@@ -163,9 +167,9 @@ internal fun CapsuleInputBar(
     }
 
     val hint = when {
-        voiceState == VoiceState.Listening -> "Listening…"
-        inputEnabled -> spec.hint
-        else -> "Take over to type note"
+        voiceState == VoiceState.Listening -> stringResource(R.string.capsule_input_bar_listening)
+        inputEnabled -> stringResource(spec.hintRes)
+        else -> stringResource(R.string.capsule_input_bar_take_over_to_type)
     }
     val autoFocus = autoFocusInput && mode is CapsuleMode.WaitingForInput
 
@@ -221,7 +225,7 @@ internal fun CapsuleInputBar(
                 VoicePermissionDisposition.Request ->
                     gate.requestPermission()
                 VoicePermissionDisposition.OpenAppSettings -> {
-                    reportVoiceFeedback("Microphone permission is disabled. Re-enable it in Android Settings.")
+                    reportVoiceFeedback(androidContext.getString(R.string.capsule_input_bar_mic_permission_disabled))
                     gate.openAppSettings()
                 }
             }
@@ -229,7 +233,7 @@ internal fun CapsuleInputBar(
             if (v.isPermissionGranted()) {
                 voiceController?.start(baseText = inputText)
             } else {
-                reportVoiceFeedback("Microphone permission is required")
+                reportVoiceFeedback(androidContext.getString(R.string.capsule_input_bar_mic_permission_required))
                 v.requestOverlayPermission()
             }
         }
@@ -249,7 +253,7 @@ internal fun CapsuleInputBar(
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Mic,
-                            contentDescription = "Start voice input",
+                            contentDescription = stringResource(R.string.capsule_input_bar_start_voice),
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -268,7 +272,7 @@ internal fun CapsuleInputBar(
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.StopCircle,
-                            contentDescription = "Stop voice input",
+                            contentDescription = stringResource(R.string.capsule_input_bar_stop_voice),
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(18.dp),
                         )
@@ -289,7 +293,7 @@ internal fun CapsuleInputBar(
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.StopCircle,
-                            contentDescription = "Stopping voice input",
+                            contentDescription = stringResource(R.string.capsule_input_bar_stopping_voice),
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -346,7 +350,7 @@ internal fun CapsuleInputBar(
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.ArrowUpward,
-                        contentDescription = spec.submitLabel,
+                        contentDescription = stringResource(spec.submitLabelRes),
                         modifier = Modifier.size(18.dp),
                     )
                 }

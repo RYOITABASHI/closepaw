@@ -1,5 +1,6 @@
 package ai.closepaw.ui.settings
 
+import ai.closepaw.R
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
 import ai.closepaw.platform.virtualdisplay.ShizukuRuntimeGateway
 import ai.closepaw.protocol.PlatformMode
@@ -12,6 +13,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import kotlinx.coroutines.launch
 
 /**
@@ -76,14 +78,14 @@ internal fun DisplaySection(
     }
 
     val rowClickLabel = if (rowAction == null) null else when (cardState.rowAction) {
-        VirtualDisplayRowAction.RetryEnable -> "Retry Virtual Display setup"
-        VirtualDisplayRowAction.RequestPermission -> "Grant Shizuku permission"
+        VirtualDisplayRowAction.RetryEnable -> stringResource(R.string.display_section_retry_setup)
+        VirtualDisplayRowAction.RequestPermission -> stringResource(R.string.display_section_grant_shizuku)
         null -> null
     }
 
-    SettingsSection(title = "Display Mode") {
+    SettingsSection(title = stringResource(R.string.display_section_title)) {
         ToolSettingsCard(
-            title = "Virtual Display",
+            title = stringResource(R.string.display_section_virtual_display),
             status = cardState.status,
             switchChecked = cardState.switchChecked,
             switchEnabled = cardState.switchEnabled,

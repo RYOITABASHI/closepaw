@@ -1,5 +1,10 @@
 package ai.closepaw.ui.settings
 
+import ai.closepaw.R
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
+
 /**
  * Possible CDP probe states the unified card needs to render. Wraps [ChromeCdpProbe.Result]
  * with an additional [Probing] state for the brief window the probe coroutine is in flight.
@@ -24,14 +29,35 @@ internal sealed class RowAction {
     data object None : RowAction()
 }
 
+/**
+ * Context-free description of the card status: string resource ids instead of resolved
+ * text, so the mapper stays a pure JVM-testable function. Resolved to a [ToolStatusUi]
+ * at the Compose layer via [BrowserScriptStatusResult.status].
+ */
+internal data class BrowserScriptStatusSpec(
+    @StringRes val labelRes: Int,
+    @StringRes val subtitleRes: Int,
+    val tone: ToolStatusTone,
+    val showSpinner: Boolean = false,
+)
+
 internal data class BrowserScriptStatusResult(
-    val status: ToolStatusUi,
+    val statusSpec: BrowserScriptStatusSpec,
     val rowAction: RowAction?,
 )
 
+/** Resolves [BrowserScriptStatusResult.statusSpec] into display text for [ToolSettingsCard]. */
+internal val BrowserScriptStatusResult.status: ToolStatusUi
+    @Composable get() = ToolStatusUi(
+        label = stringResource(statusSpec.labelRes),
+        subtitle = stringResource(statusSpec.subtitleRes),
+        tone = statusSpec.tone,
+        showSpinner = statusSpec.showSpinner,
+    )
+
 /**
  * Pure mapper: collapse the four observable inputs (enable pref, gate pending flag, gate
- * error, CDP probe result) into the unified card's [ToolStatusUi] plus an optional row
+ * error, CDP probe result) into the unified card's status spec plus an optional row
  * action. Mapping table is the source of truth in `design_claude.md`.
  *
  * Probe state is ignored when the pref is off or the gate is busy/errored — those states
@@ -45,9 +71,9 @@ internal fun browserScriptStatusUi(
 ): BrowserScriptStatusResult {
     if (gatePending) {
         return BrowserScriptStatusResult(
-            status = ToolStatusUi(
-                label = "Setting up…",
-                subtitle = "Checking Shizuku…",
+            statusSpec = BrowserScriptStatusSpec(
+                labelRes = R.string.browser_script_status_mapper_setting_up,
+                subtitleRes = R.string.browser_script_status_mapper_checking_shizuku,
                 tone = ToolStatusTone.Neutral,
                 showSpinner = true,
             ),
@@ -56,9 +82,9 @@ internal fun browserScriptStatusUi(
     }
     if (gateError != null) {
         return BrowserScriptStatusResult(
-            status = ToolStatusUi(
-                label = "Needs Setup",
-                subtitle = gateError.message(),
+            statusSpec = BrowserScriptStatusSpec(
+                labelRes = R.string.browser_script_status_mapper_needs_setup,
+                subtitleRes = gateError.messageRes(),
                 tone = ToolStatusTone.Warning,
                 showSpinner = false,
             ),
@@ -67,9 +93,9 @@ internal fun browserScriptStatusUi(
     }
     if (!enabledPref) {
         return BrowserScriptStatusResult(
-            status = ToolStatusUi(
-                label = "Disabled",
-                subtitle = "Toggle to enable",
+            statusSpec = BrowserScriptStatusSpec(
+                labelRes = R.string.browser_script_status_mapper_disabled,
+                subtitleRes = R.string.browser_script_status_mapper_toggle_to_enable,
                 tone = ToolStatusTone.Neutral,
                 showSpinner = false,
             ),
@@ -78,36 +104,36 @@ internal fun browserScriptStatusUi(
     }
     return when (probeResult) {
         BrowserScriptProbeState.Probing -> BrowserScriptStatusResult(
-            status = ToolStatusUi(
-                label = "Checking…",
-                subtitle = "Checking Chrome devtools socket…",
+            statusSpec = BrowserScriptStatusSpec(
+                labelRes = R.string.browser_script_status_mapper_checking,
+                subtitleRes = R.string.browser_script_status_mapper_checking_socket,
                 tone = ToolStatusTone.Neutral,
                 showSpinner = true,
             ),
             rowAction = null,
         )
         BrowserScriptProbeState.Bound -> BrowserScriptStatusResult(
-            status = ToolStatusUi(
-                label = "Ready",
-                subtitle = "browser_script active",
+            statusSpec = BrowserScriptStatusSpec(
+                labelRes = R.string.browser_script_status_mapper_ready,
+                subtitleRes = R.string.browser_script_status_mapper_active,
                 tone = ToolStatusTone.Positive,
                 showSpinner = false,
             ),
             rowAction = null,
         )
         BrowserScriptProbeState.NotBound -> BrowserScriptStatusResult(
-            status = ToolStatusUi(
-                label = "Needs Setup",
-                subtitle = "Chrome devtools socket not exposed. Enable the flag and restart Chrome.",
+            statusSpec = BrowserScriptStatusSpec(
+                labelRes = R.string.browser_script_status_mapper_needs_setup,
+                subtitleRes = R.string.browser_script_status_mapper_socket_not_exposed,
                 tone = ToolStatusTone.Warning,
                 showSpinner = false,
             ),
             rowAction = null,
         )
         BrowserScriptProbeState.Unknown -> BrowserScriptStatusResult(
-            status = ToolStatusUi(
-                label = "Not available",
-                subtitle = "Cannot probe socket on this device — the agent will still try to connect when needed.",
+            statusSpec = BrowserScriptStatusSpec(
+                labelRes = R.string.browser_script_status_mapper_not_available,
+                subtitleRes = R.string.browser_script_status_mapper_cannot_probe,
                 tone = ToolStatusTone.Warning,
                 showSpinner = false,
             ),

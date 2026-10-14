@@ -1,5 +1,8 @@
 package ai.closepaw.ui.navigation
 
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
+import ai.closepaw.R
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -106,7 +109,7 @@ fun NavigationDrawerContent(
             // Recent sessions header
             if (sessions.isNotEmpty()) {
                 Text(
-                    text = "Recent",
+                    text = stringResource(R.string.navigation_drawer_recent),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
@@ -165,7 +168,7 @@ private fun DrawerHeader(
     onClose: () -> Unit
 ) {
     PageMastheadIdentity(
-        title = "Sessions",
+        title = stringResource(R.string.navigation_drawer_sessions_title),
         onClose = onClose,
         modifier = Modifier.padding(top = 12.dp, bottom = 12.dp),
     )
@@ -198,7 +201,7 @@ private fun NewSessionButton(
             tint = MaterialTheme.colorScheme.primary
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Text("New Conversation")
+        Text(stringResource(R.string.navigation_drawer_new_conversation))
     }
 }
 
@@ -226,15 +229,17 @@ private fun DrawerSessionItem(
         else -> null
     }
     val rowStateDescription = when {
-        isCorrupted -> "Unreadable session file. Cannot open."
-        session.isActive -> "Active session"
+        isCorrupted -> stringResource(R.string.navigation_drawer_corrupted_state_description)
+        session.isActive -> stringResource(R.string.navigation_drawer_active_session)
         else -> null
     }
     val statusText = when {
-        isCorrupted -> "Unreadable session file"
-        session.isActive -> "Active session"
+        isCorrupted -> stringResource(R.string.navigation_drawer_corrupted_status)
+        session.isActive -> stringResource(R.string.navigation_drawer_active_session)
         else -> null
     }
+    val openSessionLabel = stringResource(R.string.navigation_drawer_open_session)
+    val resources = LocalContext.current.resources
     val statusColor = when {
         isCorrupted -> MaterialTheme.colorScheme.error
         session.isActive -> MaterialTheme.colorScheme.primary
@@ -244,8 +249,8 @@ private fun DrawerSessionItem(
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Delete Session") },
-            text = { Text("This session and its messages will be permanently deleted.") },
+            title = { Text(stringResource(R.string.navigation_drawer_delete_dialog_title)) },
+            text = { Text(stringResource(R.string.navigation_drawer_delete_dialog_message)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -255,10 +260,10 @@ private fun DrawerSessionItem(
                     colors = ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     )
-                ) { Text("Delete") }
+                ) { Text(stringResource(R.string.navigation_drawer_delete)) }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+                TextButton(onClick = { showDeleteConfirm = false }) { Text(stringResource(R.string.navigation_drawer_cancel)) }
             }
         )
     }
@@ -272,7 +277,7 @@ private fun DrawerSessionItem(
                     Modifier
                 } else {
                     Modifier.clickable(
-                        onClickLabel = "Open session",
+                        onClickLabel = openSessionLabel,
                         role = Role.Button,
                         onClick = onClick
                     )
@@ -322,7 +327,7 @@ private fun DrawerSessionItem(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = TimeUtils.formatMessageCount(session.messageCount),
+                        text = TimeUtils.formatMessageCount(resources, session.messageCount),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -337,7 +342,7 @@ private fun DrawerSessionItem(
 
                     // D1 §6.6: ledger treatment — mono dates.
                     Text(
-                        text = TimeUtils.formatRelativeTime(session.lastUpdated),
+                        text = TimeUtils.formatRelativeTime(resources, session.lastUpdated),
                         style = MaterialTheme.closePaw.monoSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -356,7 +361,7 @@ private fun DrawerSessionItem(
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Delete,
-                        contentDescription = "Delete session",
+                        contentDescription = stringResource(R.string.navigation_drawer_delete_session),
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.closePaw.inkFaint
                     )
@@ -378,13 +383,13 @@ private fun EmptySessionsMessage(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "No saved sessions",
+            text = stringResource(R.string.navigation_drawer_empty_title),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Your chat history will appear here",
+            text = stringResource(R.string.navigation_drawer_empty_message),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -419,7 +424,7 @@ private fun SettingsEntry(
         
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "Settings",
+                text = stringResource(R.string.navigation_drawer_settings),
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface

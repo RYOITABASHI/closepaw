@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- CapsuleStateHolder -->
+    <string name="capsule_state_holder_processing">Processing…</string>
+    <string name="capsule_state_holder_thinking">Thinking…</string>
+    <string name="capsule_state_holder_processing_response">Processing response…</string>
+    <string name="capsule_state_holder_task_completed">Task completed</string>
+    <string name="capsule_state_holder_task_impossible">Task impossible</string>
+    <string name="capsule_state_holder_stopped">Stopped</string>
+    <string name="capsule_state_holder_error_occurred">Error occurred</string>
+
+    <!-- CapsuleRenderSpec -->
+    <string name="capsule_render_spec_thinking">Thinking…</string>
+    <string name="capsule_render_spec_takeover">Takeover</string>
+    <string name="capsule_render_spec_note_hint">Got ideas? Add a note…</string>
+    <string name="capsule_render_spec_add_note">Add note</string>
+    <string name="capsule_render_spec_handing_over_status">Handing over…</string>
+    <string name="capsule_render_spec_handing_over">Handing over</string>
+    <string name="capsule_render_spec_paused">Paused</string>
+    <string name="capsule_render_spec_resume">Resume</string>
+    <string name="capsule_render_spec_awaiting_response">Awaiting response</string>
+    <string name="capsule_render_spec_response_hint">Type your response…</string>
+    <string name="capsule_render_spec_send">Send</string>
+    <string name="capsule_render_spec_action_needed">Action needed</string>
+    <string name="capsule_render_spec_done">Done</string>
+    <string name="capsule_render_spec_approval_prompt">Allow ClosePaw to operate %1$s?</string>
+    <string name="capsule_render_spec_always">Always</string>
+    <string name="capsule_render_spec_session">Session</string>
+    <string name="capsule_render_spec_reject">Reject</string>
+    <string name="capsule_render_spec_close">Close</string>
+    <string name="capsule_render_spec_task_hint">What can I help you with?</string>
+    <string name="capsule_render_spec_stopping">Stopping…</string>
+    <string name="capsule_render_spec_stop">Stop</string>
+
+    <!-- IslandOverlayHost -->
+    <string name="island_overlay_host_working">Working…</string>
+    <string name="island_overlay_host_handing_over">Handing over…</string>
+    <string name="island_overlay_host_paused">Paused</string>
+    <string name="island_overlay_host_awaiting_response">Awaiting response</string>
+    <string name="island_overlay_host_action_needed">Action needed</string>
+    <string name="island_overlay_host_approval_prompt">Allow ClosePaw to operate %1$s?</string>
+    <string name="island_overlay_host_done">Done: %1$s</string>
+    <string name="island_overlay_host_error">Error: %1$s</string>
+
+    <!-- StatusIslandCompose -->
+    <string name="status_island_compose_open_current_app">Open current app</string>
+    <string name="status_island_compose_status">Status: %1$s</string>
+
+    <!-- CapsuleOverlayHost -->
+    <string name="capsule_overlay_host_supplement_received_next_step">✓ Received, will apply next step</string>
+    <string name="capsule_overlay_host_supplement_received">✓ Received</string>
+
+    <!-- SmartCapsuleSurface -->
+    <string name="smart_capsule_surface_open_startup_error">Open startup error</string>
+    <string name="smart_capsule_surface_startup_error">Startup error: %1$s</string>
+    <string name="smart_capsule_surface_dismiss_error">Dismiss error</string>
+    <string name="smart_capsule_surface_open_current_app">Open current app</string>
+    <string name="smart_capsule_surface_capsule_status">Capsule status: %1$s</string>
+
+    <!-- CapsuleControlBar -->
+    <string name="capsule_control_bar_minimize">Minimize</string>
+    <string name="capsule_control_bar_open_app">Open app</string>
+    <string name="capsule_control_bar_open_viewer">Open viewer</string>
+
+    <!-- CapsuleInputBar -->
+    <string name="capsule_input_bar_mic_permission_denied">Microphone permission denied</string>
+    <string name="capsule_input_bar_listening">Listening…</string>
+    <string name="capsule_input_bar_take_over_to_type">Take over to type note</string>
+    <string name="capsule_input_bar_mic_permission_disabled">Microphone permission is disabled. Re-enable it in Android Settings.</string>
+    <string name="capsule_input_bar_mic_permission_required">Microphone permission is required</string>
+    <string name="capsule_input_bar_start_voice">Start voice input</string>
+    <string name="capsule_input_bar_stop_voice">Stop voice input</string>
+    <string name="capsule_input_bar_stopping_voice">Stopping voice input</string>
+
+    <!-- VoiceInputController -->
+    <string name="voice_input_controller_permission_revoked">Microphone permission revoked — re-enable in Settings</string>
+    <string name="voice_input_controller_language_unavailable">Voice not available for this language</string>
+    <string name="voice_input_controller_needs_network">Voice needs network for this language</string>
+    <string name="voice_input_controller_unavailable">Voice unavailable</string>
+
+    <!-- ChatViewModel -->
+    <string name="chat_view_model_task_completed">Task completed</string>
+    <string name="chat_view_model_failed_to_start">Failed to start: %1$s</string>
+
+    <!-- ChatScreen -->
+    <string name="chat_screen_jump_to_live">live</string>
+
+    <!-- ChatHeader -->
+    <string name="chat_header_open_menu">Open menu</string>
+    <string name="chat_header_new_conversation">New conversation</string>
+
+    <!-- AgentRow (accessibility state descriptions) -->
+    <string name="agent_row_state_live">live</string>
+    <string name="agent_row_state_waiting">waiting</string>
+    <string name="agent_row_state_collapsed">collapsed</string>
+    <string name="agent_row_state_expanded">expanded</string>
+    <string name="agent_row_state_error">error</string>
+
+    <!-- AgentSummary -->
+    <plurals name="agent_summary_action_count">
+        <item quantity="one">%1$d action</item>
+        <item quantity="other">%1$d actions</item>
+    </plurals>
+
+    <!-- AgentTrace -->
+    <string name="agent_trace_state_proposed">Proposed</string>
+    <string name="agent_trace_state_executing">Executing</string>
+    <string name="agent_trace_state_success">Success</string>
+    <string name="agent_trace_state_failed">Failed</string>
+    <string name="agent_trace_state_skipped">Skipped</string>
+
+    <!-- CollapsePill -->
+    <string name="collapse_pill_state_expanded">expanded</string>
+    <string name="collapse_pill_state_collapsed">collapsed</string>
+
+    <!-- CompletionHandoffCtaRow -->
+    <string name="completion_handoff_cta_row_open_app">Open %1$s</string>
+
+    <!-- EmptyState -->
+    <string name="empty_state_title">What can I\nhelp you with?</string>
+    <string name="empty_state_suggestion_ride_verb">Get me</string>
+    <string name="empty_state_suggestion_ride_gloss">a ride home</string>
+    <string name="empty_state_suggestion_ride_full">Get me a ride home</string>
+    <string name="empty_state_suggestion_catch_up_verb">Catch me up</string>
+    <string name="empty_state_suggestion_catch_up_gloss">on emails and messages</string>
+    <string name="empty_state_suggestion_catch_up_full">Catch me up on emails and messages</string>
+    <string name="empty_state_suggestion_search_verb">Search</string>
+    <string name="empty_state_suggestion_search_gloss">for nearby restaurants</string>
+    <string name="empty_state_suggestion_search_full">Search for nearby restaurants</string>
+
+    <!-- ThinkingIndicator -->
+    <string name="thinking_indicator_description">Thinking</string>
+    <string name="thinking_indicator_label">Thinking…</string>
+
+    <!-- NavigationDrawer -->
+    <string name="navigation_drawer_recent">Recent</string>
+    <string name="navigation_drawer_sessions_title">Sessions</string>
+    <string name="navigation_drawer_new_conversation">New Conversation</string>
+    <string name="navigation_drawer_corrupted_state_description">Unreadable session file. Cannot open.</string>
+    <string name="navigation_drawer_corrupted_status">Unreadable session file</string>
+    <string name="navigation_drawer_active_session">Active session</string>
+    <string name="navigation_drawer_open_session">Open session</string>
+    <string name="navigation_drawer_delete_dialog_title">Delete Session</string>
+    <string name="navigation_drawer_delete_dialog_message">This session and its messages will be permanently deleted.</string>
+    <string name="navigation_drawer_delete">Delete</string>
+    <string name="navigation_drawer_cancel">Cancel</string>
+    <string name="navigation_drawer_delete_session">Delete session</string>
+    <string name="navigation_drawer_empty_title">No saved sessions</string>
+    <string name="navigation_drawer_empty_message">Your chat history will appear here</string>
+    <string name="navigation_drawer_settings">Settings</string>
+
+    <!-- TimeUtils -->
+    <string name="time_utils_just_now">Just now</string>
+    <string name="time_utils_yesterday">Yesterday</string>
+    <plurals name="time_utils_minutes_ago">
+        <item quantity="one">%1$d minute ago</item>
+        <item quantity="other">%1$d minutes ago</item>
+    </plurals>
+    <plurals name="time_utils_hours_ago">
+        <item quantity="one">%1$d hour ago</item>
+        <item quantity="other">%1$d hours ago</item>
+    </plurals>
+    <plurals name="time_utils_days_ago">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <plurals name="time_utils_message_count">
+        <item quantity="one">%1$d message</item>
+        <item quantity="other">%1$d messages</item>
+    </plurals>
+
+    <!-- Ornaments -->
+    <string name="ornaments_close">Close</string>
+    <string name="ornaments_back">Back</string>
+</resources>

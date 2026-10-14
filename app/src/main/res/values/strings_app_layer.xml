@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- OnboardingScreen -->
+    <string name="onboarding_screen_title_accessibility">Let ClosePaw control your phone</string>
+    <string name="onboarding_screen_title_overlay">See controls while the agent works</string>
+    <string name="onboarding_screen_title_battery">Keep long tasks alive</string>
+    <string name="onboarding_screen_title_api_key">Connect your model</string>
+    <string name="onboarding_screen_title_demo">Try a safe demo</string>
+    <string name="onboarding_screen_title_complete">You\'re All Set!</string>
+
+    <!-- OnboardingShell -->
+    <string name="onboarding_shell_back">Back</string>
+    <string name="onboarding_shell_step_count">Step %1$d of %2$d</string>
+
+    <!-- PermissionRepairCard -->
+    <string name="permission_repair_card_accessibility_title">Accessibility disabled</string>
+    <string name="permission_repair_card_accessibility_detail">Agent cannot automate.</string>
+    <string name="permission_repair_card_overlay_title">Overlay revoked</string>
+    <string name="permission_repair_card_overlay_detail">Capsule controls hidden during tasks.</string>
+    <string name="permission_repair_card_battery_title">Battery optimization on</string>
+    <string name="permission_repair_card_battery_detail">Long tasks may stop.</string>
+    <string name="permission_repair_card_fix">Fix</string>
+    <string name="permission_repair_card_fix_content_description">Fix %1$s</string>
+
+    <!-- OnboardingSteps -->
+    <string name="onboarding_steps_hide_details">Hide details</string>
+    <string name="onboarding_steps_privacy_details">Data &amp; privacy details</string>
+    <string name="onboarding_steps_checking">Checking…</string>
+    <string name="onboarding_steps_continue">Continue</string>
+    <string name="onboarding_steps_continue_without">Continue without this</string>
+    <string name="onboarding_steps_choose_provider">Choose your provider to connect.</string>
+    <string name="onboarding_steps_oauth_intro">Sign in with your OpenAI account. Uses your existing ChatGPT subscription — no API key needed.</string>
+    <string name="onboarding_steps_sign_in_openai">Sign in with OpenAI</string>
+    <string name="onboarding_steps_enter_key_manually">or enter API key manually</string>
+    <string name="onboarding_steps_oauth_in_progress">Complete sign-in in your browser.\nYou\'ll return here automatically.</string>
+    <string name="onboarding_steps_cancel">Cancel</string>
+    <string name="onboarding_steps_oauth_finishing">Browser sign-in complete.\nFinishing up with OpenAI — this can take ~20 seconds.</string>
+    <string name="onboarding_steps_signed_in_as">Signed in as %1$s</string>
+    <string name="onboarding_steps_signed_in">Signed in successfully</string>
+    <string name="onboarding_steps_try_again">Try Again</string>
+    <string name="onboarding_steps_api_key_label">API Key</string>
+    <string name="onboarding_steps_hide">Hide</string>
+    <string name="onboarding_steps_show">Show</string>
+    <string name="onboarding_steps_key_security_note">Your key is encrypted on-device. Never sent anywhere except the LLM provider.</string>
+    <string name="onboarding_steps_validating">Validating…</string>
+    <string name="onboarding_steps_key_verified">Key verified</string>
+    <string name="onboarding_steps_retry">Retry</string>
+    <string name="onboarding_steps_validate_continue">Validate &amp; Continue</string>
+    <string name="onboarding_steps_sign_in_openai_alt">or sign in with OpenAI</string>
+    <string name="onboarding_steps_demo_intro">We\'ll open the Settings app to prove everything works. This does not change any device setting.</string>
+    <string name="onboarding_steps_demo_opening">Opening Settings…</string>
+    <string name="onboarding_steps_credential_problem">Credential problem</string>
+    <string name="onboarding_steps_run_demo">Run Demo</string>
+    <string name="onboarding_steps_skip_for_now">Skip for now</string>
+    <string name="onboarding_steps_running">Running…</string>
+    <string name="onboarding_steps_sign_in_again">Sign in again</string>
+    <string name="onboarding_steps_reenter_key">Re-enter API key</string>
+    <string name="onboarding_steps_demo_complete">Demo complete</string>
+    <string name="onboarding_steps_row_accessibility">Accessibility service</string>
+    <string name="onboarding_steps_row_overlay">Display overlay</string>
+    <string name="onboarding_steps_row_battery">Battery optimization</string>
+    <string name="onboarding_steps_row_signed_in_openai">Signed in with OpenAI</string>
+    <string name="onboarding_steps_row_api_key_verified">API key verified</string>
+    <string name="onboarding_steps_row_demo">Demo task</string>
+    <string name="onboarding_steps_outcome_skipped">%1$s (skipped)</string>
+    <string name="onboarding_steps_start_using">Start Using ClosePaw</string>
+    <string name="onboarding_steps_status_label">Status: %1$s</string>
+    <string name="onboarding_steps_status_not_enabled">Not enabled</string>
+    <string name="onboarding_steps_status_waiting">Waiting…</string>
+    <string name="onboarding_steps_status_enabled">Enabled</string>
+    <string name="onboarding_steps_status_skipped">Skipped</string>
+    <string name="onboarding_steps_accessibility_description">Android only allows trusted automation through Accessibility. ClosePaw uses it to read the screen and perform taps so it can complete the tasks you ask for.</string>
+    <string name="onboarding_steps_accessibility_consequence">Without Accessibility, ClosePaw cannot automate tasks.</string>
+    <string name="onboarding_steps_accessibility_cta">Open Accessibility Settings</string>
+    <string name="onboarding_steps_accessibility_extended">Active only when you start a task — ClosePaw does not run in the background or monitor other apps. Screen content read during a task is sent to the LLM provider you chose (e.g. OpenAI, Anthropic) so the agent can pick the next step. See our Privacy Policy: https://imoonkey.github.io/closepaw/privacy/</string>
+    <string name="onboarding_steps_overlay_description">The floating capsule shows progress and lets you stop, take over, or return to ClosePaw.</string>
+    <string name="onboarding_steps_overlay_consequence">Without Overlay, you won\'t see controls while the agent works in other apps.</string>
+    <string name="onboarding_steps_overlay_cta">Grant Overlay Permission</string>
+    <string name="onboarding_steps_battery_description">Some phones aggressively stop background work. Allowing unrestricted battery use makes long tasks reliable.\n\nThis is optional but recommended.</string>
+    <string name="onboarding_steps_battery_consequence">Long tasks may stop when the app is backgrounded.</string>
+    <string name="onboarding_steps_battery_cta">Allow Background Running</string>
+
+    <!-- OnboardingViewModel -->
+    <string name="onboarding_view_model_no_model_found">No model found for %1$s</string>
+
+    <!-- HttpLlmCredentialValidator -->
+    <string name="http_llm_credential_validator_key_rejected">That key was rejected. Check the value and try again.</string>
+    <string name="http_llm_credential_validator_unreachable">We couldn\'t reach the model provider. Try again in a moment.</string>
+    <string name="http_llm_credential_validator_provider_config">Provider configuration issue. Please try again.</string>
+    <string name="http_llm_credential_validator_unexpected_response">Unexpected response (HTTP %1$d). Please try again.</string>
+    <string name="http_llm_credential_validator_timeout">Request timed out. Check your internet connection.</string>
+    <string name="http_llm_credential_validator_ssl_failed">Secure connection failed. Check your internet connection.</string>
+    <string name="http_llm_credential_validator_no_connection">Check your internet connection and try again.</string>
+    <string name="http_llm_credential_validator_failed">Validation failed: %1$s</string>
+
+    <!-- PermissionStateMonitor -->
+    <string name="permission_state_monitor_accessibility_disabled">Accessibility service is disabled</string>
+    <string name="permission_state_monitor_overlay_revoked">Overlay permission is revoked</string>
+    <string name="permission_state_monitor_battery_reenabled">Battery optimization re-enabled</string>
+
+    <!-- OnboardingDemoController -->
+    <string name="onboarding_demo_controller_a11y_unavailable">Accessibility service not available</string>
+    <string name="onboarding_demo_controller_settings_opened">Settings app opened successfully!</string>
+    <string name="onboarding_demo_controller_task_completed">Demo task completed!</string>
+    <string name="onboarding_demo_controller_error">Demo encountered an error</string>
+    <string name="onboarding_demo_controller_impossible">Demo could not complete the task</string>
+    <string name="onboarding_demo_controller_ended">Demo ended: %1$s</string>
+    <string name="onboarding_demo_controller_timeout">The demo timed out before opening Settings.</string>
+    <string name="onboarding_demo_controller_no_credential">No %1$s credential found. Sign in again.</string>
+    <string name="onboarding_demo_controller_sign_in_expired">Sign-in expired. Please sign in again.</string>
+    <string name="onboarding_demo_controller_credential_mismatch">Credential mismatch for %1$s. Re-enter it.</string>
+    <string name="onboarding_demo_controller_failed">Demo failed: %1$s</string>
+
+    <!-- MainActivity -->
+    <string name="main_activity_started_by_shelly">Started by Shelly</string>
+    <string name="main_activity_external_goal_title">External Goal</string>
+    <string name="main_activity_external_goal_message">An external app wants to run:\n\"%1$s\"</string>
+    <string name="main_activity_external_goal_run">Run</string>
+    <string name="main_activity_external_goal_cancel">Cancel</string>
+    <string name="main_activity_grant_overlay">Please grant Overlay permission</string>
+    <string name="main_activity_enable_accessibility">Please enable the Accessibility Service</string>
+    <string name="main_activity_unknown_error">Unknown error</string>
+    <string name="main_activity_failed_to_start">Failed to start: %1$s</string>
+    <string name="main_activity_session_previous_version">Session from previous version — start a new session.</string>
+    <string name="main_activity_local_llm_unavailable">Local LLM client unavailable</string>
+    <string name="main_activity_missing_credentials">Missing credential(s): %1$s</string>
+    <string name="main_activity_battery_settings_unavailable">Unable to open battery settings</string>
+    <string name="main_activity_browser_sign_in_unavailable">Unable to open browser for sign-in</string>
+
+    <!-- MainActivityModelValidation -->
+    <string name="main_activity_model_validation_refresh_model">Refresh or select a model for this endpoint</string>
+    <string name="main_activity_model_validation_unknown_model">Unknown model: %1$s</string>
+    <string name="main_activity_model_validation_chatgpt_sign_in_required">%1$s: ChatGPT sign-in required</string>
+    <string name="main_activity_model_validation_openai_key_required">%1$s: OpenAI API key required</string>
+    <string name="main_activity_model_validation_openrouter_key_required">%1$s: OpenRouter API key required</string>
+    <string name="main_activity_model_validation_api_key_required">%1$s: API key required</string>
+    <string name="main_activity_model_validation_other_api_key_required">Other: API key required</string>
+    <string name="main_activity_model_validation_other_base_url_required">Other: base URL required</string>
+    <string name="main_activity_model_validation_other_base_url_invalid">Other: base URL invalid</string>
+    <string name="main_activity_model_validation_other_model_id_required">Other: custom model id required</string>
+    <string name="main_activity_model_validation_other_model_id_invalid">Other: custom model id invalid</string>
+
+    <!-- ModelLoadingStatusHolder -->
+    <string name="model_loading_status_holder_download_failed">Download failed</string>
+
+    <!-- ChromeFlagDeepLink -->
+    <string name="chrome_flag_deep_link_launch_hint">If Chrome didn\'t open chrome://flags, paste the URL from your clipboard into the address bar.</string>
+    <string name="chrome_flag_deep_link_fallback">URL copied — paste in Chrome\'s address bar to open the flag page</string>
+</resources>

@@ -1,6 +1,7 @@
 package ai.closepaw.ui.overlay
 
 import com.google.common.truth.Truth.assertThat
+import ai.closepaw.R
 import ai.closepaw.protocol.AskUserType
 import ai.closepaw.protocol.SessionEndReason
 import ai.closepaw.protocol.TaskOutcome
@@ -118,7 +119,7 @@ class CapsuleStateHolderTest {
         holder.onResumed()
         val mode = holder.mode.value
         assertThat(mode).isInstanceOf(CapsuleMode.Running::class.java)
-        assertThat((mode as CapsuleMode.Running).thought).isEqualTo("Thinking...")
+        assertThat((mode as CapsuleMode.Running).thoughtRes).isEqualTo(R.string.capsule_state_holder_thinking)
     }
 
     @Test
@@ -166,7 +167,7 @@ class CapsuleStateHolderTest {
         holder.onUserResponseSent("call1")
         val mode = holder.mode.value
         assertThat(mode).isInstanceOf(CapsuleMode.Running::class.java)
-        assertThat((mode as CapsuleMode.Running).thought).isEqualTo("Processing response...")
+        assertThat((mode as CapsuleMode.Running).thoughtRes).isEqualTo(R.string.capsule_state_holder_processing_response)
     }
 
     @Test
@@ -236,7 +237,7 @@ class CapsuleStateHolderTest {
         holder.onTaskCompleted(TaskOutcome.GOAL_ACHIEVED, null)
         val mode = holder.mode.value
         assertThat(mode).isInstanceOf(CapsuleMode.Done::class.java)
-        assertThat((mode as CapsuleMode.Done).message).isEqualTo("Task completed")
+        assertThat((mode as CapsuleMode.Done).messageRes).isEqualTo(R.string.capsule_state_holder_task_completed)
     }
 
     @Test
@@ -245,7 +246,7 @@ class CapsuleStateHolderTest {
         holder.onTaskCompleted(TaskOutcome.GOAL_ACHIEVED, "   ")
         val mode = holder.mode.value
         assertThat(mode).isInstanceOf(CapsuleMode.Done::class.java)
-        assertThat((mode as CapsuleMode.Done).message).isEqualTo("Task completed")
+        assertThat((mode as CapsuleMode.Done).messageRes).isEqualTo(R.string.capsule_state_holder_task_completed)
     }
 
     @Test

@@ -36,8 +36,14 @@ object ModelPicker {
     /** Group keys pinned to the top of the list in this order. */
     private val PINNED_GROUPS = listOf("anthropic", "openai", "google")
 
-    /** Group key for models whose id doesn't have a `vendor/` prefix. */
-    private const val OTHER_GROUP_KEY = "(other)"
+    /**
+     * Group key for models whose id doesn't have a `vendor/` prefix. Keys are
+     * identifiers; the Compose layer maps this one to a localized label.
+     */
+    internal const val OTHER_GROUP_KEY = "(other)"
+
+    /** Group key for the single flattened group shown while searching (localized in the UI). */
+    internal const val SEARCH_GROUP_KEY = "(search)"
 
     /**
      * Build picker state for [allEntries] with optional search [query] and
@@ -68,8 +74,8 @@ object ModelPicker {
                 query = query,
                 isSearching = true,
                 groups = if (filtered.isEmpty()) emptyList()
-                else listOf(ModelPickerGroup(key = "(search)", rows = filtered)),
-                expandedKeys = setOf("(search)"),
+                else listOf(ModelPickerGroup(key = SEARCH_GROUP_KEY, rows = filtered)),
+                expandedKeys = setOf(SEARCH_GROUP_KEY),
                 selectedName = selectedName,
             )
         }

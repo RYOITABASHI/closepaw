@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- OnboardingScreen -->
+    <string name="onboarding_screen_title_accessibility">ClosePawにスマートフォンの操作を許可</string>
+    <string name="onboarding_screen_title_overlay">作業中も操作パネルを表示</string>
+    <string name="onboarding_screen_title_battery">長時間のタスクを止めない</string>
+    <string name="onboarding_screen_title_api_key">モデルを接続</string>
+    <string name="onboarding_screen_title_demo">安全なデモを試す</string>
+    <string name="onboarding_screen_title_complete">準備が整いました！</string>
+
+    <!-- OnboardingShell -->
+    <string name="onboarding_shell_back">戻る</string>
+    <string name="onboarding_shell_step_count">ステップ %1$d / %2$d</string>
+
+    <!-- PermissionRepairCard -->
+    <string name="permission_repair_card_accessibility_title">ユーザー補助がオフです</string>
+    <string name="permission_repair_card_accessibility_detail">エージェントが操作を自動化できません。</string>
+    <string name="permission_repair_card_overlay_title">オーバーレイ権限が取り消されました</string>
+    <string name="permission_repair_card_overlay_detail">タスク中にカプセルの操作パネルが表示されません。</string>
+    <string name="permission_repair_card_battery_title">電池の最適化がオンです</string>
+    <string name="permission_repair_card_battery_detail">長時間のタスクが停止する可能性があります。</string>
+    <string name="permission_repair_card_fix">修正</string>
+    <string name="permission_repair_card_fix_content_description">%1$sを修正</string>
+
+    <!-- OnboardingSteps -->
+    <string name="onboarding_steps_hide_details">詳細を隠す</string>
+    <string name="onboarding_steps_privacy_details">データとプライバシーの詳細</string>
+    <string name="onboarding_steps_checking">確認中…</string>
+    <string name="onboarding_steps_continue">続行</string>
+    <string name="onboarding_steps_continue_without">設定せずに続行</string>
+    <string name="onboarding_steps_choose_provider">接続するプロバイダを選択してください。</string>
+    <string name="onboarding_steps_oauth_intro">OpenAIアカウントでログインします。お使いのChatGPTサブスクリプションを利用するため、APIキーは不要です。</string>
+    <string name="onboarding_steps_sign_in_openai">OpenAIでログイン</string>
+    <string name="onboarding_steps_enter_key_manually">またはAPIキーを手動で入力</string>
+    <string name="onboarding_steps_oauth_in_progress">ブラウザでログインを完了してください。\n完了すると自動的にこの画面に戻ります。</string>
+    <string name="onboarding_steps_cancel">キャンセル</string>
+    <string name="onboarding_steps_oauth_finishing">ブラウザでのログインが完了しました。\nOpenAIとの接続を完了しています（20秒ほどかかる場合があります）。</string>
+    <string name="onboarding_steps_signed_in_as">%1$sでログイン中</string>
+    <string name="onboarding_steps_signed_in">ログインしました</string>
+    <string name="onboarding_steps_try_again">再試行</string>
+    <string name="onboarding_steps_api_key_label">APIキー</string>
+    <string name="onboarding_steps_hide">非表示</string>
+    <string name="onboarding_steps_show">表示</string>
+    <string name="onboarding_steps_key_security_note">キーは端末内で暗号化され、LLMプロバイダ以外に送信されることはありません。</string>
+    <string name="onboarding_steps_validating">検証中…</string>
+    <string name="onboarding_steps_key_verified">キーを確認しました</string>
+    <string name="onboarding_steps_retry">再試行</string>
+    <string name="onboarding_steps_validate_continue">検証して続行</string>
+    <string name="onboarding_steps_sign_in_openai_alt">またはOpenAIでログイン</string>
+    <string name="onboarding_steps_demo_intro">動作確認のため「設定」アプリを開きます。端末の設定は一切変更しません。</string>
+    <string name="onboarding_steps_demo_opening">「設定」を開いています…</string>
+    <string name="onboarding_steps_credential_problem">認証情報に問題があります</string>
+    <string name="onboarding_steps_run_demo">デモを実行</string>
+    <string name="onboarding_steps_skip_for_now">今はスキップ</string>
+    <string name="onboarding_steps_running">実行中…</string>
+    <string name="onboarding_steps_sign_in_again">再ログイン</string>
+    <string name="onboarding_steps_reenter_key">APIキーを再入力</string>
+    <string name="onboarding_steps_demo_complete">デモ完了</string>
+    <string name="onboarding_steps_row_accessibility">ユーザー補助サービス</string>
+    <string name="onboarding_steps_row_overlay">オーバーレイ表示</string>
+    <string name="onboarding_steps_row_battery">電池の最適化</string>
+    <string name="onboarding_steps_row_signed_in_openai">OpenAIでログイン済み</string>
+    <string name="onboarding_steps_row_api_key_verified">APIキー確認済み</string>
+    <string name="onboarding_steps_row_demo">デモタスク</string>
+    <string name="onboarding_steps_outcome_skipped">%1$s（スキップ）</string>
+    <string name="onboarding_steps_start_using">ClosePawを使い始める</string>
+    <string name="onboarding_steps_status_label">ステータス: %1$s</string>
+    <string name="onboarding_steps_status_not_enabled">未設定</string>
+    <string name="onboarding_steps_status_waiting">待機中…</string>
+    <string name="onboarding_steps_status_enabled">有効</string>
+    <string name="onboarding_steps_status_skipped">スキップ</string>
+    <string name="onboarding_steps_accessibility_description">Androidで信頼できる自動操作を行うには、ユーザー補助機能が必要です。ClosePawはこの機能で画面を読み取り、タップを実行して、依頼されたタスクを完了します。</string>
+    <string name="onboarding_steps_accessibility_consequence">ユーザー補助がオフの場合、ClosePawはタスクを自動化できません。</string>
+    <string name="onboarding_steps_accessibility_cta">ユーザー補助の設定を開く</string>
+    <string name="onboarding_steps_accessibility_extended">動作するのはタスクを開始したときだけです。ClosePawがバックグラウンドで動作したり、他のアプリを監視したりすることはありません。タスク中に読み取った画面の内容は、エージェントが次の操作を判断できるよう、選択したLLMプロバイダ（OpenAI、Anthropicなど）に送信されます。プライバシーポリシー: https://imoonkey.github.io/closepaw/privacy/</string>
+    <string name="onboarding_steps_overlay_description">フローティングカプセルに進行状況が表示され、停止、操作の引き継ぎ、ClosePawへの復帰ができます。</string>
+    <string name="onboarding_steps_overlay_consequence">オーバーレイ権限がない場合、エージェントが他のアプリで作業している間は操作パネルが表示されません。</string>
+    <string name="onboarding_steps_overlay_cta">オーバーレイ権限を許可</string>
+    <string name="onboarding_steps_battery_description">一部のスマートフォンはバックグラウンドの処理を積極的に停止します。電池の使用を「制限なし」にすると、長時間のタスクが安定して動作します。\n\nこの設定は任意ですが、おすすめします。</string>
+    <string name="onboarding_steps_battery_consequence">アプリがバックグラウンドにあると、長時間のタスクが停止する可能性があります。</string>
+    <string name="onboarding_steps_battery_cta">バックグラウンド実行を許可</string>
+
+    <!-- OnboardingViewModel -->
+    <string name="onboarding_view_model_no_model_found">%1$sのモデルが見つかりません</string>
+
+    <!-- HttpLlmCredentialValidator -->
+    <string name="http_llm_credential_validator_key_rejected">このキーは拒否されました。値を確認して、もう一度お試しください。</string>
+    <string name="http_llm_credential_validator_unreachable">モデルプロバイダに接続できませんでした。しばらくしてからもう一度お試しください。</string>
+    <string name="http_llm_credential_validator_provider_config">プロバイダの設定に問題があります。もう一度お試しください。</string>
+    <string name="http_llm_credential_validator_unexpected_response">予期しない応答です（HTTP %1$d）。もう一度お試しください。</string>
+    <string name="http_llm_credential_validator_timeout">リクエストがタイムアウトしました。インターネット接続を確認してください。</string>
+    <string name="http_llm_credential_validator_ssl_failed">安全な接続を確立できませんでした。インターネット接続を確認してください。</string>
+    <string name="http_llm_credential_validator_no_connection">インターネット接続を確認して、もう一度お試しください。</string>
+    <string name="http_llm_credential_validator_failed">検証に失敗しました: %1$s</string>
+
+    <!-- PermissionStateMonitor -->
+    <string name="permission_state_monitor_accessibility_disabled">ユーザー補助サービスがオフになっています</string>
+    <string name="permission_state_monitor_overlay_revoked">オーバーレイ権限が取り消されています</string>
+    <string name="permission_state_monitor_battery_reenabled">電池の最適化が再び有効になっています</string>
+
+    <!-- OnboardingDemoController -->
+    <string name="onboarding_demo_controller_a11y_unavailable">ユーザー補助サービスを利用できません</string>
+    <string name="onboarding_demo_controller_settings_opened">「設定」アプリを開きました！</string>
+    <string name="onboarding_demo_controller_task_completed">デモタスクが完了しました！</string>
+    <string name="onboarding_demo_controller_error">デモでエラーが発生しました</string>
+    <string name="onboarding_demo_controller_impossible">デモでタスクを完了できませんでした</string>
+    <string name="onboarding_demo_controller_ended">デモが終了しました: %1$s</string>
+    <string name="onboarding_demo_controller_timeout">「設定」を開く前にデモがタイムアウトしました。</string>
+    <string name="onboarding_demo_controller_no_credential">%1$sの認証情報が見つかりません。もう一度ログインしてください。</string>
+    <string name="onboarding_demo_controller_sign_in_expired">ログインの有効期限が切れました。もう一度ログインしてください。</string>
+    <string name="onboarding_demo_controller_credential_mismatch">%1$sの認証情報が一致しません。もう一度入力してください。</string>
+    <string name="onboarding_demo_controller_failed">デモに失敗しました: %1$s</string>
+
+    <!-- MainActivity -->
+    <string name="main_activity_started_by_shelly">Shellyから開始</string>
+    <string name="main_activity_external_goal_title">外部からの依頼</string>
+    <string name="main_activity_external_goal_message">外部アプリが次のタスクの実行を求めています:\n「%1$s」</string>
+    <string name="main_activity_external_goal_run">実行</string>
+    <string name="main_activity_external_goal_cancel">キャンセル</string>
+    <string name="main_activity_grant_overlay">オーバーレイ権限を許可してください</string>
+    <string name="main_activity_enable_accessibility">ユーザー補助サービスを有効にしてください</string>
+    <string name="main_activity_unknown_error">不明なエラー</string>
+    <string name="main_activity_failed_to_start">開始できませんでした: %1$s</string>
+    <string name="main_activity_session_previous_version">以前のバージョンのセッションです。新しいセッションを開始してください。</string>
+    <string name="main_activity_local_llm_unavailable">ローカルLLMクライアントを利用できません</string>
+    <string name="main_activity_missing_credentials">認証情報が不足しています: %1$s</string>
+    <string name="main_activity_battery_settings_unavailable">電池の設定を開けませんでした</string>
+    <string name="main_activity_browser_sign_in_unavailable">ログイン用のブラウザを開けませんでした</string>
+
+    <!-- MainActivityModelValidation -->
+    <string name="main_activity_model_validation_refresh_model">このエンドポイントのモデルを更新するか、選択してください</string>
+    <string name="main_activity_model_validation_unknown_model">不明なモデル: %1$s</string>
+    <string name="main_activity_model_validation_chatgpt_sign_in_required">%1$s: ChatGPTへのログインが必要です</string>
+    <string name="main_activity_model_validation_openai_key_required">%1$s: OpenAIのAPIキーが必要です</string>
+    <string name="main_activity_model_validation_openrouter_key_required">%1$s: OpenRouterのAPIキーが必要です</string>
+    <string name="main_activity_model_validation_api_key_required">%1$s: APIキーが必要です</string>
+    <string name="main_activity_model_validation_other_api_key_required">その他: APIキーが必要です</string>
+    <string name="main_activity_model_validation_other_base_url_required">その他: ベースURLが必要です</string>
+    <string name="main_activity_model_validation_other_base_url_invalid">その他: ベースURLが無効です</string>
+    <string name="main_activity_model_validation_other_model_id_required">その他: カスタムモデルIDが必要です</string>
+    <string name="main_activity_model_validation_other_model_id_invalid">その他: カスタムモデルIDが無効です</string>
+
+    <!-- ModelLoadingStatusHolder -->
+    <string name="model_loading_status_holder_download_failed">ダウンロードに失敗しました</string>
+
+    <!-- ChromeFlagDeepLink -->
+    <string name="chrome_flag_deep_link_launch_hint">Chromeでchrome://flagsが開かない場合は、クリップボードのURLをアドレスバーに貼り付けてください。</string>
+    <string name="chrome_flag_deep_link_fallback">URLをコピーしました。Chromeのアドレスバーに貼り付けてフラグのページを開いてください</string>
+</resources>

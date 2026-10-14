@@ -2,6 +2,7 @@ package ai.closepaw.ui.settings
 
 import ai.closepaw.termux.NeedsSetupReason
 import ai.closepaw.termux.TermuxBridgeStatus
+import ai.closepaw.R
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -21,10 +22,10 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.label).isEqualTo("Disabled")
+        assertThat(ui.labelRes).isEqualTo(R.string.termux_status_mapper_disabled)
         assertThat(ui.tone).isEqualTo(ToolStatusTone.Neutral)
         assertThat(ui.showSpinner).isFalse()
-        assertThat(ui.subtitle).isEqualTo("Toggle to enable")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_sub_disabled)
     }
 
     @Test
@@ -34,10 +35,10 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = false,
         )
-        assertThat(ui.label).isEqualTo("Disabled")
+        assertThat(ui.labelRes).isEqualTo(R.string.termux_status_mapper_disabled)
         assertThat(ui.tone).isEqualTo(ToolStatusTone.Neutral)
         assertThat(ui.showSpinner).isFalse()
-        assertThat(ui.subtitle).isEqualTo("Toggle to enable")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_sub_disabled)
     }
 
     @Test
@@ -47,10 +48,10 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.label).isEqualTo("Not Installed")
+        assertThat(ui.labelRes).isEqualTo(R.string.termux_status_mapper_not_installed)
         assertThat(ui.tone).isEqualTo(ToolStatusTone.Warning)
         assertThat(ui.showSpinner).isFalse()
-        assertThat(ui.subtitle).isEqualTo("Install Termux from F-Droid")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_sub_not_installed)
     }
 
     @Test
@@ -60,7 +61,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.label).isEqualTo("Needs Setup")
+        assertThat(ui.labelRes).isEqualTo(R.string.termux_status_mapper_needs_setup)
         assertThat(ui.tone).isEqualTo(ToolStatusTone.Warning)
         assertThat(ui.showSpinner).isFalse()
     }
@@ -72,10 +73,10 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.label).isEqualTo("Setting up…")
+        assertThat(ui.labelRes).isEqualTo(R.string.termux_status_mapper_setting_up)
         assertThat(ui.tone).isEqualTo(ToolStatusTone.Neutral)
         assertThat(ui.showSpinner).isTrue()
-        assertThat(ui.subtitle).isEqualTo("This may take a minute")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_sub_setup_in_progress)
     }
 
     @Test
@@ -85,10 +86,10 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.label).isEqualTo("Ready")
+        assertThat(ui.labelRes).isEqualTo(R.string.termux_status_mapper_ready)
         assertThat(ui.tone).isEqualTo(ToolStatusTone.Positive)
         assertThat(ui.showSpinner).isFalse()
-        assertThat(ui.subtitle).isEqualTo("Termux bridge running — tap to restart")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_sub_ready)
     }
 
     // Below: NeedsSetupReason subtitle matrix. The design table only requires the umbrella
@@ -106,7 +107,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo("Tap to grant RUN_COMMAND permission to Termux.")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_tap_to_grant)
     }
 
     @Test
@@ -116,7 +117,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = RunCommandPermissionDisposition.Request,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo("Tap to grant RUN_COMMAND permission to Termux.")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_tap_to_grant)
     }
 
     @Test
@@ -126,7 +127,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = RunCommandPermissionDisposition.Granted,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo("Tap to grant RUN_COMMAND permission to Termux.")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_tap_to_grant)
     }
 
     @Test
@@ -136,9 +137,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = RunCommandPermissionDisposition.OpenAppSettings,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo(
-            "Permission permanently denied. Tap to open App Settings → Permissions."
-        )
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_permission_permanently_denied)
     }
 
     @Test
@@ -148,9 +147,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo(
-            "Allow external apps is disabled in Termux. Enable it, then tap setup."
-        )
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_allow_external_apps_missing)
     }
 
     @Test
@@ -160,9 +157,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo(
-            "Termux is not running. Tap to open Termux, then return here."
-        )
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_termux_not_running)
     }
 
     @Test
@@ -172,10 +167,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo(
-            "This Termux build cannot accept external commands. Install Termux from F-Droid " +
-                "(the Google Play build is incompatible)."
-        )
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_run_command_unavailable)
     }
 
     @Test
@@ -185,7 +177,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo("Missing packages — tap to install python/git/ripgrep")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_packages_missing)
     }
 
     @Test
@@ -195,7 +187,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo("Bridge daemon out of date — tap to update")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_bridge_outdated)
     }
 
     @Test
@@ -205,7 +197,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo("Bridge unreachable — tap to retry setup")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_health_timeout)
     }
 
     @Test
@@ -215,7 +207,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo("Termux command timed out — open Termux once and retry")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_termux_timeout)
     }
 
     @Test
@@ -225,7 +217,7 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo("Port 18422 in use by another process")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_port_in_use)
     }
 
     @Test
@@ -235,6 +227,6 @@ class TermuxStatusMapperTest {
             permissionDisposition = null,
             enabledPref = true,
         )
-        assertThat(ui.subtitle).isEqualTo("Setup error — tap to retry")
+        assertThat(ui.subtitleRes).isEqualTo(R.string.termux_status_mapper_unknown)
     }
 }

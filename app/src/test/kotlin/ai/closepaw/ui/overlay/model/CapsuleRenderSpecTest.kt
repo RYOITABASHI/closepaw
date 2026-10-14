@@ -1,5 +1,6 @@
 package ai.closepaw.ui.overlay.model
 
+import ai.closepaw.R
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -15,7 +16,7 @@ class CapsuleRenderSpecTest {
 
         val stop = spec.buttons.stop
         assertThat(stop).isNotNull()
-        assertThat(stop?.text).isEqualTo("Stopping...")
+        assertThat(stop?.textRes).isEqualTo(R.string.capsule_render_spec_stopping)
         assertThat(stop?.enabled).isFalse()
     }
 
@@ -29,7 +30,7 @@ class CapsuleRenderSpecTest {
 
         val stop = spec.buttons.stop
         assertThat(stop).isNotNull()
-        assertThat(stop?.text).isEqualTo("Close")
+        assertThat(stop?.textRes).isEqualTo(R.string.capsule_render_spec_close)
         assertThat(stop?.enabled).isTrue()
     }
 
@@ -63,10 +64,11 @@ class CapsuleRenderSpecTest {
             )
         )
 
-        assertThat(spec.thought.text).isEqualTo("Allow ClosePaw to operate Chrome?")
+        assertThat(spec.thought.textRes).isEqualTo(R.string.capsule_render_spec_approval_prompt)
+        assertThat(spec.thought.formatArgs).containsExactly("Chrome")
         assertThat(spec.expandedBody).isNull()
-        assertThat(spec.buttons.primary?.text).isEqualTo("Always")
-        assertThat(spec.buttons.secondary?.text).isEqualTo("Session")
-        assertThat(spec.buttons.stop?.text).isEqualTo("Reject")
+        assertThat(spec.buttons.primary?.textRes).isEqualTo(R.string.capsule_render_spec_always)
+        assertThat(spec.buttons.secondary?.textRes).isEqualTo(R.string.capsule_render_spec_session)
+        assertThat(spec.buttons.stop?.textRes).isEqualTo(R.string.capsule_render_spec_reject)
     }
 }

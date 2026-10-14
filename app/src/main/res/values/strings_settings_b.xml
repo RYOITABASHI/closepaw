@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- PermissionsAdvancedSettingsPage -->
+    <string name="permissions_advanced_settings_page_title">System &amp; Debug</string>
+    <string name="permissions_advanced_settings_page_section_permissions">Permissions</string>
+    <string name="permissions_advanced_settings_page_accessibility_service">Accessibility Service</string>
+    <string name="permissions_advanced_settings_page_overlay_permission">Overlay Permission</string>
+    <string name="permissions_advanced_settings_page_section_debug">Debug</string>
+    <string name="permissions_advanced_settings_page_debug_mode">Debug Mode</string>
+    <string name="permissions_advanced_settings_page_debug_mode_subtitle">Enable verbose logging</string>
+    <string name="permissions_advanced_settings_page_version">Version %1$s (%2$d)</string>
+    <string name="permissions_advanced_settings_page_clear_traces">Clear Traces</string>
+    <string name="permissions_advanced_settings_page_clear_traces_message">All recorded execution traces will be permanently deleted. This cannot be undone.</string>
+    <string name="permissions_advanced_settings_page_clear_sessions">Clear Session History</string>
+    <string name="permissions_advanced_settings_page_clear_sessions_message">All saved sessions and chat history will be permanently deleted. This cannot be undone.</string>
+    <string name="permissions_advanced_settings_page_clear">Clear</string>
+    <string name="permissions_advanced_settings_page_cancel">Cancel</string>
+    <string name="permissions_advanced_settings_page_section_data_storage">Data &amp; Storage</string>
+    <string name="permissions_advanced_settings_page_session_traces">Session Traces</string>
+    <string name="permissions_advanced_settings_page_session_traces_subtitle">Save step-by-step session logs</string>
+    <string name="permissions_advanced_settings_page_traces_warning">Traces may include screenshots and inputs. Turn off when done.</string>
+    <string name="permissions_advanced_settings_page_clearing_traces">Clearing Traces...</string>
+    <string name="permissions_advanced_settings_page_traces_cleared">Traces Cleared</string>
+    <string name="permissions_advanced_settings_page_clearing_sessions">Clearing Sessions...</string>
+    <string name="permissions_advanced_settings_page_sessions_cleared">Sessions Cleared</string>
+    <string name="permissions_advanced_settings_page_label_traces">traces</string>
+    <string name="permissions_advanced_settings_page_label_session_history">session history</string>
+    <string name="permissions_advanced_settings_page_error_access">Could not access %1$s storage. Retry from Settings.</string>
+    <string name="permissions_advanced_settings_page_error_clear">Could not clear %1$s. Retry from Settings.</string>
+    <string name="permissions_advanced_settings_page_error_denied">Could not clear %1$s because storage access was denied.</string>
+    <string name="permissions_advanced_settings_page_retry">Retry</string>
+
+    <!-- RefreshButtonGate -->
+    <string name="refresh_button_gate_openrouter_key_missing">Enter your OpenRouter API key first</string>
+    <string name="refresh_button_gate_api_key_missing">Enter your API key first</string>
+    <string name="refresh_button_gate_base_url_invalid">Base URL is invalid</string>
+    <string name="refresh_button_gate_unsupported_provider">Refresh is only supported for OpenRouter and Other</string>
+
+    <!-- SettingsDropdowns -->
+    <string name="settings_dropdowns_select_model">Select a model</string>
+    <string name="settings_dropdowns_model">Model</string>
+    <string name="settings_dropdowns_local_model">Local Model</string>
+
+    <!-- SettingsHomePage -->
+    <string name="settings_home_page_title">Settings</string>
+    <string name="settings_home_page_section_behavior">Behavior</string>
+    <string name="settings_home_page_llm_auth">LLM &amp; Authentication</string>
+    <string name="settings_home_page_agent_behavior">Agent Behavior</string>
+    <string name="settings_home_page_memory">Memory</string>
+    <string name="settings_home_page_memory_subtitle">User and device knowledge</string>
+    <string name="settings_home_page_section_access">Access</string>
+    <string name="settings_home_page_app_access">App Access</string>
+    <string name="settings_home_page_system_debug">System &amp; Debug</string>
+    <string name="settings_home_page_section_about">About</string>
+    <string name="settings_home_page_licenses">Open Source Licenses</string>
+    <string name="settings_home_page_licenses_subtitle">ClosePaw is Apache 2.0 · view third-party notices</string>
+    <string name="settings_home_page_version">Version %1$s (%2$d)</string>
+    <string name="settings_home_page_auth_api_key">API key</string>
+    <string name="settings_home_page_approval_per_app">Per-App</string>
+    <string name="settings_home_page_approval_auto">Auto-Approve</string>
+    <string name="settings_home_page_approval_always_ask">Always Ask</string>
+    <string name="settings_home_page_perception_hybrid">Transcript + Image</string>
+    <string name="settings_home_page_perception_image">Image</string>
+    <string name="settings_home_page_perception_transcript">Transcript</string>
+    <string name="settings_home_page_vd_this_session">Virtual Display (this session)</string>
+    <string name="settings_home_page_vd_next_session">Virtual Display (next session)</string>
+    <string name="settings_home_page_vd">Virtual Display</string>
+    <string name="settings_home_page_perms_all_granted">All granted</string>
+    <string name="settings_home_page_perms_one_granted">1 of 2 granted</string>
+    <string name="settings_home_page_perms_setup_required">Setup required</string>
+    <string name="settings_home_page_debug_on">Debug on</string>
+    <string name="settings_home_page_debug_off">Debug off</string>
+    <string name="settings_home_page_app_access_counts">%1$s · %2$d Allow · %3$d Ask · %4$d Reject</string>
+
+    <!-- SettingsModels -->
+    <string name="settings_models_lfm_display_name">LFM 1.2B Instruct (Recommended)</string>
+    <string name="settings_models_lfm_description">On-device inference, ~1.2B parameters, tool-calling support</string>
+
+    <!-- SettingsWidgets -->
+    <string name="settings_widgets_downloading_model">Downloading model...</string>
+    <string name="settings_widgets_loading_model">Loading model...</string>
+    <string name="settings_widgets_model_ready">Model ready</string>
+    <string name="settings_widgets_model_error">Error: %1$s</string>
+    <string name="settings_widgets_enabled">Enabled</string>
+    <string name="settings_widgets_required">Required</string>
+    <string name="settings_widgets_perception_transcript">Screen Transcript</string>
+    <string name="settings_widgets_perception_transcript_subtitle">Reads text and layout. Fast, cheap, works for most apps.</string>
+    <string name="settings_widgets_perception_image">Screen Image</string>
+    <string name="settings_widgets_perception_image_subtitle">Reads screenshots only. Slower; best for maps, canvas, or visual apps.</string>
+    <string name="settings_widgets_perception_hybrid">Transcript + Image</string>
+    <string name="settings_widgets_perception_hybrid_subtitle">Text + screenshots. Most reliable but slowest.</string>
+    <string name="settings_widgets_recommended">Recommended</string>
+
+    <!-- TermuxStatusMapper -->
+    <string name="termux_status_mapper_not_installed">Not Installed</string>
+    <string name="termux_status_mapper_needs_setup">Needs Setup</string>
+    <string name="termux_status_mapper_setting_up">Setting up…</string>
+    <string name="termux_status_mapper_ready">Ready</string>
+    <string name="termux_status_mapper_disabled">Disabled</string>
+    <string name="termux_status_mapper_sub_not_installed">Install Termux from F-Droid</string>
+    <string name="termux_status_mapper_sub_setup_in_progress">This may take a minute</string>
+    <string name="termux_status_mapper_sub_ready">Termux bridge running — tap to restart</string>
+    <string name="termux_status_mapper_sub_disabled">Toggle to enable</string>
+    <string name="termux_status_mapper_permission_permanently_denied">Permission permanently denied. Tap to open App Settings → Permissions.</string>
+    <string name="termux_status_mapper_tap_to_grant">Tap to grant RUN_COMMAND permission to Termux.</string>
+    <string name="termux_status_mapper_allow_external_apps_missing">Allow external apps is disabled in Termux. Enable it, then tap setup.</string>
+    <string name="termux_status_mapper_termux_not_running">Termux is not running. Tap to open Termux, then return here.</string>
+    <string name="termux_status_mapper_run_command_unavailable">This Termux build cannot accept external commands. Install Termux from F-Droid (the Google Play build is incompatible).</string>
+    <string name="termux_status_mapper_packages_missing">Missing packages — tap to install python/git/ripgrep</string>
+    <string name="termux_status_mapper_bridge_outdated">Bridge daemon out of date — tap to update</string>
+    <string name="termux_status_mapper_health_timeout">Bridge unreachable — tap to retry setup</string>
+    <string name="termux_status_mapper_termux_timeout">Termux command timed out — open Termux once and retry</string>
+    <string name="termux_status_mapper_port_in_use">Port 18422 in use by another process</string>
+    <string name="termux_status_mapper_unknown">Setup error — tap to retry</string>
+
+    <!-- ToolSettingsCard -->
+    <string name="tool_settings_card_view_details">View %1$s details</string>
+
+    <!-- ToolsSection -->
+    <string name="tools_section_title">Tools</string>
+    <string name="tools_section_install_termux">Install Termux</string>
+    <string name="tools_section_fix_termux_setup">Fix Termux setup</string>
+    <string name="tools_section_restart_termux_bridge">Restart Termux bridge</string>
+    <string name="tools_section_termux_shell">Termux Shell</string>
+    <string name="tools_section_toast_install_page_failed">Unable to open Termux install page</string>
+    <string name="tools_section_toast_termux_not_installed">Termux is not installed</string>
+    <string name="tools_section_toast_launch_failed">Unable to launch Termux</string>
+    <string name="tools_section_retry_shizuku_setup">Retry Shizuku setup</string>
+    <string name="tools_section_browser_script">Browser Script</string>
+    <string name="tools_section_open_chrome_flags">Open chrome://flags →</string>
+    <string name="tools_section_url_copied">URL copied to clipboard</string>
+    <string name="tools_section_copy_failed">Copy failed — try again</string>
+    <string name="tools_section_recheck">Re-check</string>
+    <string name="tools_section_flags_manual_help">Chrome didn\'t open the flags page? Paste this URL manually:</string>
+    <string name="tools_section_copy_url">Copy URL</string>
+
+    <!-- VirtualDisplayStatusMapper -->
+    <string name="virtual_display_status_mapper_setting_up">Setting up…</string>
+    <string name="virtual_display_status_mapper_checking_shizuku">Checking Shizuku…</string>
+    <string name="virtual_display_status_mapper_needs_setup">Needs Setup</string>
+    <string name="virtual_display_status_mapper_still_on_vd">Current session is still on a virtual display; next session will use your current screen.</string>
+    <string name="virtual_display_status_mapper_runs_on_current_screen">Agent runs on your current screen.</string>
+    <string name="virtual_display_status_mapper_disabled">Disabled</string>
+    <string name="virtual_display_status_mapper_degraded">Degraded</string>
+    <string name="virtual_display_status_mapper_lost_connection">Lost Shizuku connection — the current virtual-display session may stop working. Restart Shizuku to recover.</string>
+    <string name="virtual_display_status_mapper_not_available">Not Available</string>
+    <string name="virtual_display_status_mapper_shizuku_not_running">Shizuku is not running. If a new session starts now, it will run on your current screen.</string>
+    <string name="virtual_display_status_mapper_permission_revoked">Shizuku permission revoked — the current virtual-display session may stop working.</string>
+    <string name="virtual_display_status_mapper_grant_permission">Grant Shizuku permission to use Virtual Display.</string>
+    <string name="virtual_display_status_mapper_ready">Ready</string>
+    <string name="virtual_display_status_mapper_configured">Current session is configured for a virtual display.</string>
+    <string name="virtual_display_status_mapper_will_switch">Will switch to a virtual display on the next session.</string>
+    <string name="virtual_display_status_mapper_will_start">Will start on a virtual display.</string>
+
+    <!-- VirtualDisplayToggleGate -->
+    <string name="virtual_display_toggle_gate_shizuku_unavailable">Shizuku is not running. Install or start Shizuku, then turn on Virtual Display.</string>
+    <string name="virtual_display_toggle_gate_permission_denied">Permission denied. Tap to retry, or grant in Shizuku Manager.</string>
+</resources>

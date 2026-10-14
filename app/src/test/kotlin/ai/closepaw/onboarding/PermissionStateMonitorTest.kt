@@ -1,5 +1,6 @@
 package ai.closepaw.onboarding
 
+import ai.closepaw.R
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -28,7 +29,7 @@ class PermissionStateMonitorTest {
         assertThat(model.accessibilityMissing).isTrue()
         assertThat(model.overlayMissing).isFalse()
         assertThat(model.batteryMissing).isFalse()
-        assertThat(model.primaryIssue).isEqualTo("Accessibility service is disabled")
+        assertThat(model.primaryIssueRes).isEqualTo(R.string.permission_state_monitor_accessibility_disabled)
     }
 
     @Test
@@ -38,7 +39,7 @@ class PermissionStateMonitorTest {
         assertThat(model.overlayMissing).isTrue()
         assertThat(model.batteryMissing).isTrue()
         assertThat(model.hasAnyIssue).isTrue()
-        assertThat(model.primaryIssue).isEqualTo("Accessibility service is disabled")
+        assertThat(model.primaryIssueRes).isEqualTo(R.string.permission_state_monitor_accessibility_disabled)
     }
 
     @Test
@@ -51,6 +52,6 @@ class PermissionStateMonitorTest {
         val model = derive(accessibility = true, overlay = false, batteryIgnoring = true)!!
         assertThat(model.accessibilityMissing).isFalse()
         assertThat(model.overlayMissing).isTrue()
-        assertThat(model.primaryIssue).isEqualTo("Overlay permission is revoked")
+        assertThat(model.primaryIssueRes).isEqualTo(R.string.permission_state_monitor_overlay_revoked)
     }
 }

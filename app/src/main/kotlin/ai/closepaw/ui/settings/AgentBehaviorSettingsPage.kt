@@ -12,7 +12,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ai.closepaw.protocol.ApprovalMode
@@ -38,7 +41,7 @@ internal fun AgentBehaviorSettingsPage(
     isSessionRunning: Boolean = false,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        PageMastheadDrillDown(title = "Agent Behavior", onBack = onBack, onClose = onClose)
+        PageMastheadDrillDown(title = stringResource(R.string.agent_behavior_settings_page_title), onBack = onBack, onClose = onClose)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -51,7 +54,7 @@ internal fun AgentBehaviorSettingsPage(
                 onNavigateToAppAccess = onNavigateToAppAccess,
             )
             Spacer(modifier = Modifier.height(20.dp))
-            SettingsSection(title = "Perception") {
+            SettingsSection(title = stringResource(R.string.agent_behavior_settings_page_section_perception)) {
                 PerceptionModeSelector(selectedMode = perceptionMode, onModeChange = onPerceptionModeChange)
             }
             Spacer(modifier = Modifier.height(20.dp))
@@ -74,20 +77,20 @@ internal fun AgentBehaviorSettingsPage(
 
 private data class ApprovalModeOption(
     val mode: ApprovalMode,
-    val label: String,
-    val description: String,
+    @StringRes val labelRes: Int,
+    @StringRes val descriptionRes: Int,
 )
 
 private val APPROVAL_MODE_OPTIONS = listOf(
     ApprovalModeOption(
         mode = ApprovalMode.SMART,
-        label = "Per-App",
-        description = "Ask before risky actions, based on each app's access rules",
+        labelRes = R.string.agent_behavior_settings_page_approval_per_app,
+        descriptionRes = R.string.agent_behavior_settings_page_approval_per_app_desc,
     ),
     ApprovalModeOption(
         mode = ApprovalMode.AUTO_APPROVE,
-        label = "Auto-Approve",
-        description = "Run allowed actions without asking. Rejected apps stay blocked.",
+        labelRes = R.string.agent_behavior_settings_page_approval_auto,
+        descriptionRes = R.string.agent_behavior_settings_page_approval_auto_desc,
     ),
 )
 
@@ -97,7 +100,7 @@ private fun ApprovalSection(
     onApprovalModeChange: (ApprovalMode) -> Unit,
     onNavigateToAppAccess: () -> Unit,
 ) {
-    SettingsSection(title = "Approval") {
+    SettingsSection(title = stringResource(R.string.agent_behavior_settings_page_section_approval)) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.surfaceVariant,
@@ -110,7 +113,7 @@ private fun ApprovalSection(
                 ) {
                     APPROVAL_MODE_OPTIONS.forEach { option ->
                         SegmentChip(
-                            label = option.label,
+                            label = stringResource(option.labelRes),
                             isSelected = approvalMode == option.mode,
                             onClick = { onApprovalModeChange(option.mode) },
                             modifier = Modifier.weight(1f),
@@ -118,7 +121,8 @@ private fun ApprovalSection(
                     }
                 }
                 Spacer(modifier = Modifier.height(4.dp))
-                val desc = APPROVAL_MODE_OPTIONS.find { it.mode == approvalMode }?.description ?: ""
+                val desc = APPROVAL_MODE_OPTIONS.find { it.mode == approvalMode }?.descriptionRes
+                    ?.let { stringResource(it) } ?: ""
                 Text(
                     text = desc,
                     style = MaterialTheme.typography.bodySmall,
@@ -127,8 +131,8 @@ private fun ApprovalSection(
                 if (approvalMode == ApprovalMode.SMART) {
                     Spacer(modifier = Modifier.height(MaterialTheme.closePaw.spacing.md))
                     SettingsNavigationRow(
-                        title = "App Access Rules",
-                        subtitle = "Set allow, ask, or reject for each app",
+                        title = stringResource(R.string.agent_behavior_settings_page_app_access_rules_title),
+                        subtitle = stringResource(R.string.agent_behavior_settings_page_app_access_rules_subtitle),
                         onClick = onNavigateToAppAccess,
                     )
                 }

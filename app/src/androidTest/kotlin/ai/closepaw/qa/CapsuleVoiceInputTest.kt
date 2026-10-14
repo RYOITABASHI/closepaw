@@ -1,5 +1,6 @@
 package ai.closepaw.qa
 
+import ai.closepaw.R
 import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.ui.capsule.surface.CapsuleInputBar
 import ai.closepaw.ui.capsule.surface.VoiceMicDeps
@@ -96,7 +97,10 @@ class CapsuleVoiceInputTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     private val waiting = CapsuleMode.WaitingForInput(question = "Say what?", callId = "c-1")
-    private val inputSpec = CapsuleRenderSpec.InputSpec(hint = "Type…", submitLabel = "Send")
+    private val inputSpec = CapsuleRenderSpec.InputSpec(
+        hintRes = R.string.capsule_render_spec_response_hint,
+        submitLabelRes = R.string.capsule_render_spec_send,
+    )
 
     @Composable
     private fun Host(deps: VoiceMicDeps?) {

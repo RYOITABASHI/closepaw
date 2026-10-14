@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- PermissionsAdvancedSettingsPage -->
+    <string name="permissions_advanced_settings_page_title">システムとデバッグ</string>
+    <string name="permissions_advanced_settings_page_section_permissions">権限</string>
+    <string name="permissions_advanced_settings_page_accessibility_service">ユーザー補助サービス</string>
+    <string name="permissions_advanced_settings_page_overlay_permission">オーバーレイ権限</string>
+    <string name="permissions_advanced_settings_page_section_debug">デバッグ</string>
+    <string name="permissions_advanced_settings_page_debug_mode">デバッグモード</string>
+    <string name="permissions_advanced_settings_page_debug_mode_subtitle">詳細なログを記録します</string>
+    <string name="permissions_advanced_settings_page_version">バージョン %1$s (%2$d)</string>
+    <string name="permissions_advanced_settings_page_clear_traces">トレースを消去</string>
+    <string name="permissions_advanced_settings_page_clear_traces_message">記録されたすべての実行トレースが完全に削除されます。この操作は取り消せません。</string>
+    <string name="permissions_advanced_settings_page_clear_sessions">セッション履歴を消去</string>
+    <string name="permissions_advanced_settings_page_clear_sessions_message">保存されたすべてのセッションとチャット履歴が完全に削除されます。この操作は取り消せません。</string>
+    <string name="permissions_advanced_settings_page_clear">消去</string>
+    <string name="permissions_advanced_settings_page_cancel">キャンセル</string>
+    <string name="permissions_advanced_settings_page_section_data_storage">データとストレージ</string>
+    <string name="permissions_advanced_settings_page_session_traces">セッショントレース</string>
+    <string name="permissions_advanced_settings_page_session_traces_subtitle">セッションの操作ログをステップごとに保存します</string>
+    <string name="permissions_advanced_settings_page_traces_warning">トレースにはスクリーンショットや入力内容が含まれる場合があります。使い終わったらオフにしてください。</string>
+    <string name="permissions_advanced_settings_page_clearing_traces">トレースを消去中…</string>
+    <string name="permissions_advanced_settings_page_traces_cleared">トレースを消去しました</string>
+    <string name="permissions_advanced_settings_page_clearing_sessions">セッションを消去中…</string>
+    <string name="permissions_advanced_settings_page_sessions_cleared">セッションを消去しました</string>
+    <string name="permissions_advanced_settings_page_label_traces">トレース</string>
+    <string name="permissions_advanced_settings_page_label_session_history">セッション履歴</string>
+    <string name="permissions_advanced_settings_page_error_access">%1$sのストレージにアクセスできませんでした。設定から再試行してください。</string>
+    <string name="permissions_advanced_settings_page_error_clear">%1$sを消去できませんでした。設定から再試行してください。</string>
+    <string name="permissions_advanced_settings_page_error_denied">ストレージへのアクセスが拒否されたため、%1$sを消去できませんでした。</string>
+    <string name="permissions_advanced_settings_page_retry">再試行</string>
+
+    <!-- RefreshButtonGate -->
+    <string name="refresh_button_gate_openrouter_key_missing">先に OpenRouter の API キーを入力してください</string>
+    <string name="refresh_button_gate_api_key_missing">先に API キーを入力してください</string>
+    <string name="refresh_button_gate_base_url_invalid">ベース URL が無効です</string>
+    <string name="refresh_button_gate_unsupported_provider">更新は OpenRouter と「その他」でのみ利用できます</string>
+
+    <!-- SettingsDropdowns -->
+    <string name="settings_dropdowns_select_model">モデルを選択</string>
+    <string name="settings_dropdowns_model">モデル</string>
+    <string name="settings_dropdowns_local_model">ローカルモデル</string>
+
+    <!-- SettingsHomePage -->
+    <string name="settings_home_page_title">設定</string>
+    <string name="settings_home_page_section_behavior">動作</string>
+    <string name="settings_home_page_llm_auth">LLM と認証</string>
+    <string name="settings_home_page_agent_behavior">エージェントの動作</string>
+    <string name="settings_home_page_memory">メモリ</string>
+    <string name="settings_home_page_memory_subtitle">ユーザーとデバイスに関する知識</string>
+    <string name="settings_home_page_section_access">アクセス</string>
+    <string name="settings_home_page_app_access">アプリへのアクセス</string>
+    <string name="settings_home_page_system_debug">システムとデバッグ</string>
+    <string name="settings_home_page_section_about">このアプリについて</string>
+    <string name="settings_home_page_licenses">オープンソースライセンス</string>
+    <string name="settings_home_page_licenses_subtitle">ClosePaw は Apache 2.0 ライセンスです · サードパーティの表記を表示</string>
+    <string name="settings_home_page_version">バージョン %1$s (%2$d)</string>
+    <string name="settings_home_page_auth_api_key">API キー</string>
+    <string name="settings_home_page_approval_per_app">アプリごと</string>
+    <string name="settings_home_page_approval_auto">自動承認</string>
+    <string name="settings_home_page_approval_always_ask">毎回確認</string>
+    <string name="settings_home_page_perception_hybrid">テキスト + スクリーンショット</string>
+    <string name="settings_home_page_perception_image">スクリーンショット</string>
+    <string name="settings_home_page_perception_transcript">テキスト</string>
+    <string name="settings_home_page_vd_this_session">仮想ディスプレイ（このセッション）</string>
+    <string name="settings_home_page_vd_next_session">仮想ディスプレイ（次回のセッション）</string>
+    <string name="settings_home_page_vd">仮想ディスプレイ</string>
+    <string name="settings_home_page_perms_all_granted">すべて許可済み</string>
+    <string name="settings_home_page_perms_one_granted">2件中1件を許可済み</string>
+    <string name="settings_home_page_perms_setup_required">設定が必要</string>
+    <string name="settings_home_page_debug_on">デバッグ: オン</string>
+    <string name="settings_home_page_debug_off">デバッグ: オフ</string>
+    <string name="settings_home_page_app_access_counts">%1$s · 許可 %2$d · 確認 %3$d · 拒否 %4$d</string>
+
+    <!-- SettingsModels -->
+    <string name="settings_models_lfm_display_name">LFM 1.2B Instruct（推奨）</string>
+    <string name="settings_models_lfm_description">端末上で推論、約1.2Bパラメータ、ツール呼び出しに対応</string>
+
+    <!-- SettingsWidgets -->
+    <string name="settings_widgets_downloading_model">モデルをダウンロード中…</string>
+    <string name="settings_widgets_loading_model">モデルを読み込み中…</string>
+    <string name="settings_widgets_model_ready">モデルの準備ができました</string>
+    <string name="settings_widgets_model_error">エラー: %1$s</string>
+    <string name="settings_widgets_enabled">有効</string>
+    <string name="settings_widgets_required">要設定</string>
+    <string name="settings_widgets_perception_transcript">画面のテキスト</string>
+    <string name="settings_widgets_perception_transcript_subtitle">テキストとレイアウトを読み取ります。高速・低コストで、ほとんどのアプリに対応します。</string>
+    <string name="settings_widgets_perception_image">スクリーンショット</string>
+    <string name="settings_widgets_perception_image_subtitle">スクリーンショットのみを読み取ります。低速ですが、地図やキャンバスなど視覚的なアプリに最適です。</string>
+    <string name="settings_widgets_perception_hybrid">テキスト + スクリーンショット</string>
+    <string name="settings_widgets_perception_hybrid_subtitle">テキストとスクリーンショットを併用します。最も確実ですが、最も低速です。</string>
+    <string name="settings_widgets_recommended">おすすめ</string>
+
+    <!-- TermuxStatusMapper -->
+    <string name="termux_status_mapper_not_installed">未インストール</string>
+    <string name="termux_status_mapper_needs_setup">要セットアップ</string>
+    <string name="termux_status_mapper_setting_up">セットアップ中…</string>
+    <string name="termux_status_mapper_ready">準備完了</string>
+    <string name="termux_status_mapper_disabled">無効</string>
+    <string name="termux_status_mapper_sub_not_installed">F-Droid から Termux をインストールしてください</string>
+    <string name="termux_status_mapper_sub_setup_in_progress">少し時間がかかる場合があります</string>
+    <string name="termux_status_mapper_sub_ready">Termux ブリッジ実行中 — タップして再起動</string>
+    <string name="termux_status_mapper_sub_disabled">オンにすると有効になります</string>
+    <string name="termux_status_mapper_permission_permanently_denied">権限が完全に拒否されています。タップして「アプリ設定」→「権限」を開いてください。</string>
+    <string name="termux_status_mapper_tap_to_grant">タップして Termux の RUN_COMMAND 権限を許可してください。</string>
+    <string name="termux_status_mapper_allow_external_apps_missing">Termux の allow-external-apps が無効です。有効にしてから、タップしてセットアップしてください。</string>
+    <string name="termux_status_mapper_termux_not_running">Termux が起動していません。タップして Termux を開き、この画面に戻ってください。</string>
+    <string name="termux_status_mapper_run_command_unavailable">この Termux ビルドは外部コマンドを受け付けません。F-Droid 版の Termux をインストールしてください（Google Play 版は非対応です）。</string>
+    <string name="termux_status_mapper_packages_missing">パッケージが不足しています — タップして python/git/ripgrep をインストール</string>
+    <string name="termux_status_mapper_bridge_outdated">ブリッジデーモンが古くなっています — タップして更新</string>
+    <string name="termux_status_mapper_health_timeout">ブリッジに接続できません — タップしてセットアップを再試行</string>
+    <string name="termux_status_mapper_termux_timeout">Termux コマンドがタイムアウトしました — 一度 Termux を開いてから再試行してください</string>
+    <string name="termux_status_mapper_port_in_use">ポート 18422 は別のプロセスが使用中です</string>
+    <string name="termux_status_mapper_unknown">セットアップエラー — タップして再試行</string>
+
+    <!-- ToolSettingsCard -->
+    <string name="tool_settings_card_view_details">%1$s の詳細を表示</string>
+
+    <!-- ToolsSection -->
+    <string name="tools_section_title">ツール</string>
+    <string name="tools_section_install_termux">Termux をインストール</string>
+    <string name="tools_section_fix_termux_setup">Termux のセットアップを修正</string>
+    <string name="tools_section_restart_termux_bridge">Termux ブリッジを再起動</string>
+    <string name="tools_section_termux_shell">Termux シェル</string>
+    <string name="tools_section_toast_install_page_failed">Termux のインストールページを開けません</string>
+    <string name="tools_section_toast_termux_not_installed">Termux がインストールされていません</string>
+    <string name="tools_section_toast_launch_failed">Termux を起動できません</string>
+    <string name="tools_section_retry_shizuku_setup">Shizuku のセットアップを再試行</string>
+    <string name="tools_section_browser_script">ブラウザスクリプト</string>
+    <string name="tools_section_open_chrome_flags">chrome://flags を開く →</string>
+    <string name="tools_section_url_copied">URL をクリップボードにコピーしました</string>
+    <string name="tools_section_copy_failed">コピーできませんでした — もう一度お試しください</string>
+    <string name="tools_section_recheck">再確認</string>
+    <string name="tools_section_flags_manual_help">Chrome で flags ページが開かない場合は、この URL を手動で貼り付けてください:</string>
+    <string name="tools_section_copy_url">URL をコピー</string>
+
+    <!-- VirtualDisplayStatusMapper -->
+    <string name="virtual_display_status_mapper_setting_up">セットアップ中…</string>
+    <string name="virtual_display_status_mapper_checking_shizuku">Shizuku を確認中…</string>
+    <string name="virtual_display_status_mapper_needs_setup">要セットアップ</string>
+    <string name="virtual_display_status_mapper_still_on_vd">現在のセッションはまだ仮想ディスプレイ上で動作しています。次回のセッションからは現在の画面を使用します。</string>
+    <string name="virtual_display_status_mapper_runs_on_current_screen">エージェントは現在の画面で動作します。</string>
+    <string name="virtual_display_status_mapper_disabled">無効</string>
+    <string name="virtual_display_status_mapper_degraded">機能低下</string>
+    <string name="virtual_display_status_mapper_lost_connection">Shizuku との接続が切れました — 現在の仮想ディスプレイのセッションが停止する可能性があります。復旧するには Shizuku を再起動してください。</string>
+    <string name="virtual_display_status_mapper_not_available">利用不可</string>
+    <string name="virtual_display_status_mapper_shizuku_not_running">Shizuku が起動していません。今新しいセッションを開始すると、現在の画面で実行されます。</string>
+    <string name="virtual_display_status_mapper_permission_revoked">Shizuku の権限が取り消されました — 現在の仮想ディスプレイのセッションが停止する可能性があります。</string>
+    <string name="virtual_display_status_mapper_grant_permission">仮想ディスプレイを使用するには、Shizuku の権限を許可してください。</string>
+    <string name="virtual_display_status_mapper_ready">準備完了</string>
+    <string name="virtual_display_status_mapper_configured">現在のセッションは仮想ディスプレイ用に設定されています。</string>
+    <string name="virtual_display_status_mapper_will_switch">次回のセッションから仮想ディスプレイに切り替わります。</string>
+    <string name="virtual_display_status_mapper_will_start">仮想ディスプレイで開始します。</string>
+
+    <!-- VirtualDisplayToggleGate -->
+    <string name="virtual_display_toggle_gate_shizuku_unavailable">Shizuku が起動していません。Shizuku をインストールまたは起動してから、仮想ディスプレイをオンにしてください。</string>
+    <string name="virtual_display_toggle_gate_permission_denied">権限が拒否されました。タップして再試行するか、Shizuku Manager で許可してください。</string>
+</resources>

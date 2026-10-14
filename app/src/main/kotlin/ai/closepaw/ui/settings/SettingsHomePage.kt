@@ -16,6 +16,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import ai.closepaw.R
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ai.closepaw.BuildConfig
@@ -53,7 +55,7 @@ internal fun SettingsHomePage(
     onDismiss: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        PageMastheadIdentity(title = "Settings", onClose = onDismiss)
+        PageMastheadIdentity(title = stringResource(R.string.settings_home_page_title), onClose = onDismiss)
 
         Column(
             modifier = Modifier
@@ -62,46 +64,46 @@ internal fun SettingsHomePage(
                 .padding(horizontal = MaterialTheme.closePaw.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.closePaw.spacing.sm)
         ) {
-            SectionHeader("Behavior")
+            SectionHeader(stringResource(R.string.settings_home_page_section_behavior))
             SettingsNavigationRow(
-                title = "LLM & Authentication",
+                title = stringResource(R.string.settings_home_page_llm_auth),
                 subtitle = llmSubtitle(llmBackend, selectedModel, modelOptions, selectedLocalModel, modelCatalog),
                 onClick = { onNavigate(SettingsPage.LLM_AUTH) }
             )
             SettingsNavigationRow(
-                title = "Agent Behavior",
+                title = stringResource(R.string.settings_home_page_agent_behavior),
                 subtitle = agentBehaviorSubtitle(perceptionMode, platformMode, effectivePlatformMode, approvalMode),
                 onClick = { onNavigate(SettingsPage.AGENT_BEHAVIOR) }
             )
             SettingsNavigationRow(
-                title = "Memory",
-                subtitle = "User and device knowledge",
+                title = stringResource(R.string.settings_home_page_memory),
+                subtitle = stringResource(R.string.settings_home_page_memory_subtitle),
                 onClick = { onNavigate(SettingsPage.MEMORY) }
             )
 
-            SectionHeader("Access")
+            SectionHeader(stringResource(R.string.settings_home_page_section_access))
             SettingsNavigationRow(
-                title = "App Access",
+                title = stringResource(R.string.settings_home_page_app_access),
                 subtitle = appAccessSubtitle(appClassifier, approvalMode),
                 onClick = { onNavigate(SettingsPage.APP_ACCESS) }
             )
             SettingsNavigationRow(
-                title = "System & Debug",
+                title = stringResource(R.string.settings_home_page_system_debug),
                 subtitle = permissionsSubtitle(isAccessibilityEnabled, isOverlayEnabled, debugMode),
                 onClick = { onNavigate(SettingsPage.PERMISSIONS_ADVANCED) }
             )
 
-            SectionHeader("About")
+            SectionHeader(stringResource(R.string.settings_home_page_section_about))
             SettingsNavigationRow(
-                title = "Open Source Licenses",
-                subtitle = "ClosePaw is Apache 2.0 · view third-party notices",
+                title = stringResource(R.string.settings_home_page_licenses),
+                subtitle = stringResource(R.string.settings_home_page_licenses_subtitle),
                 onClick = { onNavigate(SettingsPage.OPEN_SOURCE_LICENSES) }
             )
 
             Fleuron()
 
             Text(
-                text = "Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                text = stringResource(R.string.settings_home_page_version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
                 style = MaterialTheme.closePaw.monoSmall,
                 color = MaterialTheme.closePaw.inkFaint,
                 textAlign = TextAlign.Center,
@@ -113,6 +115,7 @@ internal fun SettingsHomePage(
     }
 }
 
+@Composable
 private fun llmSubtitle(
     llmBackend: LLMBackendType,
     selectedModel: String,
@@ -120,47 +123,52 @@ private fun llmSubtitle(
     selectedLocalModel: String,
     modelCatalog: ModelCatalog,
 ): String = if (llmBackend == LLMBackendType.LOCAL) {
-    AVAILABLE_LOCAL_MODELS.find { it.id == selectedLocalModel }?.displayName ?: selectedLocalModel
+    AVAILABLE_LOCAL_MODELS.find { it.id == selectedLocalModel }?.localizedDisplayName() ?: selectedLocalModel
 } else {
     val modelName = modelOptions.find { it.first == selectedModel }?.second ?: selectedModel
     val mode = modelCatalog.resolveOrNull(selectedModel)?.provider?.mode
     val authLabel = when (mode) {
         AuthMode.OAuth -> "OAuth"
-        AuthMode.ApiKey -> "API key"
-        AuthMode.Local, null -> "API key"
+        AuthMode.ApiKey -> stringResource(R.string.settings_home_page_auth_api_key)
+        AuthMode.Local, null -> stringResource(R.string.settings_home_page_auth_api_key)
     }
     "$modelName · $authLabel"
 }
 
+@Composable
 private fun agentBehaviorSubtitle(
     perceptionMode: String,
     platformMode: PlatformMode,
     effectivePlatformMode: PlatformMode?,
     approvalMode: ApprovalMode,
 ): String {
-    val approvalChip = when (approvalMode) {
-        ApprovalMode.SMART -> "Per-App"
-        ApprovalMode.AUTO_APPROVE -> "Auto-Approve"
-        ApprovalMode.ALWAYS_ASK -> "Always Ask"
-    }
+    val approvalChip = approvalModeLabel(approvalMode)
     val perceptionChip = when (perceptionMode) {
-        "hybrid" -> "Transcript + Image"
-        "screenshot_only" -> "Image"
-        else -> "Transcript"
+        "hybrid" -> stringResource(R.string.settings_home_page_perception_hybrid)
+        "screenshot_only" -> stringResource(R.string.settings_home_page_perception_image)
+        else -> stringResource(R.string.settings_home_page_perception_transcript)
     }
     val displayChip = when (platformMode) {
         PlatformMode.ACCESSIBILITY -> when (effectivePlatformMode) {
-            PlatformMode.VIRTUAL_DISPLAY -> " · Virtual Display (this session)"
+            PlatformMode.VIRTUAL_DISPLAY -> " · " + stringResource(R.string.settings_home_page_vd_this_session)
             else -> ""
         }
         PlatformMode.VIRTUAL_DISPLAY -> when (effectivePlatformMode) {
-            PlatformMode.ACCESSIBILITY -> " · Virtual Display (next session)"
-            else -> " · Virtual Display"
+            PlatformMode.ACCESSIBILITY -> " · " + stringResource(R.string.settings_home_page_vd_next_session)
+            else -> " · " + stringResource(R.string.settings_home_page_vd)
         }
     }
     return "$approvalChip · $perceptionChip$displayChip"
 }
 
+@Composable
+private fun approvalModeLabel(approvalMode: ApprovalMode): String = when (approvalMode) {
+    ApprovalMode.SMART -> stringResource(R.string.settings_home_page_approval_per_app)
+    ApprovalMode.AUTO_APPROVE -> stringResource(R.string.settings_home_page_approval_auto)
+    ApprovalMode.ALWAYS_ASK -> stringResource(R.string.settings_home_page_approval_always_ask)
+}
+
+@Composable
 private fun permissionsSubtitle(
     isAccessibilityEnabled: Boolean,
     isOverlayEnabled: Boolean,
@@ -168,11 +176,12 @@ private fun permissionsSubtitle(
 ): String {
     val grantedCount = listOf(isAccessibilityEnabled, isOverlayEnabled).count { it }
     val permSummary = when (grantedCount) {
-        2 -> "All granted"
-        1 -> "1 of 2 granted"
-        else -> "Setup required"
+        2 -> stringResource(R.string.settings_home_page_perms_all_granted)
+        1 -> stringResource(R.string.settings_home_page_perms_one_granted)
+        else -> stringResource(R.string.settings_home_page_perms_setup_required)
     }
-    return "$permSummary · Debug ${if (debugMode) "on" else "off"}"
+    val debugLabel = stringResource(if (debugMode) R.string.settings_home_page_debug_on else R.string.settings_home_page_debug_off)
+    return "$permSummary · $debugLabel"
 }
 
 /**
@@ -204,11 +213,11 @@ private fun appAccessSubtitle(classifier: AppClassifier, approvalMode: ApprovalM
             Triple(allow, ask, reject)
         }
     }
-    val modeLabel = when (approvalMode) {
-        ApprovalMode.SMART -> "Per-App"
-        ApprovalMode.AUTO_APPROVE -> "Auto-Approve"
-        ApprovalMode.ALWAYS_ASK -> "Always Ask"
+    val modeLabel = approvalModeLabel(approvalMode)
+    val loaded = counts
+    return if (loaded != null) {
+        stringResource(R.string.settings_home_page_app_access_counts, modeLabel, loaded.first, loaded.second, loaded.third)
+    } else {
+        "$modeLabel · …"
     }
-    return counts?.let { (a, k, r) -> "$modeLabel · $a Allow · $k Ask · $r Reject" }
-        ?: "$modeLabel · …"
 }

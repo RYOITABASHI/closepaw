@@ -33,7 +33,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import ai.closepaw.R
 import ai.closepaw.protocol.ApprovalDecision
 import ai.closepaw.protocol.ApprovalScope
 import ai.closepaw.ui.capsule.NavAction
@@ -148,7 +150,7 @@ private fun ActionButtonCluster(
                     modifier = Modifier.size(16.dp),
                 )
                 Spacer(Modifier.width(6.dp))
-                Text(text = btn.text, style = MaterialTheme.typography.labelLarge)
+                Text(text = stringResource(btn.textRes), style = MaterialTheme.typography.labelLarge)
             }
         }
 
@@ -189,7 +191,7 @@ private fun ActionButtonCluster(
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = btn.text,
+                    text = stringResource(btn.textRes),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.error,
                 )
@@ -241,21 +243,21 @@ private fun NavButtonCluster(
         if (navSpec.showMinimize) {
             NavIconButton(
                 icon = Icons.Rounded.RemoveCircleOutline,
-                contentDescription = "Minimize",
+                contentDescription = stringResource(R.string.capsule_control_bar_minimize),
                 onClick = { onNavigate(NavAction.MINIMIZE) },
             )
         }
         if (navSpec.showApp) {
             NavIconButton(
                 icon = Icons.Rounded.PhoneAndroid,
-                contentDescription = "Open app",
+                contentDescription = stringResource(R.string.capsule_control_bar_open_app),
                 onClick = { onNavigate(NavAction.OPEN_APP) },
             )
         }
         if (navSpec.showWatch) {
             NavIconButton(
                 icon = Icons.Rounded.Visibility,
-                contentDescription = "Open viewer",
+                contentDescription = stringResource(R.string.capsule_control_bar_open_viewer),
                 onClick = { onNavigate(NavAction.OPEN_VIEWER) },
             )
         }
@@ -314,6 +316,6 @@ private fun ApprovalScopeButton(
     ) {
         Icon(Icons.Rounded.Check, null, Modifier.size(16.dp))
         Spacer(Modifier.width(6.dp))
-        Text(text = btn.text, style = MaterialTheme.typography.labelLarge)
+        Text(text = stringResource(btn.textRes), style = MaterialTheme.typography.labelLarge)
     }
 }

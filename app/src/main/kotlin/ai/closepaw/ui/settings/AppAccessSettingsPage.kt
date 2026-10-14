@@ -1,5 +1,6 @@
 package ai.closepaw.ui.settings
 
+import ai.closepaw.R
 import ai.closepaw.agent.cognition.prompt.AssetAppSkillRepository
 import ai.closepaw.app.MemoryEditGate
 import ai.closepaw.memory.MemoryScope
@@ -8,6 +9,7 @@ import ai.closepaw.ui.theme.Fleuron
 import ai.closepaw.ui.theme.PageMastheadDrillDown
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -65,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -87,11 +90,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class AppFilter(val label: String) {
-    All("All"),
-    Allow("Allow"),
-    Ask("Ask"),
-    Reject("Reject"),
+private enum class AppFilter(@StringRes val labelRes: Int) {
+    All(R.string.app_access_settings_page_tier_all),
+    Allow(R.string.app_access_settings_page_tier_allow),
+    Ask(R.string.app_access_settings_page_tier_ask),
+    Reject(R.string.app_access_settings_page_tier_reject),
 }
 
 internal const val APP_ROW_TRAILING_CHEVRON_TAG = "app-row-trailing-chevron"
@@ -100,14 +103,12 @@ internal const val APP_ROW_MEMORY_CHIP_TAG = "app-row-memory-chip"
 internal const val APP_ROW_SKILL_CHIP_TAG = "app-row-skill-chip"
 internal const val APP_ROW_MEMORY_CREATE_ERROR_TAG = "app-row-memory-create-error"
 
-private const val APP_MEMORY_CREATE_FAILED_MESSAGE = "Could not create app memory. Try again."
-
 private enum class AddMemoryOutcome { Created, AlreadyExists, Aborted, WriteFailed }
 
 private sealed interface AppRowsState {
     data object Loading : AppRowsState
     data class Loaded(val rows: List<AppRow>) : AppRowsState
-    data class Error(val message: String) : AppRowsState
+    data class Error(@StringRes val messageRes: Int) : AppRowsState
 }
 
 @Composable
@@ -160,9 +161,9 @@ internal fun AppAccessSettingsPage(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: SecurityException) {
-                AppRowsState.Error("ClosePaw does not have permission to read the installed app list.")
+                AppRowsState.Error(R.string.app_access_settings_page_error_permission)
             } catch (e: RuntimeException) {
-                AppRowsState.Error("Could not read the installed app list. Retry from Settings.")
+                AppRowsState.Error(R.string.app_access_settings_page_error_read)
             }
         }
     }
@@ -201,7 +202,7 @@ internal fun AppAccessSettingsPage(
     }
     if (fullEditorPackage != null) {
         MemoryFileEditorPage(
-            title = "App Memory",
+            title = stringResource(R.string.app_access_settings_page_app_memory_title),
             memoryStore = memoryStore,
             scope = MemoryScope.APP,
             packageName = fullEditorPackage,
@@ -258,7 +259,11 @@ internal fun AppAccessSettingsPage(
                             "${System.currentTimeMillis()}-${startInEditNonces.size}"
                     }
                     AddMemoryOutcome.Aborted -> {
-                        Toast.makeText(context, MEMORY_EDIT_ABORT_TOAST, Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.memory_file_editor_abort_toast),
+                            Toast.LENGTH_SHORT,
+                        ).show()
                     }
                     AddMemoryOutcome.WriteFailed -> {
                         memoryCreateFailures[pkg] = true
@@ -266,12 +271,16 @@ internal fun AppAccessSettingsPage(
                 }
             }
         } else {
-            Toast.makeText(context, MEMORY_EDIT_ABORT_TOAST, Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                context.getString(R.string.memory_file_editor_abort_toast),
+                Toast.LENGTH_SHORT,
+            ).show()
         }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        PageMastheadDrillDown(title = "App Access", onBack = onBack, onClose = onClose)
+        PageMastheadDrillDown(title = stringResource(R.string.app_access_settings_page_title), onBack = onBack, onClose = onClose)
 
         Column(
             modifier = Modifier
@@ -281,7 +290,7 @@ internal fun AppAccessSettingsPage(
         ) {
             if (approvalMode == ApprovalMode.AUTO_APPROVE) {
                 SettingsAlertCard(
-                    message = "Auto-Approve is on. Per-app rules below only apply in Per-App mode.",
+                    message = stringResource(R.string.app_access_settings_page_auto_approve_warning),
                     tone = AlertTone.Warning,
                 )
             }
@@ -295,7 +304,7 @@ internal fun AppAccessSettingsPage(
             AppRowsState.Loading -> LoadingState()
             is AppRowsState.Error -> {
                 AppRowsErrorState(
-                    message = state.message,
+                    message = stringResource(state.messageRes),
                     onRetry = { appRowsReloadKey += 1 },
                 )
             }
@@ -349,7 +358,7 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
             Box(modifier = Modifier.weight(1f)) {
                 if (query.isEmpty()) {
                     Text(
-                        text = "Search apps or package name",
+                        text = stringResource(R.string.app_access_settings_page_search_hint),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.closePaw.inkFaint,
                     )
@@ -383,7 +392,7 @@ private fun FilterChipsRow(selected: AppFilter, onSelect: (AppFilter) -> Unit) {
                 icon = {},
             ) {
                 Text(
-                    text = filter.label,
+                    text = stringResource(filter.labelRes),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -392,16 +401,22 @@ private fun FilterChipsRow(selected: AppFilter, onSelect: (AppFilter) -> Unit) {
     }
 }
 
+@Composable
 private fun appDetailsLabel(appLabel: String, isExpanded: Boolean): String {
     return if (isExpanded) {
-        "Collapse $appLabel app details"
+        stringResource(R.string.app_access_settings_page_collapse_app_details_named, appLabel)
     } else {
-        "Expand $appLabel app details"
+        stringResource(R.string.app_access_settings_page_expand_app_details_named, appLabel)
     }
 }
 
+@Composable
 private fun appExpansionStateDescription(isExpanded: Boolean): String {
-    return if (isExpanded) "Expanded" else "Collapsed"
+    return if (isExpanded) {
+        stringResource(R.string.app_access_settings_page_state_expanded)
+    } else {
+        stringResource(R.string.app_access_settings_page_state_collapsed)
+    }
 }
 
 @Composable
@@ -413,8 +428,8 @@ private fun LoadingState() {
         contentAlignment = Alignment.TopCenter,
     ) {
         AppAccessNoticeCard(
-            title = "Loading apps",
-            message = "Reading installed apps and access rules.",
+            title = stringResource(R.string.app_access_settings_page_loading_title),
+            message = stringResource(R.string.app_access_settings_page_loading_message),
             loading = true,
         )
     }
@@ -429,11 +444,11 @@ private fun AppRowsErrorState(message: String, onRetry: () -> Unit) {
         contentAlignment = Alignment.TopCenter,
     ) {
         AppAccessNoticeCard(
-            title = "Could not load apps",
+            title = stringResource(R.string.app_access_settings_page_load_error_title),
             message = message,
             action = {
                 TextButton(onClick = onRetry) {
-                    Text("Retry")
+                    Text(stringResource(R.string.app_access_settings_page_retry))
                 }
             },
         )
@@ -513,8 +528,8 @@ private fun AppList(
         if (rows.isEmpty()) {
             item {
                 AppAccessNoticeCard(
-                    title = "No apps match",
-                    message = "Try a different search or filter.",
+                    title = stringResource(R.string.app_access_settings_page_no_match_title),
+                    message = stringResource(R.string.app_access_settings_page_no_match_message),
                     modifier = Modifier.padding(top = MaterialTheme.closePaw.spacing.sm),
                 )
             }
@@ -625,18 +640,18 @@ private fun AppRowItem(
                             Spacer(modifier = Modifier.width(6.dp))
                             Icon(
                                 imageVector = Icons.Outlined.Lock,
-                                contentDescription = "Sensitive app",
+                                contentDescription = stringResource(R.string.app_access_settings_page_sensitive_app),
                                 modifier = Modifier.size(14.dp),
                                 tint = MaterialTheme.closePaw.inkFaint,
                             )
                         }
                         if (summary.hasMemory) {
                             Spacer(modifier = Modifier.width(6.dp))
-                            SummaryChip(text = "Memory", testTag = APP_ROW_MEMORY_CHIP_TAG)
+                            SummaryChip(text = stringResource(R.string.app_access_settings_page_chip_memory), testTag = APP_ROW_MEMORY_CHIP_TAG)
                         }
                         if (summary.hasSkill) {
                             Spacer(modifier = Modifier.width(6.dp))
-                            SummaryChip(text = "Skill", testTag = APP_ROW_SKILL_CHIP_TAG)
+                            SummaryChip(text = stringResource(R.string.app_access_settings_page_chip_skill), testTag = APP_ROW_SKILL_CHIP_TAG)
                         }
                     }
                     Text(
@@ -648,7 +663,7 @@ private fun AppRowItem(
                     )
                     if (isBundledBlocked) {
                         Text(
-                            text = "Permanently restricted",
+                            text = stringResource(R.string.app_access_settings_page_permanently_restricted),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.tertiary,
                         )
@@ -705,13 +720,13 @@ private fun MemoryCreateFailureCard(
     retryEnabled: Boolean,
 ) {
     SettingsAlertCard(
-        message = APP_MEMORY_CREATE_FAILED_MESSAGE,
+        message = stringResource(R.string.app_access_settings_page_memory_create_failed),
         tone = AlertTone.Error,
         icon = Icons.Outlined.Warning,
         modifier = Modifier.testTag(APP_ROW_MEMORY_CREATE_ERROR_TAG),
         action = {
             TextButton(onClick = onRetry, enabled = retryEnabled) {
-                Text("Retry")
+                Text(stringResource(R.string.app_access_settings_page_retry))
             }
         },
     )
@@ -726,7 +741,11 @@ private fun TrailingSlot(
     onAddMemory: () -> Unit,
 ) {
     if (hasContent) {
-        val expansionLabel = if (isExpanded) "Collapse app details" else "Expand app details"
+        val expansionLabel = if (isExpanded) {
+            stringResource(R.string.app_access_settings_page_collapse_app_details)
+        } else {
+            stringResource(R.string.app_access_settings_page_expand_app_details)
+        }
         val expansionStateDescription = appExpansionStateDescription(isExpanded)
         Surface(
             onClick = onToggleExpand,
@@ -756,6 +775,8 @@ private fun TrailingSlot(
         // action-layer re-check still happens inside the click coroutine, but
         // disabling here also stops the visible affordance from looking
         // tappable while a session is open.
+        val createMemoryLabel = stringResource(R.string.app_access_settings_page_create_memory)
+        val createMemoryLockedLabel = stringResource(R.string.app_access_settings_page_create_memory_locked)
         Surface(
             onClick = onAddMemory,
             enabled = !addMemoryLocked,
@@ -766,9 +787,9 @@ private fun TrailingSlot(
                 .minimumInteractiveComponentSize()
                 .semantics {
                     role = Role.Button
-                    contentDescription = "Create app memory"
+                    contentDescription = createMemoryLabel
                     if (addMemoryLocked) {
-                        stateDescription = "Disabled while memory edits are locked"
+                        stateDescription = createMemoryLockedLabel
                     }
                 }
                 .testTag(APP_ROW_ADD_MEMORY_TAG),
@@ -787,7 +808,7 @@ private fun TrailingSlot(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "Memory",
+                    text = stringResource(R.string.app_access_settings_page_chip_memory),
                     style = MaterialTheme.typography.labelSmall,
                     color = tint,
                     fontWeight = FontWeight.SemiBold,
@@ -850,19 +871,19 @@ private fun TierSegmentedSelector(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         SegmentChip(
-            label = "Allow",
+            label = stringResource(R.string.app_access_settings_page_tier_allow),
             isSelected = selected == AppTier.NORMAL,
             onClick = { onPick(AppTier.NORMAL) },
             modifier = Modifier.weight(1f),
         )
         SegmentChip(
-            label = "Ask",
+            label = stringResource(R.string.app_access_settings_page_tier_ask),
             isSelected = selected == AppTier.CAUTIOUS,
             onClick = { onPick(AppTier.CAUTIOUS) },
             modifier = Modifier.weight(1f),
         )
         SegmentChip(
-            label = "Reject",
+            label = stringResource(R.string.app_access_settings_page_tier_reject),
             isSelected = selected == AppTier.BLOCKED,
             onClick = { onPick(AppTier.BLOCKED) },
             modifier = Modifier.weight(1f),
@@ -892,7 +913,7 @@ private fun RejectOnlyChip() {
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "Reject",
+                    text = stringResource(R.string.app_access_settings_page_tier_reject),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     fontWeight = FontWeight.SemiBold,
@@ -910,6 +931,8 @@ internal fun SegmentChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val selectedLabel = stringResource(R.string.app_access_settings_page_selected)
+    val notSelectedLabel = stringResource(R.string.app_access_settings_page_not_selected)
     Surface(
         modifier = modifier
             .minimumInteractiveComponentSize()
@@ -921,7 +944,7 @@ internal fun SegmentChip(
             .semantics {
                 contentDescription = label
                 selected = isSelected
-                stateDescription = if (isSelected) "Selected" else "Not selected"
+                stateDescription = if (isSelected) selectedLabel else notSelectedLabel
             },
         color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
         else MaterialTheme.colorScheme.surface,

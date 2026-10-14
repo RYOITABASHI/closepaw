@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- AgentBehaviorSettingsPage -->
+    <string name="agent_behavior_settings_page_title">エージェントの動作</string>
+    <string name="agent_behavior_settings_page_section_perception">画面認識</string>
+    <string name="agent_behavior_settings_page_section_approval">承認</string>
+    <string name="agent_behavior_settings_page_approval_per_app">アプリごと</string>
+    <string name="agent_behavior_settings_page_approval_per_app_desc">アプリごとのアクセスルールに基づき、リスクのある操作の前に確認します</string>
+    <string name="agent_behavior_settings_page_approval_auto">自動承認</string>
+    <string name="agent_behavior_settings_page_approval_auto_desc">許可された操作を確認なしで実行します。拒否したアプリは引き続きブロックされます。</string>
+    <string name="agent_behavior_settings_page_app_access_rules_title">アプリのアクセスルール</string>
+    <string name="agent_behavior_settings_page_app_access_rules_subtitle">アプリごとに許可・確認・拒否を設定します</string>
+
+    <!-- AgentSkillToggleRows -->
+    <string name="agent_skill_toggle_rows_next_session">次回のセッションから反映されます</string>
+    <string name="agent_skill_toggle_rows_section_title">エージェントスキル</string>
+    <string name="agent_skill_toggle_rows_enabled">有効</string>
+    <string name="agent_skill_toggle_rows_disabled">無効</string>
+    <string name="agent_skill_toggle_rows_view_prompt">%1$s のプロンプトを表示</string>
+    <string name="agent_skill_toggle_rows_close">閉じる</string>
+
+    <!-- ApiKeyFields -->
+    <string name="api_key_fields_hide">非表示</string>
+    <string name="api_key_fields_show">表示</string>
+
+    <!-- AppAccessSettingsPage -->
+    <string name="app_access_settings_page_title">アプリのアクセス</string>
+    <string name="app_access_settings_page_tier_all">すべて</string>
+    <string name="app_access_settings_page_tier_allow">許可</string>
+    <string name="app_access_settings_page_tier_ask">確認</string>
+    <string name="app_access_settings_page_tier_reject">拒否</string>
+    <string name="app_access_settings_page_memory_create_failed">アプリメモリを作成できませんでした。もう一度お試しください。</string>
+    <string name="app_access_settings_page_error_permission">ClosePaw にインストール済みアプリの一覧を読み取る権限がありません。</string>
+    <string name="app_access_settings_page_error_read">インストール済みアプリの一覧を読み取れませんでした。設定から再試行してください。</string>
+    <string name="app_access_settings_page_app_memory_title">アプリメモリ</string>
+    <string name="app_access_settings_page_auto_approve_warning">自動承認がオンです。以下のアプリごとのルールは「アプリごと」モードでのみ適用されます。</string>
+    <string name="app_access_settings_page_search_hint">アプリ名またはパッケージ名で検索</string>
+    <string name="app_access_settings_page_expand_app_details_named">%1$s のアプリ詳細を展開</string>
+    <string name="app_access_settings_page_collapse_app_details_named">%1$s のアプリ詳細を折りたたむ</string>
+    <string name="app_access_settings_page_expand_app_details">アプリ詳細を展開</string>
+    <string name="app_access_settings_page_collapse_app_details">アプリ詳細を折りたたむ</string>
+    <string name="app_access_settings_page_state_expanded">展開中</string>
+    <string name="app_access_settings_page_state_collapsed">折りたたみ中</string>
+    <string name="app_access_settings_page_loading_title">アプリを読み込み中</string>
+    <string name="app_access_settings_page_loading_message">インストール済みアプリとアクセスルールを読み込んでいます。</string>
+    <string name="app_access_settings_page_load_error_title">アプリを読み込めませんでした</string>
+    <string name="app_access_settings_page_retry">再試行</string>
+    <string name="app_access_settings_page_no_match_title">一致するアプリがありません</string>
+    <string name="app_access_settings_page_no_match_message">検索語句やフィルタを変えてお試しください。</string>
+    <string name="app_access_settings_page_sensitive_app">機密性の高いアプリ</string>
+    <string name="app_access_settings_page_chip_memory">メモリ</string>
+    <string name="app_access_settings_page_chip_skill">スキル</string>
+    <string name="app_access_settings_page_permanently_restricted">常に制限されています</string>
+    <string name="app_access_settings_page_create_memory">アプリメモリを作成</string>
+    <string name="app_access_settings_page_create_memory_locked">メモリの編集がロックされているため無効です</string>
+    <string name="app_access_settings_page_selected">選択中</string>
+    <string name="app_access_settings_page_not_selected">未選択</string>
+
+    <!-- AppRowExpansion -->
+    <string name="app_row_expansion_app_memory">アプリメモリ</string>
+    <string name="app_row_expansion_app_skill">アプリスキル</string>
+    <string name="app_row_expansion_blocked_warning">このアプリは「拒否」に設定されています。「拒否」はエージェントによるこのメモリへの書き込みのみをブロックします。保存済みの内容は、このアプリが前面にあるときに引き続き参照されます。</string>
+    <string name="app_row_expansion_add_memory">メモリ</string>
+
+    <!-- BrowserScriptStatusMapper -->
+    <string name="browser_script_status_mapper_setting_up">セットアップ中…</string>
+    <string name="browser_script_status_mapper_checking_shizuku">Shizuku を確認中…</string>
+    <string name="browser_script_status_mapper_needs_setup">要セットアップ</string>
+    <string name="browser_script_status_mapper_disabled">無効</string>
+    <string name="browser_script_status_mapper_toggle_to_enable">スイッチをオンにすると有効になります</string>
+    <string name="browser_script_status_mapper_checking">確認中…</string>
+    <string name="browser_script_status_mapper_checking_socket">Chrome DevTools ソケットを確認中…</string>
+    <string name="browser_script_status_mapper_ready">準備完了</string>
+    <string name="browser_script_status_mapper_active">browser_script は有効です</string>
+    <string name="browser_script_status_mapper_socket_not_exposed">Chrome DevTools ソケットが公開されていません。フラグを有効にして Chrome を再起動してください。</string>
+    <string name="browser_script_status_mapper_not_available">利用不可</string>
+    <string name="browser_script_status_mapper_cannot_probe">この端末ではソケットを確認できません。必要に応じてエージェントが接続を試みます。</string>
+
+    <!-- BrowserScriptToggleGate -->
+    <string name="browser_script_toggle_gate_shizuku_unavailable">Shizuku が起動していません。Shizuku を起動してから browser_script を有効にしてください。</string>
+    <string name="browser_script_toggle_gate_permission_denied">権限が拒否されました。タップして再試行するか、Shizuku Manager で再度許可してください。</string>
+    <string name="browser_script_toggle_gate_write_failed">Chrome のコマンドラインファイルを書き込めませんでした。Shizuku を確認してもう一度お試しください。</string>
+
+    <!-- DisplaySection -->
+    <string name="display_section_title">表示モード</string>
+    <string name="display_section_virtual_display">仮想ディスプレイ</string>
+    <string name="display_section_retry_setup">仮想ディスプレイのセットアップを再試行</string>
+    <string name="display_section_grant_shizuku">Shizuku の権限を許可</string>
+
+    <!-- LlmAuthDiscoveryUi -->
+    <string name="llm_auth_discovery_ui_search_models">モデルを検索</string>
+    <string name="llm_auth_discovery_ui_no_match">「%1$s」に一致するモデルはありません</string>
+    <string name="llm_auth_discovery_ui_no_models">利用できるモデルがありません</string>
+    <string name="llm_auth_discovery_ui_group_search">(検索結果)</string>
+    <string name="llm_auth_discovery_ui_group_other">(その他)</string>
+    <string name="llm_auth_discovery_ui_selected">選択中</string>
+    <string name="llm_auth_discovery_ui_refreshing">更新中…</string>
+    <string name="llm_auth_discovery_ui_refresh_models">モデル一覧を更新</string>
+    <string name="llm_auth_discovery_ui_last_refreshed">最終更新: %1$s</string>
+    <string name="llm_auth_discovery_ui_refresh_disabled">更新できません: %1$s</string>
+
+    <!-- LlmAuthSettingsPage -->
+    <string name="llm_auth_settings_page_title">LLM と認証</string>
+    <string name="llm_auth_settings_page_tab_sign_in">サインイン</string>
+    <string name="llm_auth_settings_page_tab_api_key">API キー</string>
+    <string name="llm_auth_settings_page_tab_local">ローカル</string>
+    <string name="llm_auth_settings_page_section_cloud_model">クラウドモデル</string>
+    <string name="llm_auth_settings_page_section_authentication">認証</string>
+    <string name="llm_auth_settings_page_section_provider">プロバイダ</string>
+    <string name="llm_auth_settings_page_base_url">ベース URL</string>
+    <string name="llm_auth_settings_page_custom_model_id">カスタムモデル ID</string>
+    <string name="llm_auth_settings_page_api_key">API キー</string>
+    <string name="llm_auth_settings_page_openai_key">OpenAI キー</string>
+    <string name="llm_auth_settings_page_openrouter_key">OpenRouter キー</string>
+    <string name="llm_auth_settings_page_local_warning">試験運用: ローカルモデルは低速で性能も限られるため、エージェントを安定して動かせません。実際の作業にはクラウドモデルをお使いください。</string>
+    <string name="llm_auth_settings_page_section_local_model">ローカルモデル</string>
+
+    <!-- MemoryFileEditor -->
+    <string name="memory_file_editor_locked_banner">セッション実行中です。メモリを編集するにはセッションを停止してください。</string>
+    <string name="memory_file_editor_abort_toast">セッションが開始されたため、メモリの編集を中止しました。</string>
+    <string name="memory_file_editor_reload_toast">セッション中にメモリが更新されたため、ディスクから再読み込みしました。</string>
+    <string name="memory_file_editor_reloading_banner">ディスクからメモリを再読み込み中…</string>
+    <string name="memory_file_editor_too_large">メモリファイルの上限は %1$d バイトです。内容を減らしてもう一度お試しください。</string>
+    <string name="memory_file_editor_invalid_scope">メモリの保存先が無効です。</string>
+    <string name="memory_file_editor_save_failed">保存に失敗しました: %1$s</string>
+    <string name="memory_file_editor_delete_failed">削除に失敗しました。</string>
+    <string name="memory_file_editor_content_description">メモリファイルの内容</string>
+    <string name="memory_file_editor_empty">メモリはまだありません。</string>
+    <string name="memory_file_editor_loading">読み込み中…</string>
+    <string name="memory_file_editor_open_full">↗ 開く</string>
+    <string name="memory_file_editor_edit">編集</string>
+    <string name="memory_file_editor_delete">削除</string>
+    <string name="memory_file_editor_discard">破棄</string>
+    <string name="memory_file_editor_save">保存</string>
+    <string name="memory_file_editor_delete_title">メモリを削除しますか？</string>
+    <string name="memory_file_editor_delete_message">ファイルを削除します。後でエージェントが新しいファイルを作成する場合があります。</string>
+    <string name="memory_file_editor_cancel">キャンセル</string>
+
+    <!-- MemorySettingsPage -->
+    <string name="memory_settings_page_title">メモリ</string>
+    <string name="memory_settings_page_user_memory">ユーザーメモリ</string>
+    <string name="memory_settings_page_user_memory_subtitle">すべてのセッションで共有される事実や好み</string>
+    <string name="memory_settings_page_device_memory">端末メモリ</string>
+    <string name="memory_settings_page_device_memory_subtitle">この端末に関する事実、注意点、検証メモ</string>
+    <string name="memory_settings_page_app_memory">アプリメモリ</string>
+
+    <!-- OpenAiAuthCard -->
+    <string name="open_ai_auth_card_not_signed_in">サインインしていません</string>
+    <string name="open_ai_auth_card_sign_in">OpenAI でサインイン</string>
+    <string name="open_ai_auth_card_signing_in">サインイン中…</string>
+    <string name="open_ai_auth_card_cancel">キャンセル</string>
+    <string name="open_ai_auth_card_finishing">OpenAI との連携を完了しています…</string>
+    <string name="open_ai_auth_card_signed_in">OpenAI でサインイン済み</string>
+    <string name="open_ai_auth_card_sign_out">サインアウト</string>
+    <string name="open_ai_auth_card_try_again">再試行</string>
+
+    <!-- OpenSourceLicensesPage -->
+    <string name="open_source_licenses_page_title">オープンソースライセンス</string>
+    <string name="open_source_licenses_page_error_open">生成されたライセンスファイルを開けませんでした。設定から再試行してください。</string>
+    <string name="open_source_licenses_page_error_read">生成されたライセンスファイルを読み取れませんでした。設定から再試行してください。</string>
+    <string name="open_source_licenses_page_loading_title">ライセンスを読み込み中</string>
+    <string name="open_source_licenses_page_loading_message">生成された依存関係のライセンス一覧を読み込んでいます。</string>
+    <string name="open_source_licenses_page_empty_title">ライセンス情報がありません</string>
+    <string name="open_source_licenses_page_empty_message">生成されたライセンスファイルが空です。</string>
+    <string name="open_source_licenses_page_error_title">ライセンスを読み込めませんでした</string>
+    <string name="open_source_licenses_page_retry">再試行</string>
+    <string name="open_source_licenses_page_preamble">ClosePaw は Apache License 2.0 の下でライセンスされています。以下の一覧は、すべての実行時依存関係からビルド時に生成されたものです。</string>
+    <string name="open_source_licenses_page_leap_note">注: ai.liquid.leap:leap-sdk はプロプライエタリです（Leap 利用規約）。再配布への影響については、リポジトリのルートにある NOTICE を参照してください。</string>
+    <string name="open_source_licenses_page_unknown_license">不明なライセンス</string>
+</resources>

@@ -1,5 +1,6 @@
 package ai.closepaw.ui.settings
 
+import ai.closepaw.R
 import ai.closepaw.app.MemoryEditGate
 import ai.closepaw.memory.MemoryScope
 import ai.closepaw.memory.MemoryStore
@@ -28,6 +29,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -37,10 +39,6 @@ internal const val APP_EXPANSION_ROOT_TAG = "app-expansion-root"
 internal const val APP_EXPANSION_SKILL_BODY_TAG = "app-expansion-skill-body"
 internal const val APP_EXPANSION_BLOCKED_WARNING_TAG = "app-expansion-blocked-warning"
 internal const val APP_EXPANSION_ADD_MEMORY_TAG = "app-expansion-add-memory"
-
-internal const val APP_BLOCKED_MEMORY_WARNING =
-    "This app is set to Reject. Reject only blocks the agent from writing this memory; " +
-        "saved entries are still recalled when this app is foreground."
 
 /**
  * Inline expanded area under an App Access row. Composed of:
@@ -90,7 +88,7 @@ internal fun AppRowExpansion(
         }
 
         if (showMemoryEditor) {
-            SectionLabel(text = "App Memory")
+            SectionLabel(text = stringResource(R.string.app_row_expansion_app_memory))
             if (isBlocked) {
                 BlockedAppWarning()
             }
@@ -119,7 +117,7 @@ internal fun AppRowExpansion(
 @Composable
 private fun AppSkillViewer(body: String) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        SectionLabel(text = "App Skill")
+        SectionLabel(text = stringResource(R.string.app_row_expansion_app_skill))
         Spacer(modifier = Modifier.height(4.dp))
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -149,7 +147,7 @@ private fun AppSkillViewer(body: String) {
 @Composable
 private fun BlockedAppWarning() {
     SettingsAlertCard(
-        message = APP_BLOCKED_MEMORY_WARNING,
+        message = stringResource(R.string.app_row_expansion_blocked_warning),
         tone = AlertTone.Warning,
         icon = Icons.Outlined.Warning,
         modifier = Modifier.testTag(APP_EXPANSION_BLOCKED_WARNING_TAG),
@@ -188,7 +186,7 @@ private fun AddMemoryChip(onAddMemory: () -> Unit, enabled: Boolean) {
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-                text = "Memory",
+                text = stringResource(R.string.app_row_expansion_add_memory),
                 style = MaterialTheme.typography.labelMedium,
                 color = if (enabled) MaterialTheme.colorScheme.onPrimaryContainer
                 else MaterialTheme.closePaw.inkFaint,

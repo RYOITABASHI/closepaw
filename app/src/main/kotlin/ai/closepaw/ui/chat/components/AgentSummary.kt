@@ -1,5 +1,8 @@
 package ai.closepaw.ui.chat.components
 
+import ai.closepaw.R
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.pluralStringResource
 import ai.closepaw.ui.chat.model.ChatMessage
 import ai.closepaw.ui.chat.model.ContentBlock
 
@@ -10,11 +13,13 @@ private val WHITESPACE = Regex("\\s+")
  * on Complete rows. The CollapsePill uses this as its summary; standalone
  * footer rendering is gone in D2 (the pill replaces it).
  */
+@Composable
 internal fun outcomeFooter(message: ChatMessage.Agent): String {
     val actionCount = countActions(message)
     val elapsed = formatElapsed(message)
+    val actionsLabel = pluralStringResource(R.plurals.agent_summary_action_count, actionCount, actionCount)
     val parts = buildList {
-        if (actionCount > 0) add("$actionCount action${if (actionCount == 1) "" else "s"}")
+        if (actionCount > 0) add(actionsLabel)
         elapsed?.let { add(it) }
     }
     return if (parts.isEmpty()) "" else parts.joinToString(separator = " · ")
@@ -25,11 +30,13 @@ internal fun outcomeFooter(message: ChatMessage.Agent): String {
  * Retained as a fallback for any future surface that still wants a textual
  * row digest; the pill itself uses [outcomeFooter] only.
  */
+@Composable
 internal fun collapsedSummary(message: ChatMessage.Agent): String {
     val actionCount = countActions(message)
+    val actionsLabel = pluralStringResource(R.plurals.agent_summary_action_count, actionCount, actionCount)
     val parts = buildList {
         firstHeadline(message)?.let { add(it) }
-        if (actionCount > 0) add("$actionCount action${if (actionCount == 1) "" else "s"}")
+        if (actionCount > 0) add(actionsLabel)
         formatElapsed(message)?.let { add(it) }
     }
     return parts.joinToString(separator = " · ")

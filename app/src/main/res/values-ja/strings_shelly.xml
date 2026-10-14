@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shelly_quoted_app">「%1$s」</string>
+    <string name="shelly_list_separator">、</string>
+    <string name="shelly_main_display_title">ClosePawが画面を操作中 — 画面に触れないでください</string>
+    <string name="shelly_main_display_body">仮想ディスプレイが使えないため、メイン画面で実行しています。終了するには「停止」を押してください。</string>
+    <string name="shelly_background_title">ClosePawがバックグラウンドで作業中 — スマホはそのまま使えます</string>
+    <string name="shelly_background_body_generic">完了するまで、ClosePawが操作中のアプリは開かないでください。</string>
+    <string name="shelly_background_body_apps">完了するまで%1$sは開かないでください。</string>
+    <string name="shelly_approval_title">承認待ちです</string>
+    <string name="shelly_approval_body">ClosePawに%1$sの操作を許可しますか？</string>
+    <string name="shelly_paused_title">ClosePawを一時停止しました</string>
+    <string name="shelly_paused_body_app">ClosePawが使用中の%1$sが開かれたため一時停止しました。使い終わったら「再開」、やめる場合は「停止」を押してください。</string>
+    <string name="shelly_paused_body_generic">続けるには「再開」、やめる場合は「停止」を押してください。</string>
+    <string name="shelly_done_title">ClosePawの作業が完了しました</string>
+    <string name="shelly_stopped_title">ClosePawを停止しました</string>
+    <string name="shelly_failed_title">ClosePawの作業が失敗しました</string>
+    <string name="shelly_blocked_title">Shellyからの依頼を実行できません</string>
+    <string name="shelly_blocked_accessibility">ClosePawのユーザー補助サービスを有効にしてから、もう一度お試しください。</string>
+    <string name="shelly_blocked_onboarding">先にClosePawの初期設定を完了してください。タップで開きます。</string>
+    <string name="shelly_blocked_overlay">ClosePawに「他のアプリの上に重ねて表示」の権限が必要です。タップで開きます。</string>
+    <string name="shelly_blocked_credentials">選択中のモデルのサインインまたはAPIキーの設定が必要です。タップで開きます。</string>
+    <string name="shelly_busy_title">ClosePawは別の作業中です</string>
+    <string name="shelly_busy_body">別のタスクを実行中です。停止するか完了を待ってから、もう一度Shellyから依頼してください。</string>
+    <string name="shelly_no_vd_title">Shizukuが動いていないため開始しませんでした</string>
+    <string name="shelly_no_vd_body">バックグラウンド実行にはShizukuが必要です。Shizukuを起動してもう一度依頼するか、タップしてフォアグラウンドで実行してください（ClosePawが画面を操作します）。</string>
+    <string name="shelly_action_stop">停止</string>
+    <string name="shelly_action_resume">再開</string>
+    <string name="shelly_action_allow_always">常に許可</string>
+    <string name="shelly_action_allow_session">今回のみ許可</string>
+    <string name="shelly_action_reject">拒否</string>
+    <string name="shelly_lock_screen_summary">Shellyタスク — 詳細はロック解除後に表示</string>
+    <string name="shelly_channel_status">Shellyタスク（状態）</string>
+    <string name="shelly_channel_attention">Shellyタスク（要対応）</string>
+    <string name="shelly_main_display_setting_title">Shellyにメイン画面の操作を許可</string>
+    <string name="shelly_main_display_setting_on_label">オン</string>
+    <string name="shelly_main_display_setting_off_label">オフ</string>
+    <string name="shelly_main_display_setting_on">仮想ディスプレイ（Shizuku）が使えないとき、Shellyからの依頼をメイン画面で実行します。ClosePawが画面を操作します。</string>
+    <string name="shelly_main_display_setting_off">Shellyからの依頼は仮想ディスプレイ上でのみ実行します。Shizukuが使えないときは実行しません。</string>
+</resources>

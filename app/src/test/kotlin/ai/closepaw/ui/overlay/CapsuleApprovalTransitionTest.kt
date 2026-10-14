@@ -1,6 +1,7 @@
 package ai.closepaw.ui.overlay
 
 import com.google.common.truth.Truth.assertThat
+import ai.closepaw.R
 import ai.closepaw.protocol.AskUserType
 import ai.closepaw.protocol.SessionEndReason
 import ai.closepaw.protocol.TaskOutcome
@@ -65,7 +66,7 @@ class CapsuleApprovalTransitionTest {
         assertThat(accepted).isTrue()
         val mode = holder.mode.value
         assertThat(mode).isInstanceOf(CapsuleMode.Running::class.java)
-        assertThat((mode as CapsuleMode.Running).thought).isEqualTo("Processing...")
+        assertThat((mode as CapsuleMode.Running).thoughtRes).isEqualTo(R.string.capsule_state_holder_processing)
     }
 
     @Test
@@ -99,7 +100,7 @@ class CapsuleApprovalTransitionTest {
         assertThat(accepted).isTrue()
         val mode = holder.mode.value
         assertThat(mode).isInstanceOf(CapsuleMode.Running::class.java)
-        assertThat((mode as CapsuleMode.Running).thought).isEqualTo("Processing response...")
+        assertThat((mode as CapsuleMode.Running).thoughtRes).isEqualTo(R.string.capsule_state_holder_processing_response)
     }
 
     // ── Takeover shortcut ──
@@ -209,14 +210,14 @@ class CapsuleApprovalTransitionTest {
     fun `task completed TASK_IMPOSSIBLE sets Done with impossible message`() {
         holder.onTaskStarted("task1", "input")
         holder.onTaskCompleted(TaskOutcome.TASK_IMPOSSIBLE)
-        assertThat((holder.mode.value as CapsuleMode.Done).message).isEqualTo("Task impossible")
+        assertThat((holder.mode.value as CapsuleMode.Done).messageRes).isEqualTo(R.string.capsule_state_holder_task_impossible)
     }
 
     @Test
     fun `task completed USER_STOPPED sets Done with stopped message`() {
         holder.onTaskStarted("task1", "input")
         holder.onTaskCompleted(TaskOutcome.USER_STOPPED)
-        assertThat((holder.mode.value as CapsuleMode.Done).message).isEqualTo("Stopped")
+        assertThat((holder.mode.value as CapsuleMode.Done).messageRes).isEqualTo(R.string.capsule_state_holder_stopped)
     }
 
     @Test
