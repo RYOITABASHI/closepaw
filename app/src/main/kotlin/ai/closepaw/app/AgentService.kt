@@ -283,6 +283,7 @@ class AgentService : AccessibilityService() {
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
             shellyNotifier.render(it.state)
+            reportShellyResult(it)
         }
         shellyRun = null
 
@@ -399,6 +400,7 @@ class AgentService : AccessibilityService() {
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
             shellyNotifier.render(it.state)
+            reportShellyResult(it)
             shellyRun = null
         }
         if (session != null) {
@@ -467,14 +469,20 @@ class AgentService : AccessibilityService() {
      *
      * Visible surface: Smart Capsule overlay + [ShellyRunNotifier] only.
      */
-    internal fun startShellyRun(goal: String, platformMode: PlatformMode) {
+    internal fun startShellyRun(
+            goal: String,
+            platformMode: PlatformMode,
+            correlation: ShellyBackgroundRun.ResultCorrelation? = null,
+    ) {
         if (!isServiceActive) {
             shellyNotifier.showBlocked(ShellyBackgroundRun.Block.ACCESSIBILITY_OFF, goal)
+            reportShellyStartFailure(correlation, "ClosePaw's accessibility service is not active")
             return
         }
         if (shellyStartInFlight) {
             Log.w(TAG, "Shelly run already starting; refusing a second start")
             shellyNotifier.showBlocked(ShellyBackgroundRun.Block.BUSY, goal)
+            reportShellyStartFailure(correlation, "ClosePaw is busy with another task")
             return
         }
         shellyStartInFlight = true
@@ -482,6 +490,7 @@ class AgentService : AccessibilityService() {
         // by the receiver's precheck.
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
+            reportShellyResult(it)
             shellyRun = null
         }
         session?.let { old ->
@@ -551,6 +560,7 @@ class AgentService : AccessibilityService() {
                     serviceScope.launch { newSession.submit(Op.Shutdown) }
                     shellyNotifier.cancel()
                     shellyNotifier.showBlocked(ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE, goal)
+                    reportShellyStartFailure(correlation, "ClosePaw's virtual display became unavailable")
                     overlayController?.hideAll()
                     return@launch
                 }
@@ -566,6 +576,7 @@ class AgentService : AccessibilityService() {
                         sessionId = newSession.sessionId.value,
                         onMainDisplay = effectiveMode != PlatformMode.VIRTUAL_DISPLAY,
                         ignoredPackages = ignored,
+                        correlation = correlation,
                 )
                 // Defensive: never leave a different session running unobserved (it would keep
                 // driving the virtual display with no capsule / notification attached).
@@ -589,6 +600,7 @@ class AgentService : AccessibilityService() {
                 shellyNotifier.render(
                         ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, e.message)
                 )
+                reportShellyStartFailure(correlation, "ClosePaw failed to start the task")
                 overlayController?.hideAll()
             }
         }
@@ -604,6 +616,7 @@ class AgentService : AccessibilityService() {
         } else {
             shellyRun?.finish(ShellyRunState.Finished.Kind.STOPPED)
             renderShellyRun()
+            shellyRun?.let { reportShellyResult(it) }
             shellyRun = null
         }
     }
@@ -631,6 +644,7 @@ class AgentService : AccessibilityService() {
         if (tracker.sessionId == newSession.sessionId.value) return
         tracker.finish(ShellyRunState.Finished.Kind.STOPPED)
         shellyNotifier.render(tracker.state)
+        reportShellyResult(tracker)
         shellyRun = null
     }
 
@@ -638,7 +652,32 @@ class AgentService : AccessibilityService() {
         val tracker = shellyRun ?: return
         if (tracker.sessionId != agentSession.sessionId.value) return
         if (tracker.onEvent(event)) renderShellyRun()
-        if (tracker.isFinished) shellyRun = null
+        if (tracker.isFinished) {
+            reportShellyResult(tracker)
+            shellyRun = null
+        }
+    }
+
+    /**
+     * Send a finished run's final state back to Shelly (at most once per run, and only when the
+     * goal broadcast carried a result correlation). See [ShellyResultCallback].
+     */
+    private fun reportShellyResult(tracker: ShellyRunTracker) {
+        if (tracker.resultReported || !tracker.isFinished) return
+        val payload = ShellyResultCallback.payloadFor(tracker, System.currentTimeMillis()) ?: return
+        tracker.resultReported = true
+        ShellyResultCallback.send(applicationContext, payload)
+    }
+
+    /** A verified request that never got a tracker (it failed to start). */
+    private fun reportShellyStartFailure(
+            correlation: ShellyBackgroundRun.ResultCorrelation?,
+            message: String,
+    ) {
+        ShellyResultCallback.send(
+                applicationContext,
+                ShellyResultCallback.failurePayload(correlation, message, System.currentTimeMillis()),
+        )
     }
 
     private fun trackShellyRunWindow(packageName: String?, className: String?, displayId: Int) {

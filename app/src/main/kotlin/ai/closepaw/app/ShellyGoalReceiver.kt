@@ -56,6 +56,8 @@ class ShellyGoalReceiver : BroadcastReceiver() {
             goalExtra = safeGoal(intent),
             callerVerified = tokenVerified && senderVerified,
             allowMainDisplay = intent.getBooleanExtra(ShellyBackgroundRun.EXTRA_ALLOW_MAIN_DISPLAY, false),
+            reqIdExtra = safeString(intent, ShellyBackgroundRun.EXTRA_SHELLY_REQ_ID),
+            nonceExtra = safeString(intent, ShellyBackgroundRun.EXTRA_SHELLY_RESULT_NONCE),
         )
         intent.removeExtra(ShellyTrustedCaller.EXTRA_CALLER_TOKEN)
         if (request == null) {
@@ -155,7 +157,7 @@ class ShellyGoalReceiver : BroadcastReceiver() {
         Log.i(TAG, "verified Shelly request: decision=$decision")
         return when (decision) {
             is ShellyBackgroundRun.Decision.Start -> {
-                service!!.startShellyRun(request.goal, decision.platformMode)
+                service!!.startShellyRun(request.goal, decision.platformMode, request.correlation)
                 if (decision.platformMode == PlatformMode.VIRTUAL_DISPLAY) {
                     ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY to "STARTED_VIRTUAL_DISPLAY"
                 } else {
@@ -175,8 +177,10 @@ class ShellyGoalReceiver : BroadcastReceiver() {
         null
     }
 
-    private fun safeGoal(intent: Intent): String? = try {
-        intent.getStringExtra(ShellyBackgroundRun.EXTRA_GOAL)
+    private fun safeGoal(intent: Intent): String? = safeString(intent, ShellyBackgroundRun.EXTRA_GOAL)
+
+    private fun safeString(intent: Intent, name: String): String? = try {
+        intent.getStringExtra(name)
     } catch (e: Exception) {
         null
     }

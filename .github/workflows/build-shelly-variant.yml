@@ -38,6 +38,7 @@ jobs:
           --tests 'ai.closepaw.app.ShellyTrustedCallerTest'
           --tests 'ai.closepaw.app.MainActivityIntentApplierSecurityTest'
           --tests 'ai.closepaw.app.ShellyBackgroundRunTest'
+          --tests 'ai.closepaw.app.ShellyResultCallbackTest'
           --tests 'ai.closepaw.app.OverlayLocationPolicyTest'
           --tests 'ai.closepaw.app.AgentServiceEventHandlerTest'
           --tests 'ai.closepaw.tool.PolicyEngineTest'

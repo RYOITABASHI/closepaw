@@ -34,6 +34,26 @@ object ShellyBackgroundRun {
 
     const val MAX_GOAL_CHARS = 4_000
 
+    /**
+     * Result callback correlation (Shelly >= shim v14, see [ShellyResultCallback]). Shelly sends
+     * its request id and a per-run random nonce with the goal; ClosePaw echoes both back when the
+     * run finishes. Both are optional: without them (older Shelly, agent-run hand-offs) no result
+     * is sent back. Malformed values are dropped, never fail the request.
+     */
+    const val EXTRA_SHELLY_REQ_ID = "shelly_req_id"
+    const val EXTRA_SHELLY_RESULT_NONCE = "shelly_result_nonce"
+    private val SHELLY_REQ_ID_RE = Regex("^[0-9]{10,16}-[0-9a-f]{8}$")
+    private val SHELLY_RESULT_NONCE_RE = Regex("^[0-9a-f]{32}$")
+
+    /** Correlation for the result callback; null unless BOTH extras are well-formed. */
+    data class ResultCorrelation(val reqId: String, val nonce: String)
+
+    fun parseResultCorrelation(reqIdExtra: String?, nonceExtra: String?): ResultCorrelation? {
+        val reqId = reqIdExtra?.takeIf { SHELLY_REQ_ID_RE.matches(it) } ?: return null
+        val nonce = nonceExtra?.takeIf { SHELLY_RESULT_NONCE_RE.matches(it) } ?: return null
+        return ResultCorrelation(reqId, nonce)
+    }
+
     // Ordered-broadcast result codes (Shelly should send with initialCode = 0, so 0 means
     // "no receiver answered": ClosePaw missing, too old, or stopped).
     const val RESULT_STARTED_VIRTUAL_DISPLAY = 1
@@ -54,7 +74,11 @@ object ShellyBackgroundRun {
         data class Blocked(val block: Block) : Decision
     }
 
-    data class Request(val goal: String, val allowMainDisplay: Boolean)
+    data class Request(
+        val goal: String,
+        val allowMainDisplay: Boolean,
+        val correlation: ResultCorrelation? = null,
+    )
 
     /**
      * Trust gate for the exported receiver. Returns null (= ignore the broadcast, do nothing
@@ -65,11 +89,13 @@ object ShellyBackgroundRun {
         goalExtra: String?,
         callerVerified: Boolean,
         allowMainDisplay: Boolean,
+        reqIdExtra: String? = null,
+        nonceExtra: String? = null,
     ): Request? {
         if (action != ACTION_RUN_GOAL) return null
         if (!callerVerified) return null
         val goal = goalExtra?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        return Request(goal.take(MAX_GOAL_CHARS), allowMainDisplay)
+        return Request(goal.take(MAX_GOAL_CHARS), allowMainDisplay, parseResultCorrelation(reqIdExtra, nonceExtra))
     }
 
     /** Preconditions, checked synchronously before anything becomes visible. */
@@ -121,7 +147,12 @@ class ShellyRunTracker(
     val sessionId: String,
     val onMainDisplay: Boolean,
     private val ignoredPackages: Set<String>,
+    /** Where to report the final state (null: the caller did not ask for a result). */
+    val correlation: ShellyBackgroundRun.ResultCorrelation? = null,
 ) {
+    /** Set once the final state was reported to Shelly, so it is sent at most once. */
+    var resultReported: Boolean = false
+
     private val vdPackages = LinkedHashSet<String>()
 
     var state: ShellyRunState = ShellyRunState.Working(onMainDisplay, emptyList())
