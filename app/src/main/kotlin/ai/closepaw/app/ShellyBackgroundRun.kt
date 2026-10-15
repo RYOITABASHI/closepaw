@@ -60,6 +60,17 @@ object ShellyBackgroundRun {
     const val RESULT_STARTED_MAIN_DISPLAY = 2
     const val RESULT_REJECTED = 10
 
+    /**
+     * Ordered-result extra (Int 1): this run will send [ShellyResultCallback]. Shelly treats a
+     * started run without it as "no result will come" instead of waiting forever.
+     */
+    const val RESULT_EXTRA_RESULT_CALLBACK = "result_callback"
+
+    /** True when a started run carries a result correlation (so the callback will be sent). */
+    fun reportsResult(resultCode: Int, correlation: ResultCorrelation?): Boolean =
+        correlation != null &&
+            (resultCode == RESULT_STARTED_VIRTUAL_DISPLAY || resultCode == RESULT_STARTED_MAIN_DISPLAY)
+
     enum class Block(val resultCode: Int) {
         ACCESSIBILITY_OFF(11),
         ONBOARDING_REQUIRED(12),

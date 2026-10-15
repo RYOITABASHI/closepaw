@@ -44,6 +44,17 @@ class ShellyResultCallbackTest {
         ).isNull()
     }
 
+    @Test
+    fun `result_callback capability only for a started run with a correlation`() {
+        val corr = ShellyBackgroundRun.ResultCorrelation(reqId, nonce)
+        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY, corr)).isTrue()
+        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.RESULT_STARTED_MAIN_DISPLAY, corr)).isTrue()
+        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY, null)).isFalse()
+        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.RESULT_REJECTED, corr)).isFalse()
+        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.Block.BUSY.resultCode, corr)).isFalse()
+        assertThat(ShellyBackgroundRun.RESULT_EXTRA_RESULT_CALLBACK).isEqualTo("result_callback")
+    }
+
     // ── Payload ──
 
     private fun tracker(withCorrelation: Boolean = true) = ShellyRunTracker(

@@ -92,7 +92,14 @@ class ShellyGoalReceiver : BroadcastReceiver() {
                     } else {
                         decideAndStart(app, request, probes)
                     }
-                    if (ordered) pending.setResult(code, data, null)
+                    // Capability: tell Shelly this run WILL report its final state, so a
+                    // Shelly talking to an older ClosePaw (no extra) never waits forever.
+                    val extras = if (ShellyBackgroundRun.reportsResult(code, request.correlation)) {
+                        android.os.Bundle().apply { putInt(ShellyBackgroundRun.RESULT_EXTRA_RESULT_CALLBACK, 1) }
+                    } else {
+                        null
+                    }
+                    if (ordered) pending.setResult(code, data, extras)
                 } catch (e: Throwable) {
                     Log.e(TAG, "start failed", e)
                 } finally {
