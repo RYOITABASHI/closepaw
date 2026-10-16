@@ -209,4 +209,47 @@ class ShellyBackgroundRunTest {
         val waiting = text.render(ShellyRunState.WaitingForApproval(false, "c", "com.android.chrome", ""), label)
         assertThat(waiting.title).isEqualTo("${R.string.shelly_approval_title}[]")
     }
+
+    // ── Foreground hand-back after main-display runs ──
+
+    private val surfaces = setOf("com.sec.android.app.launcher", "com.android.systemui")
+
+    @Test
+    fun `main display run returns to the app that was in front at start`() {
+        val pkg = ShellyForegroundReturn.choose("com.openai.chatgpt", onMainDisplay = true, selfPackage = "ai.closepaw", systemSurfaces = surfaces)
+        assertThat(pkg).isEqualTo("com.openai.chatgpt")
+    }
+
+    @Test
+    fun `virtual display runs never touch the foreground`() {
+        val pkg = ShellyForegroundReturn.choose("com.openai.chatgpt", onMainDisplay = false, selfPackage = "ai.closepaw", systemSurfaces = surfaces)
+        assertThat(pkg).isNull()
+    }
+
+    @Test
+    fun `closepaw itself, launchers and system ui are never restored`() {
+        assertThat(ShellyForegroundReturn.choose("ai.closepaw", true, "ai.closepaw", surfaces)).isNull()
+        assertThat(ShellyForegroundReturn.choose("com.sec.android.app.launcher", true, "ai.closepaw", surfaces)).isNull()
+        assertThat(ShellyForegroundReturn.choose("com.android.systemui", true, "ai.closepaw", emptySet())).isNull()
+        assertThat(ShellyForegroundReturn.choose("android", true, "ai.closepaw", emptySet())).isNull()
+        assertThat(ShellyForegroundReturn.choose(null, true, "ai.closepaw", surfaces)).isNull()
+        assertThat(ShellyForegroundReturn.choose("  ", true, "ai.closepaw", surfaces)).isNull()
+    }
+
+    @Test
+    fun `restore only once the run is finished, for every ending`() {
+        val t = ShellyRunTracker("s", onMainDisplay = true, ignoredPackages = emptySet(), returnToPackage = "com.openai.chatgpt")
+        assertThat(ShellyForegroundReturn.shouldRestore(t.state)).isFalse()
+        t.onEvent(TaskCompleted(sid, 0L, "task", "ok", TaskOutcome.GOAL_ACHIEVED))
+        assertThat(ShellyForegroundReturn.shouldRestore(t.state)).isTrue()
+
+        val failed = ShellyRunTracker("s", onMainDisplay = true, ignoredPackages = emptySet(), returnToPackage = "com.openai.chatgpt")
+        failed.onEvent(TaskCompleted(sid, 0L, "task", "no", TaskOutcome.ERROR))
+        assertThat(ShellyForegroundReturn.shouldRestore(failed.state)).isTrue()
+
+        val stopped = ShellyRunTracker("s", onMainDisplay = true, ignoredPackages = emptySet(), returnToPackage = "com.openai.chatgpt")
+        stopped.onEvent(SessionCompleted(sid, 0L, SessionEndReason.USER_STOPPED))
+        assertThat(ShellyForegroundReturn.shouldRestore(stopped.state)).isTrue()
+        assertThat(stopped.foregroundRestored).isFalse()
+    }
 }

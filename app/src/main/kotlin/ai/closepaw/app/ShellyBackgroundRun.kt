@@ -130,6 +130,41 @@ object ShellyBackgroundRun {
     }
 }
 
+/**
+ * Main-display runs take over the user's screen; when they end, ClosePaw brings back the app
+ * that was in front when the hand-off arrived (in practice the chat app that asked Shelly, so
+ * the user lands where the result is reported). Pure decision logic, see [AgentService] for the
+ * Android side (launch intent started from the accessibility service, which keeps the existing
+ * task and its state instead of restarting the app).
+ */
+object ShellyForegroundReturn {
+    /**
+     * Which package to bring back to the front after the run, or null for "nothing to do".
+     *
+     * @param foregroundPackage the app observed in the foreground of the DEFAULT display when the
+     *   run started (never a caller-supplied value).
+     * @param onMainDisplay false = virtual-display run, the user's screen was never touched.
+     * @param selfPackage ClosePaw itself.
+     * @param systemSurfaces launchers / System UI (see [ai.closepaw.session.SystemSurfaces]).
+     */
+    fun choose(
+        foregroundPackage: String?,
+        onMainDisplay: Boolean,
+        selfPackage: String,
+        systemSurfaces: Set<String>,
+    ): String? {
+        if (!onMainDisplay) return null
+        val pkg = foregroundPackage?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (pkg == selfPackage) return null
+        if (pkg in systemSurfaces) return null
+        if (pkg == "android" || pkg.startsWith("com.android.systemui")) return null
+        return pkg
+    }
+
+    /** Only task endings the user did not cause by starting something else restore the app. */
+    fun shouldRestore(state: ShellyRunState): Boolean = state is ShellyRunState.Finished
+}
+
 /** What the user should be told about a running Shelly background run. */
 sealed interface ShellyRunState {
     /** Agent is working. [onMainDisplay] = it is driving the real screen (do not touch). */
@@ -160,9 +195,17 @@ class ShellyRunTracker(
     private val ignoredPackages: Set<String>,
     /** Where to report the final state (null: the caller did not ask for a result). */
     val correlation: ShellyBackgroundRun.ResultCorrelation? = null,
+    /**
+     * Main-display runs only: the app to bring back to the front when the run ends (see
+     * [ShellyForegroundReturn.choose]). Null = nothing to restore.
+     */
+    val returnToPackage: String? = null,
 ) {
     /** Set once the final state was reported to Shelly, so it is sent at most once. */
     var resultReported: Boolean = false
+
+    /** Set once the foreground app was restored, so it happens at most once. */
+    var foregroundRestored: Boolean = false
 
     private val vdPackages = LinkedHashSet<String>()
 

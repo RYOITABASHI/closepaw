@@ -7,6 +7,8 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import android.view.Display
+import ai.closepaw.util.recycleCompat
+import android.view.accessibility.AccessibilityWindowInfo
 import android.view.SurfaceView
 import android.view.accessibility.AccessibilityEvent
 import ai.closepaw.debug.ActionDebugReceiver
@@ -47,6 +49,7 @@ class AgentService : AccessibilityService() {
 
     companion object {
         private const val TAG = "AgentService"
+        private const val FOREGROUND_RESTORE_DELAY_MS = 400L
 
         const val ACTION_STOP_AGENT = "ai.closepaw.STOP_AGENT"
 
@@ -486,6 +489,9 @@ class AgentService : AccessibilityService() {
             return
         }
         shellyStartInFlight = true
+        // Remember what the user was looking at BEFORE anything of ours becomes visible, so a
+        // main-display run can hand the screen back to it when it ends (ShellyForegroundReturn).
+        val foregroundAtStart = currentForegroundPackageOnDefaultDisplay()
         // Replace an idle/finished session (FORCE_FRESH semantics). Busy sessions were refused
         // by the receiver's precheck.
         shellyRun?.let {
@@ -577,7 +583,14 @@ class AgentService : AccessibilityService() {
                         onMainDisplay = effectiveMode != PlatformMode.VIRTUAL_DISPLAY,
                         ignoredPackages = ignored,
                         correlation = correlation,
+                        returnToPackage = ShellyForegroundReturn.choose(
+                                foregroundPackage = foregroundAtStart,
+                                onMainDisplay = effectiveMode != PlatformMode.VIRTUAL_DISPLAY,
+                                selfPackage = packageName,
+                                systemSurfaces = ignored,
+                        ),
                 )
+                tracker.returnToPackage?.let { Log.i(TAG, "Shelly run: will return to $it when finished") }
                 // Defensive: never leave a different session running unobserved (it would keep
                 // driving the virtual display with no capsule / notification attached).
                 session?.takeIf { it !== newSession }?.let { stray ->
@@ -616,7 +629,10 @@ class AgentService : AccessibilityService() {
         } else {
             shellyRun?.finish(ShellyRunState.Finished.Kind.STOPPED)
             renderShellyRun()
-            shellyRun?.let { reportShellyResult(it) }
+            shellyRun?.let {
+                reportShellyResult(it)
+                restoreForegroundApp(it)
+            }
             shellyRun = null
         }
     }
@@ -654,8 +670,75 @@ class AgentService : AccessibilityService() {
         if (tracker.onEvent(event)) renderShellyRun()
         if (tracker.isFinished) {
             reportShellyResult(tracker)
+            restoreForegroundApp(tracker)
             shellyRun = null
         }
+    }
+
+    // ── Foreground hand-back for main-display runs ──
+
+    /**
+     * Package of the app window in front on the DEFAULT display right now (null if unknown).
+     * Only ever used to decide which app to bring BACK after a main-display run; never a value
+     * supplied by the caller.
+     */
+    private fun currentForegroundPackageOnDefaultDisplay(): String? {
+        return try {
+            val defaultDisplayWindows: List<AccessibilityWindowInfo> =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        windowsOnAllDisplays.get(Display.DEFAULT_DISPLAY) ?: emptyList()
+                    } else {
+                        this.windows ?: emptyList()
+                    }
+            val candidates = defaultDisplayWindows
+                    .filter { w ->
+                        w.type == AccessibilityWindowInfo.TYPE_APPLICATION &&
+                                (Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
+                                        w.displayId == Display.DEFAULT_DISPLAY)
+                    }
+                    .sortedByDescending { it.layer }
+            val top = candidates.firstOrNull { it.isActive } ?: candidates.firstOrNull()
+            val fromWindow = top?.root?.let { root ->
+                try {
+                    root.packageName?.toString()
+                } finally {
+                    root.recycleCompat()
+                }
+            }
+            fromWindow ?: rootInActiveWindow?.packageName?.toString()
+        } catch (e: Exception) {
+            Log.w(TAG, "foreground package lookup failed: ${e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /**
+     * Bring the app that was in front when a main-display run started back to the front, once
+     * the run has finished (done / failed / stopped). Uses the app's launcher intent exactly like
+     * a home-screen tap (NEW_TASK + RESET_TASK_IF_NEEDED), which moves the EXISTING task to the
+     * front with its state intact instead of restarting the app; an accessibility service bound
+     * by the system is exempt from background-activity-start limits. No-op for VD runs.
+     */
+    private fun restoreForegroundApp(tracker: ShellyRunTracker) {
+        val pkg = tracker.returnToPackage ?: return
+        if (tracker.foregroundRestored || !ShellyForegroundReturn.shouldRestore(tracker.state)) return
+        tracker.foregroundRestored = true
+        val intent = packageManager.getLaunchIntentForPackage(pkg)
+        if (intent == null) {
+            Log.w(TAG, "Shelly run: no launch intent for $pkg; not restoring foreground")
+            return
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        // Let the session shutdown / overlay teardown settle first so our own surfaces do not
+        // land on top of the restored app.
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try {
+                startActivity(intent)
+                Log.i(TAG, "Shelly run: returned to $pkg")
+            } catch (e: Exception) {
+                Log.w(TAG, "Shelly run: failed to return to $pkg: ${e.javaClass.simpleName}: ${e.message}")
+            }
+        }, FOREGROUND_RESTORE_DELAY_MS)
     }
 
     /**
