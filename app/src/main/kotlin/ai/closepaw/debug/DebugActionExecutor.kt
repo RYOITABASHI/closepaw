@@ -153,6 +153,8 @@ class DebugActionExecutor(private val service: AgentService) {
                 )
             is UIAction.SetTextOnFocused ->
                 nodePerformer.performSetTextOnFocused(action.text, action.clear)
+            is UIAction.InjectText ->
+                ActionResult.Failure("InjectText is only supported on the virtual display")
             is UIAction.Wait -> {
                 delay(action.durationMs); ActionResult.Success()
             }

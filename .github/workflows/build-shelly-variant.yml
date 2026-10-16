@@ -7,6 +7,11 @@ on:
         description: 'Override the prerelease tag (default shelly-v0.1.0-<run_number>)'
         required: false
         default: ''
+      publish_release:
+        description: 'Publish a prerelease (false = build + unit tests + APK artifact only)'
+        required: false
+        type: boolean
+        default: true
   push:
     branches:
       - shelly-trusted-caller
@@ -41,6 +46,8 @@ jobs:
           --tests 'ai.closepaw.app.ShellyResultCallbackTest'
           --tests 'ai.closepaw.app.OverlayLocationPolicyTest'
           --tests 'ai.closepaw.app.AgentServiceEventHandlerTest'
+          --tests 'ai.closepaw.tool.action.TypeExecutorTest'
+          --tests 'ai.closepaw.platform.virtualdisplay.VirtualDisplayTextInjectorTest'
           --tests 'ai.closepaw.tool.PolicyEngineTest'
           --tests 'ai.closepaw.tool.ToolRouterTest'
           --tests 'ai.closepaw.l10n.HardcodedUiStringsTest'
@@ -82,6 +89,7 @@ jobs:
           path: ${{ steps.apk.outputs.path }}
 
       - name: Publish prerelease
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_release }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}

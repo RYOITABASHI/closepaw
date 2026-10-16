@@ -20,6 +20,8 @@ import kotlinx.coroutines.delay
  *     (SetTextOnNodeAt skipped — no semantic node was resolved.)
  *   Without target:
  *     Attempt 1: SetTextOnFocused(text, clear)
+ *   Virtual display (allowTapToFocus() == false): tap-to-focus is replaced by
+ *     InjectText(text, clear, x, y) — a11y focus + Shizuku key/paste injection into the VD.
  *
  * Type success = ACTION_SET_TEXT returns true. UI change detection is supplementary.
  */
@@ -152,15 +154,20 @@ class TypeExecutor(
         resolverWarnings: List<String>,
         appClassifier: AppClassifier?
     ): ActionOutcome {
-        // Tap-to-focus is skipped in VD mode — tap triggers IME on the wrong display.
+        // Tap-to-focus is skipped in VD mode — tap triggers IME on the wrong display. The VD
+        // platform instead focuses the node through accessibility and injects key events into
+        // the virtual display (see VirtualDisplayTextInjector).
         if (!platform.allowTapToFocus()) {
             attemptTrail.add("TapToFocus: skipped (VD mode)")
-            return ActionOutcome.Failed(
-                reason = formatActionMessage(
-                    "Type at (${point.x},${point.y}) failed: tap-to-focus disabled in VD mode",
-                    resolverWarnings
-                ),
-                attemptTrail = attemptTrail
+            return injectText(
+                inputText = inputText,
+                clear = clear,
+                focusPoint = point,
+                snapshot = snapshot,
+                platform = platform,
+                attemptTrail = attemptTrail,
+                resolverWarnings = resolverWarnings,
+                appClassifier = appClassifier
             )
         }
 
@@ -234,8 +241,65 @@ class TypeExecutor(
             return ActionOutcome.Cancelled("Type on focused cancelled: ${result.reason}")
         }
         attemptTrail.add("SetTextOnFocused: ${(result as? ActionResult.Failure)?.reason ?: "failed"}")
+        if (!platform.allowTapToFocus()) {
+            return injectText(
+                inputText = inputText,
+                clear = clear,
+                focusPoint = null,
+                snapshot = snapshot,
+                platform = platform,
+                attemptTrail = attemptTrail,
+                resolverWarnings = emptyList(),
+                appClassifier = appClassifier
+            )
+        }
         return ActionOutcome.Failed(
             reason = "No focused editable element found",
+            attemptTrail = attemptTrail
+        )
+    }
+
+    /**
+     * Last attempt on platforms without tap-to-focus (virtual display): keyboard-style injection
+     * into the agent display. [focusPoint] null = type into whatever field is focused.
+     */
+    private suspend fun injectText(
+        inputText: String,
+        clear: Boolean,
+        focusPoint: Point?,
+        snapshot: ScreenSnapshot?,
+        platform: AndroidPlatform,
+        attemptTrail: MutableList<String>,
+        resolverWarnings: List<String>,
+        appClassifier: AppClassifier?
+    ): ActionOutcome {
+        val where = focusPoint?.let { " at (${it.x},${it.y})" } ?: " into focused field"
+        val result = platform.performAction(
+            UIAction.InjectText(inputText, clear, focusPoint?.x, focusPoint?.y)
+        )
+        if (result is ActionResult.Success) {
+            attemptTrail.add("InjectText: success")
+            val analysis = capturePostActionAnalysis(snapshot, platform, UI_SETTLE_DELAY_MS, appClassifier)
+            return ActionOutcome.Success(
+                message = formatActionMessage(
+                    "Typed via keyboard injection$where",
+                    resolverWarnings + analysis.warnings
+                ),
+                observation = analysis.observation,
+                attemptTrail = attemptTrail,
+                verified = analysis.changeResult == UiChangeDetector.ChangeResult.Changed
+            )
+        }
+        if (result is ActionResult.Cancelled) {
+            return ActionOutcome.Cancelled("Type$where cancelled: ${result.reason}")
+        }
+        val reason = (result as? ActionResult.Failure)?.reason ?: "failed"
+        attemptTrail.add("InjectText: $reason")
+        return ActionOutcome.Failed(
+            reason = formatActionMessage(
+                "Type$where failed after all attempts: $reason",
+                resolverWarnings
+            ),
             attemptTrail = attemptTrail
         )
     }

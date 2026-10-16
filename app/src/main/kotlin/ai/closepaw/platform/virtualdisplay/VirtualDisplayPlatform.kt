@@ -87,6 +87,14 @@ class VirtualDisplayPlatform(
             NodeActionPerformer(rootProvider = { windowAccessor.getRootOnDisplay() })
 
     private val inputInjector = VirtualDisplayInputInjector(shizuku, displayIdProvider)
+    private val textInjector =
+            VirtualDisplayTextInjector(
+                    context = service,
+                    shizuku = shizuku,
+                    displayIdProvider = displayIdProvider,
+                    nodeActionPerformer = nodeActionPerformer,
+                    inputInjector = inputInjector
+            )
     private val screenshotProcessor =
             VirtualDisplayScreenshotProcessor(
                     service = service,
@@ -435,6 +443,10 @@ class VirtualDisplayPlatform(
                         )
                 is UIAction.SetTextOnFocused ->
                         nodeActionPerformer.performSetTextOnFocused(action.text, action.clear)
+                is UIAction.InjectText -> {
+                        action.focusX?.let { x -> action.focusY?.let { y -> showClick(x, y) } }
+                        textInjector.inject(action)
+                }
                 is UIAction.TapAt -> {
                         showClick(action.x, action.y)
                         inputInjector.injectTap(action.x, action.y)
@@ -542,7 +554,8 @@ class VirtualDisplayPlatform(
                     this is UIAction.LongClickNodeAt ||
                     this is UIAction.LongPressAt ||
                     this is UIAction.SetTextOnNodeAt ||
-                    this is UIAction.SetTextOnFocused
+                    this is UIAction.SetTextOnFocused ||
+                    this is UIAction.InjectText
 
     /** Set SHOW_MODE_HIDDEN to prevent VD-triggered IME from appearing on display 0. */
     private fun setKeyboardHidden() {

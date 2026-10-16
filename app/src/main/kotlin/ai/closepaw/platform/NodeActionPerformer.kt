@@ -140,6 +140,73 @@ class NodeActionPerformer(
         }
     }
 
+    /** Text of the focused editable field, as the accessibility tree reports it. */
+    data class FocusedTextState(val text: String)
+
+    /**
+     * Give input focus to the text field at (x, y) without touching the IME: ACTION_FOCUS first,
+     * then ACTION_CLICK (Compose text fields request focus from their click semantics).
+     */
+    @Suppress("DEPRECATION")
+    suspend fun performFocusNodeAt(x: Int, y: Int): ActionResult {
+        return onMain {
+            withRoot { root ->
+                val node = AccessibilityNodeFinder.findNodeAtLocation(root, x, y)
+                        ?: return@withRoot ActionResult.Failure("No text-input node at ($x,$y)")
+                try {
+                    if (node.isFocused) return@withRoot ActionResult.Success("Already focused at ($x,$y)")
+                    if (node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) {
+                        return@withRoot ActionResult.Success("ACTION_FOCUS at ($x,$y)")
+                    }
+                    if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                        return@withRoot ActionResult.Success("ACTION_CLICK (focus) at ($x,$y)")
+                    }
+                    ActionResult.Failure("ACTION_FOCUS/ACTION_CLICK returned false at ($x,$y)")
+                } finally {
+                    if (node !== root) node.recycleCompat()
+                }
+            }
+        }
+    }
+
+    /** Null when no editable node has input focus. Hint text counts as empty. */
+    suspend fun readFocusedEditableText(): FocusedTextState? {
+        return withContext(Dispatchers.Main) {
+            val root = rootProvider() ?: return@withContext null
+            try {
+                val node = AccessibilityNodeFinder.findFocusedEditableNode(root) ?: return@withContext null
+                try {
+                    val text = if (node.isShowingHintText) "" else (node.text?.toString() ?: "")
+                    FocusedTextState(text)
+                } finally {
+                    if (node !== root) node.recycleCompat()
+                }
+            } finally {
+                root.recycleCompat()
+            }
+        }
+    }
+
+    /** ACTION_PASTE on the focused editable node (the clipboard must already hold the text). */
+    @Suppress("DEPRECATION")
+    suspend fun performPasteOnFocused(): ActionResult {
+        return onMain {
+            withRoot { root ->
+                val node = AccessibilityNodeFinder.findFocusedEditableNode(root)
+                        ?: return@withRoot ActionResult.Failure("No focused editable element to paste into")
+                try {
+                    if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
+                        ActionResult.Success("ACTION_PASTE on focused field")
+                    } else {
+                        ActionResult.Failure("ACTION_PASTE returned false")
+                    }
+                } finally {
+                    if (node !== root) node.recycleCompat()
+                }
+            }
+        }
+    }
+
     @Suppress("DEPRECATION")
     suspend fun performEnterKey(): ActionResult {
         return onMain {
