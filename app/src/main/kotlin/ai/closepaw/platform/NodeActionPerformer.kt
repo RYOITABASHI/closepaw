@@ -187,6 +187,39 @@ class NodeActionPerformer(
         }
     }
 
+    /**
+     * True when any node in the current root's tree shows [text] (text or contentDescription,
+     * case-sensitive substring). Used to verify blind keyboard injection on fields that do not
+     * expose themselves as editable.
+     */
+    suspend fun treeContainsText(text: String): Boolean {
+        if (text.isEmpty()) return false
+        return withContext(Dispatchers.Main) {
+            val root = rootProvider() ?: return@withContext false
+            try {
+                fun search(node: AccessibilityNodeInfo, recycle: Boolean): Boolean {
+                    try {
+                        if (node.text?.contains(text) == true) return true
+                        if (node.contentDescription?.contains(text) == true) return true
+                        for (i in 0 until node.childCount) {
+                            val child = node.getChild(i) ?: continue
+                            if (search(child, recycle = true)) return true
+                        }
+                        return false
+                    } finally {
+                        if (recycle) node.recycleCompat()
+                    }
+                }
+                search(root, recycle = false)
+            } catch (e: Exception) {
+                Log.w("NodeActionPerformer", "treeContainsText failed", e)
+                false
+            } finally {
+                root.recycleCompat()
+            }
+        }
+    }
+
     /** ACTION_PASTE on the focused editable node (the clipboard must already hold the text). */
     @Suppress("DEPRECATION")
     suspend fun performPasteOnFocused(): ActionResult {

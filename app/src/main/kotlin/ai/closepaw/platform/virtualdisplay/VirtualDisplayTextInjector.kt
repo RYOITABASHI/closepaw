@@ -45,6 +45,7 @@ class VirtualDisplayTextInjector(
     companion object {
         private const val TAG = "VDTextInjector"
         private const val FOCUS_SETTLE_MS = 150L
+        private const val TAP_SETTLE_MS = 450L
         private const val KEY_SETTLE_MS = 120L
         private const val PASTE_SETTLE_MS = 250L
         private const val CLIP_LABEL = "closepaw-agent-text"
@@ -75,49 +76,55 @@ class VirtualDisplayTextInjector(
         }
         val trail = mutableListOf<String>()
 
-        // 1. Focus the target field without an IME round-trip.
+        // 1. Focus the target field. Accessibility first (no IME round-trip); when the field is
+        //    not exposed as a text node (Spotify's Compose name field) or nothing editable reports
+        //    focus afterwards, tap it on the virtual display through Shizuku. The tap is addressed
+        //    to the VD only; the IME is kept hidden by VirtualDisplayPlatform while this runs.
         val fx = action.focusX
         val fy = action.focusY
+        var focused: NodeActionPerformer.FocusedTextState? = null
         if (fx != null && fy != null) {
             val focusResult = nodeActionPerformer.performFocusNodeAt(fx, fy)
             if (focusResult is ActionResult.Success) {
                 trail.add("focus:a11y")
+                delay(FOCUS_SETTLE_MS)
+                focused = nodeActionPerformer.readFocusedEditableText()
             } else {
                 trail.add("focus:a11y-failed(${(focusResult as? ActionResult.Failure)?.reason})")
+            }
+            if (focused == null) {
                 val tap = withContext(Dispatchers.IO) { inputInjector.injectTap(fx, fy) }
                 if (tap is ActionResult.Failure) {
                     return ActionResult.Failure(
-                            "Could not focus field at ($fx,$fy) on the virtual display: ${tap.reason}"
+                            "Could not tap field at ($fx,$fy) on the virtual display: ${tap.reason}"
                     )
                 }
                 trail.add("focus:vd-tap")
+                // Compose fields need a moment after the touch before they take key events.
+                delay(TAP_SETTLE_MS)
+                focused = nodeActionPerformer.readFocusedEditableText()
             }
-            delay(FOCUS_SETTLE_MS)
-        }
-
-        var focused = nodeActionPerformer.readFocusedEditableText()
-        if (focused == null && fx != null && fy != null && trail.lastOrNull() == "focus:a11y") {
-            // ACTION_FOCUS "succeeded" but nothing editable reports focus: try a real tap on the VD.
-            val tap = withContext(Dispatchers.IO) { inputInjector.injectTap(fx, fy) }
-            trail.add(if (tap is ActionResult.Success) "focus:vd-tap" else "focus:vd-tap-failed")
-            delay(FOCUS_SETTLE_MS)
+        } else {
             focused = nodeActionPerformer.readFocusedEditableText()
         }
-        if (focused == null) {
-            return ActionResult.Failure(
-                    "No focused text field on the virtual display after focusing" +
-                            (if (fx != null && fy != null) " ($fx,$fy)" else "") +
-                            " [${trail.joinToString(",")}]"
-            )
-        }
+        // No focused editable node is NOT a reason to stop: fields that hide from accessibility
+        // still receive key events once tapped. Inject blind (target is still only our VD) and
+        // verify afterwards through the tree.
+        trail.add(if (focused != null) "focused:a11y" else "focused:none(blind)")
+        val textVisibleBefore = nodeActionPerformer.treeContainsText(action.text)
 
         // 2. Clear existing content when asked.
-        if (action.clear && focused.text.isNotEmpty()) {
-            val cleared = nodeActionPerformer.performSetTextOnFocused("", clear = true)
+        if (action.clear) {
+            val cleared =
+                    if (focused != null && focused.text.isNotEmpty()) {
+                        nodeActionPerformer.performSetTextOnFocused("", clear = true)
+                    } else {
+                        ActionResult.Failure("no a11y text to clear")
+                    }
             if (cleared is ActionResult.Success) {
                 trail.add("clear:a11y")
-            } else {
-                // Select all + delete as key events on the VD.
+            } else if (focused == null || focused.text.isNotEmpty()) {
+                // Select all + delete as key events on the VD (blind fields included).
                 val selectAll = shell("input", "-d", "$displayId", "keycombination",
                         "$KEYCODE_CTRL_LEFT", "$KEYCODE_A")
                 val del = if (selectAll == 0) shell("input", "-d", "$displayId", "keyevent", "$KEYCODE_DEL") else -1
@@ -138,10 +145,10 @@ class VirtualDisplayTextInjector(
                     if (exit == 0) {
                         true
                     } else {
-                        pasteViaClipboard(displayId, action.text, trail)
+                        pasteViaClipboard(displayId, action.text, trail, focused != null)
                     }
                 } else {
-                    pasteViaClipboard(displayId, action.text, trail)
+                    pasteViaClipboard(displayId, action.text, trail, focused != null)
                 }
         if (!delivered) {
             return ActionResult.Failure(
@@ -150,26 +157,45 @@ class VirtualDisplayTextInjector(
         }
         delay(if (trail.last().startsWith("text:shell")) KEY_SETTLE_MS else PASTE_SETTLE_MS)
 
-        // 4. Verify through the accessibility tree when the field exposes its text.
-        val after = nodeActionPerformer.readFocusedEditableText()
+        // 4. Verify: focused node text first, then anywhere in the VD window's tree.
         val detail = trail.joinToString(",")
+        val after = nodeActionPerformer.readFocusedEditableText()
+        if (after != null && after.text.contains(action.text)) {
+            return ActionResult.Success("Typed via keyboard injection [$detail]")
+        }
+        val visibleNow = nodeActionPerformer.treeContainsText(action.text)
         return when {
-            after == null -> ActionResult.Success("Typed via keyboard injection (unverified) [$detail]")
-            after.text.contains(action.text) -> ActionResult.Success("Typed via keyboard injection [$detail]")
-            after.text == focused.text ->
+            visibleNow && !textVisibleBefore ->
+                    ActionResult.Success("Typed via keyboard injection (seen in the VD tree) [$detail]")
+            visibleNow ->
+                    ActionResult.Success(
+                            "Typed via keyboard injection; text is in the VD tree (was already present " +
+                                    "before, so this is unverified) [$detail]"
+                    )
+            after != null && focused != null && after.text == focused.text ->
                     ActionResult.Failure(
-                            "Keyboard injection did not change the field (still '${after.text}') [$detail]"
+                            "Keyboard injection did not change the focused field (still " +
+                                    "'${after.text}') [$detail]"
+                    )
+            after != null ->
+                    ActionResult.Success(
+                            "Typed via keyboard injection; focused field now '${after.text}' [$detail]"
                     )
             else ->
-                    // Text changed but does not contain the payload verbatim (autocorrect, masking,
-                    // truncated hint). Treat as delivered; the post-action UI diff is the judge.
-                    ActionResult.Success(
-                            "Typed via keyboard injection; field now '${after.text}' [$detail]"
+                    ActionResult.Failure(
+                            "Keys were delivered to the virtual display but '${action.text}' is not " +
+                                    "visible in its accessibility tree afterwards; the field may not have " +
+                                    "accepted focus. Take a screenshot to check before retrying [$detail]"
                     )
         }
     }
 
-    private suspend fun pasteViaClipboard(displayId: Int, text: String, trail: MutableList<String>): Boolean {
+    private suspend fun pasteViaClipboard(
+            displayId: Int,
+            text: String,
+            trail: MutableList<String>,
+            hasFocusedNode: Boolean
+    ): Boolean {
         val clipboard = withContext(Dispatchers.Main) { clipboardProvider() }
         if (clipboard == null) {
             trail.add("paste:no-clipboard")
@@ -189,10 +215,12 @@ class VirtualDisplayTextInjector(
             return false
         }
         try {
-            val a11y = nodeActionPerformer.performPasteOnFocused()
-            if (a11y is ActionResult.Success) {
-                trail.add("paste:a11y")
-                return true
+            if (hasFocusedNode) {
+                val a11y = nodeActionPerformer.performPasteOnFocused()
+                if (a11y is ActionResult.Success) {
+                    trail.add("paste:a11y")
+                    return true
+                }
             }
             val exit = shell("input", "-d", "$displayId", "keyevent", "$KEYCODE_PASTE")
             trail.add(if (exit == 0) "paste:keyevent" else "paste:failed")
