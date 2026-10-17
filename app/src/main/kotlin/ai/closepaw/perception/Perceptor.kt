@@ -338,7 +338,8 @@ object Perceptor {
                             hintText = hintText,
                             isChecked = checked,
                             isCheckable = checkable,
-                            rangeInfo = rangeInfo
+                            rangeInfo = rangeInfo,
+                            packageName = node.packageName?.toString() ?: ""
                         )
                     elements.add(PerceptorCandidateElement(element, visibilityRatio))
                     if (isInteractive) counters.interactive++ else counters.nonInteractive++
