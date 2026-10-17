@@ -220,6 +220,42 @@ class NodeActionPerformer(
         }
     }
 
+    /**
+     * Cheap signature of the current root's tree (node count + text/contentDescription hashes).
+     * Two equal signatures mean "nothing observable changed"; a different one means the window
+     * content moved after an action (used to accept blind keyboard injection on fields whose
+     * text is not exposed, e.g. a search box that immediately swaps in results).
+     */
+    suspend fun treeSignature(): Int {
+        return withContext(Dispatchers.Main) {
+            val root = rootProvider() ?: return@withContext 0
+            try {
+                var hash = 17
+                var count = 0
+                fun walk(node: AccessibilityNodeInfo, recycle: Boolean) {
+                    try {
+                        count++
+                        hash = hash * 31 + (node.text?.toString()?.hashCode() ?: 0)
+                        hash = hash * 31 + (node.contentDescription?.toString()?.hashCode() ?: 0)
+                        for (i in 0 until node.childCount) {
+                            val child = node.getChild(i) ?: continue
+                            walk(child, recycle = true)
+                        }
+                    } finally {
+                        if (recycle) node.recycleCompat()
+                    }
+                }
+                walk(root, recycle = false)
+                hash * 31 + count
+            } catch (e: Exception) {
+                Log.w("NodeActionPerformer", "treeSignature failed", e)
+                0
+            } finally {
+                root.recycleCompat()
+            }
+        }
+    }
+
     /** ACTION_PASTE on the focused editable node (the clipboard must already hold the text). */
     @Suppress("DEPRECATION")
     suspend fun performPasteOnFocused(): ActionResult {

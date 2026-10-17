@@ -64,6 +64,45 @@ class VirtualDisplayTextInjector(
 
         /** Encode for a single `input text` argument (spaces → `%s`). Caller checked [isShellTypeable]. */
         fun encodeForInputText(text: String): String = text.replace(" ", "%s")
+
+        /**
+         * Shorter strings whose presence in the tree still indicates the payload arrived: the
+         * first word (>= 3 chars) and the first 8 characters. Search boxes often echo only a
+         * prefix or re-render into suggestions that start with the typed text.
+         */
+        fun verificationCandidates(text: String): List<String> {
+            val trimmed = text.trim()
+            if (trimmed.isEmpty()) return emptyList()
+            val out = LinkedHashSet<String>()
+            out.add(trimmed)
+            trimmed.split(Regex("\\s+")).firstOrNull()?.takeIf { it.length >= 3 }?.let { out.add(it) }
+            if (trimmed.length > 8) out.add(trimmed.take(8))
+            return out.toList()
+        }
+
+        /** Outcome of post-injection verification, decided from observations only (unit-tested). */
+        enum class Verdict { VERIFIED, VERIFIED_PARTIAL, UNVERIFIED_CHANGED, UNVERIFIED, FAILED_UNCHANGED }
+
+        /**
+         * @param payloadSeen full payload visible in the focused node or the VD tree (and was not
+         *   visible before the injection)
+         * @param prefixSeen a [verificationCandidates] prefix/word appeared that was not there before
+         * @param treeChanged the VD window signature differs from before the injection
+         * @param focusedUnchanged an accessibility-exposed focused field exists and its text is
+         *   exactly what it was before the injection
+         */
+        fun verdict(
+                payloadSeen: Boolean,
+                prefixSeen: Boolean,
+                treeChanged: Boolean,
+                focusedUnchanged: Boolean,
+        ): Verdict = when {
+            payloadSeen -> Verdict.VERIFIED
+            prefixSeen -> Verdict.VERIFIED_PARTIAL
+            focusedUnchanged && !treeChanged -> Verdict.FAILED_UNCHANGED
+            treeChanged -> Verdict.UNVERIFIED_CHANGED
+            else -> Verdict.UNVERIFIED
+        }
     }
 
     suspend fun inject(action: UIAction.InjectText): ActionResult {
@@ -112,7 +151,9 @@ class VirtualDisplayTextInjector(
         // still receive key events once tapped. Inject blind (target is still only our VD) and
         // verify afterwards through the tree.
         trail.add(if (focused != null) "focused:a11y" else "focused:none(blind)")
-        val textVisibleBefore = nodeActionPerformer.treeContainsText(action.text)
+        val candidates = verificationCandidates(action.text)
+        val visibleBefore = candidates.filter { nodeActionPerformer.treeContainsText(it) }.toSet()
+        val signatureBefore = nodeActionPerformer.treeSignature()
 
         // 2. Clear existing content when asked.
         if (action.clear) {
@@ -158,35 +199,44 @@ class VirtualDisplayTextInjector(
         }
         delay(if (trail.last().startsWith("text:shell")) KEY_SETTLE_MS else PASTE_SETTLE_MS)
 
-        // 4. Verify: focused node text first, then anywhere in the VD window's tree.
-        val detail = trail.joinToString(",")
+        // 4. Verify. Keys were delivered (exit 0 / paste ok); decide how sure we are from what the
+        //    accessibility tree shows now. A retry costs the agent a whole turn, so only an
+        //    exposed field that provably did not change is reported as a Failure.
         val after = nodeActionPerformer.readFocusedEditableText()
-        if (after != null && after.text.contains(action.text)) {
-            return ActionResult.Success("Typed via keyboard injection [$detail]")
+        val payloadInFocused = after != null && after.text.contains(action.text)
+        val payloadInTree = payloadInFocused ||
+                (nodeActionPerformer.treeContainsText(action.text) && action.text !in visibleBefore)
+        val prefixSeen = !payloadInTree && candidates.drop(1).any { c ->
+            c !in visibleBefore && nodeActionPerformer.treeContainsText(c)
         }
-        val visibleNow = nodeActionPerformer.treeContainsText(action.text)
-        return when {
-            visibleNow && !textVisibleBefore ->
-                    ActionResult.Success("Typed via keyboard injection (seen in the VD tree) [$detail]")
-            visibleNow ->
+        val treeChanged = nodeActionPerformer.treeSignature() != signatureBefore
+        val focusedUnchanged = focused != null && after != null && after.text == focused.text
+        val outcome = verdict(payloadInTree, prefixSeen, treeChanged, focusedUnchanged)
+        trail.add("verify:${outcome.name.lowercase()}")
+        val detail = trail.joinToString(",")
+        return when (outcome) {
+            Verdict.VERIFIED ->
+                    ActionResult.Success("Typed via keyboard injection (text seen on the VD) [$detail]")
+            Verdict.VERIFIED_PARTIAL ->
                     ActionResult.Success(
-                            "Typed via keyboard injection; text is in the VD tree (was already present " +
-                                    "before, so this is unverified) [$detail]"
+                            "Typed via keyboard injection (prefix of the text seen on the VD) [$detail]"
                     )
-            after != null && focused != null && after.text == focused.text ->
+            Verdict.UNVERIFIED_CHANGED ->
+                    ActionResult.Success(
+                            "Typed via keyboard injection; the VD content changed afterwards but the " +
+                                    "text itself is not exposed to accessibility (unverified - check the " +
+                                    "screenshot) [$detail]"
+                    )
+            Verdict.UNVERIFIED ->
+                    ActionResult.Success(
+                            "Keys delivered to the VD, but the field does not expose its text and " +
+                                    "nothing observable changed (unverified - check the screenshot before " +
+                                    "assuming it was typed) [$detail]"
+                    )
+            Verdict.FAILED_UNCHANGED ->
                     ActionResult.Failure(
                             "Keyboard injection did not change the focused field (still " +
-                                    "'${after.text}') [$detail]"
-                    )
-            after != null ->
-                    ActionResult.Success(
-                            "Typed via keyboard injection; focused field now '${after.text}' [$detail]"
-                    )
-            else ->
-                    ActionResult.Failure(
-                            "Keys were delivered to the virtual display but '${action.text}' is not " +
-                                    "visible in its accessibility tree afterwards; the field may not have " +
-                                    "accepted focus. Take a screenshot to check before retrying [$detail]"
+                                    "'${after?.text}') [$detail]"
                     )
         }
     }

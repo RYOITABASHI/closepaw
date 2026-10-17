@@ -637,7 +637,6 @@ class AgentService : AccessibilityService() {
                 restoreForegroundApp(it)
             }
             shellyRun = null
-            overlayController?.setQuietBackgroundRun(false)
         }
     }
 
@@ -677,7 +676,10 @@ class AgentService : AccessibilityService() {
             reportShellyResult(tracker)
             restoreForegroundApp(tracker)
             shellyRun = null
-            overlayController?.setQuietBackgroundRun(false)
+            // Quiet mode is deliberately NOT cleared here: the Done/Error capsule would otherwise
+            // pop onto the user's screen. It stays armed until a user-started session replaces
+            // it. A terminal Error mode is dismissed so the overlay state settles to Hidden.
+            if (!tracker.onMainDisplay) overlayController?.dismissError()
         }
     }
 

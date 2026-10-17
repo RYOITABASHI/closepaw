@@ -192,8 +192,11 @@ internal fun deriveOverlayVisibility(
  * app (ChatGPT via Shelly) and wants their screen left alone. While they are in some other app
  * (OTHER_APP) no capsule / island / glow is shown on the main display — the ongoing notification
  * is the status surface and its Stop / Allow / Reject actions are the only controls. The capsule
- * still appears for states the notification cannot answer (typed input, "done" confirmation,
- * errors), and whenever the user deliberately opens ClosePaw or the VD viewer.
+ * still appears for states the notification cannot answer (typed input, "done" confirmation),
+ * and whenever the user deliberately opens ClosePaw or the VD viewer. Terminal states (Done,
+ * Error) stay hidden too: the run's outcome reaches the user through the result callback and the
+ * notification, so the quiet flag must outlive the run and only be cleared when a user-started
+ * session takes over (never at the moment the run finishes, or the Done/Error capsule would pop).
  *
  * Apart from the user's wish this also removes a large touchable accessibility overlay (with a
  * Stop button) from the screen the agent is NOT operating, so no stray touch can end the run.
@@ -209,8 +212,7 @@ internal fun applyQuietBackgroundRun(
     if (platformMode != PlatformMode.VIRTUAL_DISPLAY) return decision
     if (location != OverlayUserLocation.OTHER_APP) return decision
     val needsCapsule = mode is CapsuleMode.WaitingForInput ||
-        mode is CapsuleMode.WaitingForAction ||
-        mode is CapsuleMode.Error
+        mode is CapsuleMode.WaitingForAction
     if (needsCapsule) return decision
     return decision.copy(showCapsule = false, showIsland = false, showGlow = false)
 }

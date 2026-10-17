@@ -540,13 +540,26 @@ class OverlayLocationPolicyTest {
     }
 
     @Test
-    fun `quiet background run still shows the capsule for typed input and errors`() {
+    fun `quiet background run still shows the capsule for typed input and user actions`() {
         val input = CapsuleMode.WaitingForInput("what name?", "c2")
         assertThat(quietVd(vdDecision(input, OverlayUserLocation.OTHER_APP), OverlayUserLocation.OTHER_APP, input).showCapsule).isTrue()
         val action = CapsuleMode.WaitingForAction("unlock", "c3")
         assertThat(quietVd(vdDecision(action, OverlayUserLocation.OTHER_APP), OverlayUserLocation.OTHER_APP, action).showCapsule).isTrue()
+    }
+
+    @Test
+    fun `quiet background run keeps the end state off the main display`() {
+        val done = CapsuleMode.Done("Playlist created")
+        val doneBase = deriveOverlayVisibility(PlatformMode.VIRTUAL_DISPLAY, OverlayUserLocation.OTHER_APP, done, false, ShowPreference.CAPSULE)
+        assertThat(doneBase.showCapsule).isTrue()
+        val quietDone = quietVd(doneBase, OverlayUserLocation.OTHER_APP, done)
+        assertThat(quietDone.showCapsule).isFalse()
+        assertThat(quietDone.showIsland).isFalse()
+        assertThat(quietDone.showGlow).isFalse()
         val error = CapsuleMode.Error("boom")
-        assertThat(quietVd(vdDecision(error, OverlayUserLocation.OTHER_APP), OverlayUserLocation.OTHER_APP, error).showCapsule).isTrue()
+        val errorBase = deriveOverlayVisibility(PlatformMode.VIRTUAL_DISPLAY, OverlayUserLocation.OTHER_APP, error, false, ShowPreference.CAPSULE)
+        assertThat(errorBase.showCapsule).isTrue()
+        assertThat(quietVd(errorBase, OverlayUserLocation.OTHER_APP, error).showCapsule).isFalse()
     }
 
     @Test
