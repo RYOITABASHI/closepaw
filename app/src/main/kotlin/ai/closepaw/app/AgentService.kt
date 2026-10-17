@@ -405,6 +405,7 @@ class AgentService : AccessibilityService() {
             shellyNotifier.render(it.state)
             reportShellyResult(it)
             shellyRun = null
+            overlayController?.setQuietBackgroundRun(false)
         }
         if (session != null) {
             Log.i(TAG, "Stopping existing session before starting new one")
@@ -602,6 +603,8 @@ class AgentService : AccessibilityService() {
                 }
                 observeExternalSession(newSession, effectiveMode)
                 shellyRun = tracker
+                // VD run: the user's screen stays clean (notification is the only surface).
+                overlayController?.setQuietBackgroundRun(!tracker.onMainDisplay)
                 renderShellyRun()
                 Log.i(TAG, "Shelly run started: session=${newSession.sessionId}, mode=$effectiveMode")
                 newSession.submit(Op.UserInput(text = goal))
@@ -634,6 +637,7 @@ class AgentService : AccessibilityService() {
                 restoreForegroundApp(it)
             }
             shellyRun = null
+            overlayController?.setQuietBackgroundRun(false)
         }
     }
 
@@ -662,6 +666,7 @@ class AgentService : AccessibilityService() {
         shellyNotifier.render(tracker.state)
         reportShellyResult(tracker)
         shellyRun = null
+        overlayController?.setQuietBackgroundRun(false)
     }
 
     private fun onShellyRunEvent(agentSession: AgentSession, event: ai.closepaw.protocol.AgentEvent) {
@@ -672,6 +677,7 @@ class AgentService : AccessibilityService() {
             reportShellyResult(tracker)
             restoreForegroundApp(tracker)
             shellyRun = null
+            overlayController?.setQuietBackgroundRun(false)
         }
     }
 

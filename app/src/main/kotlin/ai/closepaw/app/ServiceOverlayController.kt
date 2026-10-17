@@ -133,6 +133,9 @@ class ServiceOverlayController(
     /** User preference: capsule or island while overlays are visible (A11y/VD). */
     private var showPreference = ShowPreference.ISLAND
 
+    /** Shelly background run on the VD: keep the main display clean (see [applyQuietBackgroundRun]). */
+    private var quietBackgroundRun = false
+
     init {
         statusIslandManager?.startObserving(stateHolder, scope)
 
@@ -162,18 +165,24 @@ class ServiceOverlayController(
      */
     private fun applyVisibility() {
         val mode = stateHolder.mode.value
-        val decision = deriveOverlayVisibility(
+        val decision = applyQuietBackgroundRun(
+            decision = deriveOverlayVisibility(
+                platformMode = platformMode,
+                location = userLocation,
+                mode = mode,
+                hasActiveTask = stateHolder.hasActiveTask,
+                showPreference = showPreference,
+            ),
+            quiet = quietBackgroundRun,
             platformMode = platformMode,
             location = userLocation,
             mode = mode,
-            hasActiveTask = stateHolder.hasActiveTask,
-            showPreference = showPreference,
         )
         Log.i(
             logTag,
             "applyVisibility: platformMode=$platformMode, location=$userLocation, " +
                 "mode=${mode::class.simpleName}, hasActiveTask=${stateHolder.hasActiveTask}, " +
-                "showPreference=$showPreference => showCapsule=${decision.showCapsule}, " +
+                "showPreference=$showPreference, quiet=$quietBackgroundRun => showCapsule=${decision.showCapsule}, " +
                 "showIsland=${decision.showIsland}, showGlow=${decision.showGlow}, " +
                 "normalizedShowPreference=${decision.normalizedShowPreference}"
         )
@@ -341,6 +350,16 @@ class ServiceOverlayController(
             updateContext()
             applyVisibility()
         }
+    }
+
+    /**
+     * Shelly background run on the virtual display: suppress the main-display overlays while the
+     * user is in another app. Cleared when the run ends or a user-started session replaces it.
+     */
+    fun setQuietBackgroundRun(quiet: Boolean) {
+        if (quietBackgroundRun == quiet) return
+        quietBackgroundRun = quiet
+        applyVisibility()
     }
 
     /** Pause the agent as if the user pressed the capsule's takeover button. */

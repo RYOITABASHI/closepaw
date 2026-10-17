@@ -68,8 +68,9 @@ class VirtualDisplayTextInjector(
 
     suspend fun inject(action: UIAction.InjectText): ActionResult {
         val displayId = displayIdProvider()
-        if (displayId == Display.INVALID_DISPLAY) {
-            return ActionResult.Failure("Virtual display not started")
+        if (displayId == Display.INVALID_DISPLAY || displayId == Display.DEFAULT_DISPLAY) {
+            // Safety invariant: key events and taps go to ClosePaw's own agent display only.
+            return ActionResult.Failure("Virtual display not started (refusing to inject into display $displayId)")
         }
         if (action.text.isEmpty() && !action.clear) {
             return ActionResult.Success("Nothing to type")
@@ -242,6 +243,14 @@ class VirtualDisplayTextInjector(
         }
     }
 
-    private suspend fun shell(vararg command: String): Int =
-            withContext(Dispatchers.IO) { shizuku.executeShellCommand(arrayOf(*command)) }
+    /** Every shell command here is `input -d <vd> …`; refuse anything not bound to a VD. */
+    private suspend fun shell(vararg command: String): Int {
+        val displayArg = command.getOrNull(2)?.toIntOrNull()
+        if (command.getOrNull(0) != "input" || command.getOrNull(1) != "-d" ||
+                displayArg == null || displayArg <= Display.DEFAULT_DISPLAY) {
+            Log.e(TAG, "Refusing shell input not targeted at a virtual display: ${command.joinToString(" ")}")
+            return -1
+        }
+        return withContext(Dispatchers.IO) { shizuku.executeShellCommand(arrayOf(*command)) }
+    }
 }

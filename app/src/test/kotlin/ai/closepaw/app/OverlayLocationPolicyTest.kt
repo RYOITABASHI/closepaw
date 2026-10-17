@@ -505,4 +505,57 @@ class OverlayLocationPolicyTest {
             )
         ).isFalse()
     }
+
+    // ── Quiet mode for Shelly background runs on the virtual display ──
+
+    private val running = CapsuleMode.Running("working")
+
+    private fun vdDecision(mode: CapsuleMode, location: OverlayUserLocation) = deriveOverlayVisibility(
+        platformMode = PlatformMode.VIRTUAL_DISPLAY,
+        location = location,
+        mode = mode,
+        hasActiveTask = true,
+        showPreference = ShowPreference.CAPSULE,
+    )
+
+    private fun quietVd(decision: OverlayVisibilityDecision, location: OverlayUserLocation, mode: CapsuleMode) =
+        applyQuietBackgroundRun(decision, true, PlatformMode.VIRTUAL_DISPLAY, location, mode)
+
+    @Test
+    fun `quiet background run hides every main display overlay while running in another app`() {
+        val base = vdDecision(running, OverlayUserLocation.OTHER_APP)
+        assertThat(base.showCapsule).isTrue()
+        val quiet = quietVd(base, OverlayUserLocation.OTHER_APP, running)
+        assertThat(quiet.showCapsule).isFalse()
+        assertThat(quiet.showIsland).isFalse()
+        assertThat(quiet.showGlow).isFalse()
+    }
+
+    @Test
+    fun `quiet background run leaves approvals to the notification`() {
+        val mode = CapsuleMode.WaitingForApproval("c1", "open", "Spotify", "com.spotify.music", "policy")
+        val base = vdDecision(mode, OverlayUserLocation.OTHER_APP)
+        assertThat(base.showCapsule).isTrue()
+        assertThat(quietVd(base, OverlayUserLocation.OTHER_APP, mode).showCapsule).isFalse()
+    }
+
+    @Test
+    fun `quiet background run still shows the capsule for typed input and errors`() {
+        val input = CapsuleMode.WaitingForInput("what name?", "c2")
+        assertThat(quietVd(vdDecision(input, OverlayUserLocation.OTHER_APP), OverlayUserLocation.OTHER_APP, input).showCapsule).isTrue()
+        val action = CapsuleMode.WaitingForAction("unlock", "c3")
+        assertThat(quietVd(vdDecision(action, OverlayUserLocation.OTHER_APP), OverlayUserLocation.OTHER_APP, action).showCapsule).isTrue()
+        val error = CapsuleMode.Error("boom")
+        assertThat(quietVd(vdDecision(error, OverlayUserLocation.OTHER_APP), OverlayUserLocation.OTHER_APP, error).showCapsule).isTrue()
+    }
+
+    @Test
+    fun `quiet background run does not apply in the viewer, on the main display platform, or when off`() {
+        val viewer = vdDecision(running, OverlayUserLocation.VD_VIEWER)
+        assertThat(quietVd(viewer, OverlayUserLocation.VD_VIEWER, running)).isEqualTo(viewer)
+        val a11y = deriveOverlayVisibility(PlatformMode.ACCESSIBILITY, OverlayUserLocation.OTHER_APP, running, true, ShowPreference.CAPSULE)
+        assertThat(applyQuietBackgroundRun(a11y, true, PlatformMode.ACCESSIBILITY, OverlayUserLocation.OTHER_APP, running)).isEqualTo(a11y)
+        val other = vdDecision(running, OverlayUserLocation.OTHER_APP)
+        assertThat(applyQuietBackgroundRun(other, false, PlatformMode.VIRTUAL_DISPLAY, OverlayUserLocation.OTHER_APP, running)).isEqualTo(other)
+    }
 }

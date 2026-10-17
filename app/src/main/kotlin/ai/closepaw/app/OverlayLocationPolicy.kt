@@ -188,6 +188,34 @@ internal fun deriveOverlayVisibility(
 }
 
 /**
+ * Quiet mode for Shelly-handed background runs on the virtual display: the user asked another
+ * app (ChatGPT via Shelly) and wants their screen left alone. While they are in some other app
+ * (OTHER_APP) no capsule / island / glow is shown on the main display — the ongoing notification
+ * is the status surface and its Stop / Allow / Reject actions are the only controls. The capsule
+ * still appears for states the notification cannot answer (typed input, "done" confirmation,
+ * errors), and whenever the user deliberately opens ClosePaw or the VD viewer.
+ *
+ * Apart from the user's wish this also removes a large touchable accessibility overlay (with a
+ * Stop button) from the screen the agent is NOT operating, so no stray touch can end the run.
+ */
+internal fun applyQuietBackgroundRun(
+    decision: OverlayVisibilityDecision,
+    quiet: Boolean,
+    platformMode: PlatformMode,
+    location: OverlayUserLocation,
+    mode: CapsuleMode,
+): OverlayVisibilityDecision {
+    if (!quiet) return decision
+    if (platformMode != PlatformMode.VIRTUAL_DISPLAY) return decision
+    if (location != OverlayUserLocation.OTHER_APP) return decision
+    val needsCapsule = mode is CapsuleMode.WaitingForInput ||
+        mode is CapsuleMode.WaitingForAction ||
+        mode is CapsuleMode.Error
+    if (needsCapsule) return decision
+    return decision.copy(showCapsule = false, showIsland = false, showGlow = false)
+}
+
+/**
  * Whether user touch interaction with the underlying screen should be blocked.
  *
  * - A11y OTHER_APP: block while agent owns control (non-terminal, non-takeover modes).
