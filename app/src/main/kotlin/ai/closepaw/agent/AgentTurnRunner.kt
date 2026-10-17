@@ -223,7 +223,7 @@ internal class AgentTurnRunner(
                 loopResult.warning?.let { add("⚠️ ${it.message}") }
         }
 
-        private fun decideTurnOutcome(
+        private suspend fun decideTurnOutcome(
                 turnNumber: Int,
                 result: TurnResult,
                 arbitration: ToolArbitrationResult,
