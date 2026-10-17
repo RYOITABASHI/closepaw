@@ -80,9 +80,6 @@ class VirtualDisplayTextInjector(
             return out.toList()
         }
 
-        /** Outcome of post-injection verification, decided from observations only (unit-tested). */
-        enum class Verdict { VERIFIED, VERIFIED_PARTIAL, UNVERIFIED_CHANGED, UNVERIFIED, FAILED_UNCHANGED }
-
         /**
          * @param payloadSeen full payload visible in the focused node or the VD tree (and was not
          *   visible before the injection)
@@ -104,6 +101,9 @@ class VirtualDisplayTextInjector(
             else -> Verdict.UNVERIFIED
         }
     }
+
+    /** Outcome of post-injection verification, decided from observations only (unit-tested). */
+    enum class Verdict { VERIFIED, VERIFIED_PARTIAL, UNVERIFIED_CHANGED, UNVERIFIED, FAILED_UNCHANGED }
 
     suspend fun inject(action: UIAction.InjectText): ActionResult {
         val displayId = displayIdProvider()
