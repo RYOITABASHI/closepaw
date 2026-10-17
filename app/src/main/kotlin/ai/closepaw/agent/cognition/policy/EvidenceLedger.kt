@@ -73,8 +73,13 @@ object UnattendedEvidence {
     var active: Boolean = false
         private set
 
+    /** Result of ClosePaw's own look at the target list, refreshed right before each completion decision. */
+    @Volatile
+    var verification: ListVerification? = null
+
     fun start() {
         ledger.reset()
+        verification = null
         active = true
     }
 

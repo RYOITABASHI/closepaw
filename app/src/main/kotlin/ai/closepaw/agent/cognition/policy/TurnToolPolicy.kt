@@ -46,7 +46,7 @@ internal class TurnToolPolicy(
          */
         private val completionGate: ((status: String, answer: String) -> String?)? = null,
         /** After this many refused completions the task ends as a FAILURE (bounded credits, never a false success). */
-        private val maxGateRejections: Int = 4
+        private val maxGateRejections: Int = 6
 ) {
     private var gateRejections = 0
     /**

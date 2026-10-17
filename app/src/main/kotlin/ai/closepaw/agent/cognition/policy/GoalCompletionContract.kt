@@ -30,6 +30,8 @@ object GoalCompletionContract {
         "- If anything is missing, keep working. Never declare success after only part of the items; partial work is a failure, not a success.",
         "- For count-based requests, state the verified count in your answer (for example \"added 10 of 10\") only after counting on screen.",
         "- Do not start media playback. In music apps, NEVER tap a song row, song title, cover art or play button. Add a song only through the row's \"...\" (more) menu -> \"Add to playlist\" -> pick the playlist, or through the search result's \"+\" / \"Add\" button. Wait for the \"Added to <playlist>\" confirmation after each add; an add without that confirmation does not count.",
+        "- To add a specific song: use the app's Search, type \"<artist> <title>\", and add it from the SEARCH RESULT row's \"...\" menu -> Add to playlist (or its \"+\" button). Never add from Recents, Recommended, \"Based on ...\", Home or autoplay sections, and never add a song by an artist the task did not ask for.",
+        "- Verification is done by ClosePaw, not by you: when you believe the list is complete, open the playlist page so its rows are visible and call complete_task. ClosePaw counts the rows and tells you exactly what is missing or extra; follow that instruction instead of guessing.",
         "- Nobody is watching; do not stop to ask for confirmation of steps the task already spells out.",
     )
 
@@ -99,7 +101,7 @@ object GoalCompletionContract {
         { status, answer -> completionRejection(goal, status, answer, observed()) }
 
     /** The user's own task text when [wrap] was applied (so the contract never counts as a requirement). */
-    private fun taskBody(goal: String): String {
+    internal fun taskBody(goal: String): String {
         val marker = "\nTASK:\n"
         val idx = goal.indexOf(marker)
         return if (goal.startsWith(CONTRACT_HEADER) && idx >= 0) goal.substring(idx + marker.length) else goal

@@ -5,9 +5,13 @@ import ai.closepaw.agent.cognition.policy.LoopDetectionPolicy
 import ai.closepaw.agent.cognition.policy.LoopDetectionResult
 import ai.closepaw.agent.cognition.policy.ToolArbitrationResult
 import ai.closepaw.agent.cognition.policy.TurnToolPolicy
+import ai.closepaw.agent.cognition.policy.ListGoalSpec
+import ai.closepaw.agent.cognition.policy.ListGoalVerifier
+import ai.closepaw.agent.cognition.policy.UnattendedEvidence
 import ai.closepaw.history.Compactor
 import ai.closepaw.history.MessageKind
 import ai.closepaw.history.ResponseItem
+import ai.closepaw.tool.ToolName
 import ai.closepaw.model.ScreenSnapshot
 import ai.closepaw.protocol.AppTier
 import ai.closepaw.protocol.ScreenStatePhase
@@ -229,6 +233,7 @@ internal class AgentTurnRunner(
                 arbitration: ToolArbitrationResult,
                 execution: ExecutionPhaseResult
         ): TurnOutcome {
+                verifyListGoalIfNeeded(turnNumber, result, arbitration, execution)
                 val outcome = decideTurnOutcome(
                         policy = turnPolicyEngine,
                         turnResult = result,
@@ -249,6 +254,37 @@ internal class AgentTurnRunner(
                         }
                 }
                 return outcome
+        }
+
+        /**
+         * Unattended count-based list goals: before a `complete_task(success)` is accepted,
+         * ClosePaw itself reads the target list (scrolling to the end) and records the result in
+         * [UnattendedEvidence.verification]; the completion gate then decides from that evidence.
+         */
+        private suspend fun verifyListGoalIfNeeded(
+                turnNumber: Int,
+                result: TurnResult,
+                arbitration: ToolArbitrationResult,
+                execution: ExecutionPhaseResult
+        ) {
+                if (!services.config.unattended || !arbitration.hasCompletionTool || execution.terminatedEarly) return
+                val call = result.toolCalls.find { it.name == ToolName.CompleteTask.raw } ?: return
+                if (call.arguments.optString("status", "success").trim().lowercase() == "failure") return
+                val spec = listGoalSpec ?: return
+                if (!spec.isCounted) return
+                try {
+                        val verification = ListGoalVerifier(services.platform).verify(spec)
+                        UnattendedEvidence.verification = verification
+                        Log.i(TAG, "Turn $turnNumber: list verification -> ${verification.rejection ?: "OK"}")
+                } catch (e: CancellationException) {
+                        throw e
+                } catch (e: Exception) {
+                        Log.w(TAG, "Turn $turnNumber: list verification failed; falling back to toast ledger", e)
+                }
+        }
+
+        private val listGoalSpec: ListGoalSpec? by lazy {
+                if (services.config.unattended) ListGoalSpec.parse(config.goal) else null
         }
 
         private fun handleTurnFailure(
