@@ -56,6 +56,7 @@ class VirtualDisplayPlatform(
         private const val DISPLAY_FLAGS = 0x1 or 0x8 or 0x40 or 0x200 or 0x400 or 0x800
 
         private const val SURFACE_READY_DELAY_MS = 200L
+        private const val PLAYBACK_PROBE_DELAY_MS = 400L
         private const val IMAGE_READER_MAX_IMAGES = 2
     }
 
@@ -412,16 +413,44 @@ class VirtualDisplayPlatform(
             arbiter.withRunningLease {
                 val suppressIme = action.mayTriggerIme() && !isKeyboardVisibleOnMainDisplay()
                 if (suppressIme) setKeyboardHidden()
+                val guardPlayback = sessionConfig.unattended && action.mayStartPlayback()
+                val musicBefore = guardPlayback && isMusicActive()
 
                 try {
                     dispatchAction(action)
                 } finally {
                     if (suppressIme) setKeyboardAuto()
+                    if (guardPlayback) pausePlaybackIfStarted(musicBefore)
                 }
             }
         } catch (e: PlatformNotRunningException) {
             ActionResult.Failure("Virtual display not running (${e.message})")
         }
+    }
+
+    // ── Playback guard (unattended runs) ─────────────────────────
+
+    private fun UIAction.mayStartPlayback(): Boolean =
+            this is UIAction.ClickNodeAt || this is UIAction.TapAt ||
+                    this is UIAction.LongClickNodeAt || this is UIAction.LongPressAt
+
+    private fun isMusicActive(): Boolean =
+            try {
+                (service.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager)
+                        ?.isMusicActive == true
+            } catch (e: Exception) {
+                false
+            }
+
+    /** If the action just started music, pause it (never touches playback the user started). */
+    private suspend fun pausePlaybackIfStarted(musicBefore: Boolean) {
+        delay(PLAYBACK_PROBE_DELAY_MS)
+        if (!PlaybackGuard.shouldPause(sessionConfig.unattended, musicBefore, isMusicActive())) return
+        Log.w(TAG, "Agent action started media playback; pausing")
+        val exit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            shizuku.executeShellCommand(PlaybackGuard.PAUSE_COMMAND)
+        }
+        if (exit != 0) Log.w(TAG, "media_session pause failed, exit=$exit")
     }
 
     private suspend fun dispatchAction(action: UIAction): ActionResult =

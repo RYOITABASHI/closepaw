@@ -6,6 +6,8 @@ import ai.closepaw.agent.cognition.policy.LoopDetectionResult
 import ai.closepaw.agent.cognition.policy.ToolArbitrationResult
 import ai.closepaw.agent.cognition.policy.TurnToolPolicy
 import ai.closepaw.history.Compactor
+import ai.closepaw.history.MessageKind
+import ai.closepaw.history.ResponseItem
 import ai.closepaw.model.ScreenSnapshot
 import ai.closepaw.protocol.AppTier
 import ai.closepaw.protocol.ScreenStatePhase
@@ -235,6 +237,16 @@ internal class AgentTurnRunner(
                 )
                 if (outcome is TurnOutcome.Complete) {
                         Log.i(TAG, "Turn $turnNumber: Task marked as complete - ${outcome.message}")
+                }
+                if (outcome is TurnOutcome.Continue && arbitration.hasCompletionTool) {
+                        val rejection = turnPolicyEngine.decideCompletion(result, arbitration).rejection
+                        if (rejection != null) {
+                                Log.i(TAG, "Turn $turnNumber: completion refused by gate - $rejection")
+                                services.historyManager.addItem(
+                                        ResponseItem.Message(kind = MessageKind.USER_INTENT, content = rejection)
+                                )
+                                eventDispatcher.status("⛔ $rejection")
+                        }
                 }
                 return outcome
         }

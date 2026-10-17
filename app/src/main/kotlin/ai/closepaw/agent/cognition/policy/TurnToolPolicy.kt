@@ -29,14 +29,23 @@ internal data class ToolArbitrationResult(
 internal data class CompletionDecision(
         val shouldComplete: Boolean,
         val summary: String?,
-        val success: Boolean
+        val success: Boolean,
+        /** Set when a completion gate refused a `complete_task(success)`: feed this back to the agent. */
+        val rejection: String? = null
 )
 
 /**
  * Turn-level policy for two questions: 1) If the model returned multiple tool calls, which one do
  * we execute? 2) Should this turn be treated as task completion?
  */
-internal class TurnToolPolicy {
+internal class TurnToolPolicy(
+        /**
+         * Optional hard gate on `complete_task(status, answer)`. Returns a message when the
+         * completion must be refused (the agent keeps working), null to accept. Used for
+         * unattended Shelly runs, see [GoalCompletionContract].
+         */
+        private val completionGate: ((status: String, answer: String) -> String?)? = null
+) {
     /**
      * Arbitration rule:
      * - Hoist only cognitive tools.
@@ -114,6 +123,17 @@ internal class TurnToolPolicy {
                 completeTaskCall?.arguments?.optString("answer")?.takeIf { it.isNotBlank() }
                         ?: completeTaskCall?.arguments?.optString("summary") ?: turnResult.content
                                 ?: "Goal achieved"
+        if (success && completionGate != null) {
+            val rejection = completionGate.invoke(status ?: "success", summary)
+            if (rejection != null) {
+                return CompletionDecision(
+                        shouldComplete = false,
+                        summary = summary,
+                        success = false,
+                        rejection = rejection
+                )
+            }
+        }
         return CompletionDecision(shouldComplete = true, summary = summary, success = success)
     }
 }

@@ -145,4 +145,45 @@ class TurnOutcomeDecisionTest {
     private fun toolCall(name: String, arguments: JSONObject = JSONObject()): ToolCallRequest {
         return ToolCallRequest(id = "call-$name", name = name, arguments = arguments)
     }
+
+    @Test
+    fun `completion gate turns a refused complete_task into Continue with a rejection`() {
+        val gated = TurnToolPolicy(completionGate = { _, answer ->
+            if (answer.contains("10 of 10")) null else "NOT FINISHED: 1 of 10"
+        })
+        val complete = toolCall("complete_task", JSONObject("""{"status":"success","answer":"added Jeremy"}"""))
+        val calls = listOf(complete)
+        val arbitration = gated.arbitrateToolCalls(calls)
+        val turnResult = TurnResult(content = null, toolCalls = calls, isComplete = true)
+        val execution = ExecutionPhaseResult(
+            executedToolIds = setOf(complete.id),
+            terminatedEarly = false,
+            lastTerminalResult = ToolCallResult.Success(complete.id, "ok")
+        )
+
+        assertThat(decideTurnOutcome(gated, turnResult, arbitration, execution)).isEqualTo(TurnOutcome.Continue)
+        assertThat(gated.decideCompletion(turnResult, arbitration).rejection).isEqualTo("NOT FINISHED: 1 of 10")
+
+        val done = toolCall("complete_task", JSONObject("""{"status":"success","answer":"added 10 of 10"}"""))
+        val doneCalls = listOf(done)
+        val doneOutcome = decideTurnOutcome(
+            gated,
+            TurnResult(content = null, toolCalls = doneCalls, isComplete = true),
+            gated.arbitrateToolCalls(doneCalls),
+            ExecutionPhaseResult(setOf(done.id), false, ToolCallResult.Success(done.id, "ok"))
+        )
+        assertThat(doneOutcome).isInstanceOf(TurnOutcome.Complete::class.java)
+
+        // A declared failure is never gated: the agent may give up with an explanation.
+        val failed = toolCall("complete_task", JSONObject("""{"status":"failure","answer":"blocked"}"""))
+        val failedCalls = listOf(failed)
+        val failedOutcome = decideTurnOutcome(
+            gated,
+            TurnResult(content = null, toolCalls = failedCalls, isComplete = true),
+            gated.arbitrateToolCalls(failedCalls),
+            ExecutionPhaseResult(setOf(failed.id), false, ToolCallResult.Success(failed.id, "ok"))
+        )
+        assertThat(failedOutcome).isInstanceOf(TurnOutcome.Complete::class.java)
+        assertThat((failedOutcome as TurnOutcome.Complete).success).isFalse()
+    }
 }

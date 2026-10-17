@@ -11,6 +11,7 @@ import ai.closepaw.util.recycleCompat
 import android.view.accessibility.AccessibilityWindowInfo
 import android.view.SurfaceView
 import android.view.accessibility.AccessibilityEvent
+import ai.closepaw.agent.cognition.policy.GoalCompletionContract
 import ai.closepaw.debug.ActionDebugReceiver
 import ai.closepaw.protocol.ApprovalDecision
 import ai.closepaw.protocol.ApprovalScope
@@ -607,7 +608,10 @@ class AgentService : AccessibilityService() {
                 overlayController?.setQuietBackgroundRun(!tracker.onMainDisplay)
                 renderShellyRun()
                 Log.i(TAG, "Shelly run started: session=${newSession.sessionId}, mode=$effectiveMode")
-                newSession.submit(Op.UserInput(text = goal))
+                // Shelly-handed goals carry an explicit completion contract (verify every item /
+                // count before complete_task, no media playback). The gate in TurnToolPolicy
+                // enforces the count for "N songs/items" goals (SessionConfig.unattended).
+                newSession.submit(Op.UserInput(text = GoalCompletionContract.wrap(goal)))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
