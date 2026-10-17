@@ -29,7 +29,7 @@ object GoalCompletionContract {
         "- Before you call complete_task, re-read the whole task below, list every required item and count, and verify each one on screen.",
         "- If anything is missing, keep working. Never declare success after only part of the items; partial work is a failure, not a success.",
         "- For count-based requests, state the verified count in your answer (for example \"added 10 of 10\") only after counting on screen.",
-        "- Do not start media playback. Add songs through the track's \"...\" / \"+\" / \"Add to playlist\" controls, never by tapping the song title or a play button. If playback starts, pause it before continuing.",
+        "- Do not start media playback. In music apps, NEVER tap a song row, song title, cover art or play button. Add a song only through the row's \"...\" (more) menu -> \"Add to playlist\" -> pick the playlist, or through the search result's \"+\" / \"Add\" button. Wait for the \"Added to <playlist>\" confirmation after each add; an add without that confirmation does not count.",
         "- Nobody is watching; do not stop to ask for confirmation of steps the task already spells out.",
     )
 
@@ -64,10 +64,22 @@ object GoalCompletionContract {
      * finishing. Only `success` completions of count-based goals are gated; failures pass through
      * (the agent is allowed to give up with an explanation).
      */
-    fun completionRejection(goal: String, status: String, answer: String): String? {
+    fun completionRejection(
+        goal: String,
+        status: String,
+        answer: String,
+        /** Confirmations ClosePaw itself observed ([EvidenceLedger.count]); null = no evidence tracking. */
+        observed: Int? = null,
+    ): String? {
         if (status.trim().lowercase() == "failure") return null
         val required = requiredCount(goal) ?: return null
         val reported = reportedCount(answer)
+        if (observed != null && observed < required) {
+            return "NOT FINISHED: observed $observed of $required. ClosePaw counted only $observed " +
+                "on-screen confirmation(s) such as \"Added to <playlist>\"; your own count is not " +
+                "evidence. Keep adding one item at a time and wait for each confirmation, then call " +
+                "complete_task again."
+        }
         return when {
             reported == null ->
                 "NOT FINISHED: the task requires $required items. Count them on screen and state the " +
@@ -80,9 +92,9 @@ object GoalCompletionContract {
         }
     }
 
-    /** Gate for [TurnToolPolicy]: bound to one goal. */
-    fun gateFor(goal: String): (status: String, answer: String) -> String? =
-        { status, answer -> completionRejection(goal, status, answer) }
+    /** Gate for [TurnToolPolicy]: bound to one goal; [observed] supplies device-side evidence. */
+    fun gateFor(goal: String, observed: (() -> Int?) = { null }): (status: String, answer: String) -> String? =
+        { status, answer -> completionRejection(goal, status, answer, observed()) }
 
     /** The user's own task text when [wrap] was applied (so the contract never counts as a requirement). */
     private fun taskBody(goal: String): String {

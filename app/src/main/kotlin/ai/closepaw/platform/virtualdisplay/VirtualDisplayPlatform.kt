@@ -444,8 +444,13 @@ class VirtualDisplayPlatform(
 
     /** If the action just started music, pause it (never touches playback the user started). */
     private suspend fun pausePlaybackIfStarted(musicBefore: Boolean) {
-        delay(PLAYBACK_PROBE_DELAY_MS)
-        if (!PlaybackGuard.shouldPause(sessionConfig.unattended, musicBefore, isMusicActive())) return
+        // Immediate probe, then one more after the player had time to report itself.
+        var pause = PlaybackGuard.shouldPause(sessionConfig.unattended, musicBefore, isMusicActive())
+        if (!pause) {
+            delay(PLAYBACK_PROBE_DELAY_MS)
+            pause = PlaybackGuard.shouldPause(sessionConfig.unattended, musicBefore, isMusicActive())
+        }
+        if (!pause) return
         Log.w(TAG, "Agent action started media playback; pausing")
         val exit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             shizuku.executeShellCommand(PlaybackGuard.PAUSE_COMMAND)

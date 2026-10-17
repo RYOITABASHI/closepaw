@@ -130,6 +130,17 @@ internal class TurnExecutionPhaseRunner(
                                 TAG,
                                 "Updated snapshot for subsequent tools: ${observedSnapshot.elements.size} elements"
                         )
+                        if (services.config.unattended) {
+                                // Device-side evidence for the completion gate: confirmation
+                                // texts ("Added to …") visible right after an action.
+                                observedSnapshot.elements.forEach { el ->
+                                        if (ai.closepaw.agent.cognition.policy.UnattendedEvidence.ledger.offer(el.text) ||
+                                                ai.closepaw.agent.cognition.policy.UnattendedEvidence.ledger.offer(el.description)
+                                        ) {
+                                                Log.i(TAG, "Evidence: confirmation seen on screen: ${el.text.ifBlank { el.description }}")
+                                        }
+                                }
+                        }
                         eventDispatcher.screenCaptured(
                                 snapshot = observedSnapshot,
                                 packageName = services.platform.getCurrentPackageName(),

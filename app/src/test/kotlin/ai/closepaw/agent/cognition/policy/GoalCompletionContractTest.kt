@@ -61,4 +61,24 @@ class GoalCompletionContractTest {
         assertThat(gate("success", "added 2 songs")).isNotNull()
         assertThat(gate("success", "added 10 songs")).isNull()
     }
+
+    @Test
+    fun `device side evidence overrides the agent's claim`() {
+        val wrapped = GoalCompletionContract.wrap(goal)
+        // Agent claims 10 of 10 but ClosePaw saw a single "Added to" confirmation.
+        val claimed = GoalCompletionContract.completionRejection(wrapped, "success", "Added 10 of 10 songs.", observed = 1)
+        assertThat(claimed).isNotNull()
+        assertThat(claimed).contains("observed 1 of 10")
+        // Enough confirmations: the claim is accepted even without a stated count.
+        assertThat(GoalCompletionContract.completionRejection(wrapped, "success", "Playlist is ready.", observed = 10)).isNull()
+        // Evidence present but the agent still claims fewer than required: still not finished.
+        assertThat(GoalCompletionContract.completionRejection(wrapped, "success", "Added 4 songs so far.", observed = 10)).isNotNull()
+        // Declared failure is never gated.
+        assertThat(GoalCompletionContract.completionRejection(wrapped, "failure", "Could not add songs.", observed = 0)).isNull()
+        var observed = 0
+        val gate = GoalCompletionContract.gateFor(wrapped) { observed }
+        assertThat(gate("success", "10 of 10")).isNotNull()
+        observed = 10
+        assertThat(gate("success", "10 of 10")).isNull()
+    }
 }

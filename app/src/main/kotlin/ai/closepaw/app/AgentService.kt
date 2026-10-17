@@ -12,6 +12,7 @@ import android.view.accessibility.AccessibilityWindowInfo
 import android.view.SurfaceView
 import android.view.accessibility.AccessibilityEvent
 import ai.closepaw.agent.cognition.policy.GoalCompletionContract
+import ai.closepaw.agent.cognition.policy.UnattendedEvidence
 import ai.closepaw.debug.ActionDebugReceiver
 import ai.closepaw.protocol.ApprovalDecision
 import ai.closepaw.protocol.ApprovalScope
@@ -257,6 +258,16 @@ class AgentService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
+            // Toasts ("Added to <playlist>") are device-side evidence for unattended runs.
+            if (UnattendedEvidence.active && event.packageName?.toString() != packageName) {
+                val text = event.text?.joinToString(" ") { it?.toString() ?: "" }?.trim().orEmpty()
+                if (UnattendedEvidence.ledger.offer(text)) {
+                    Log.i(TAG, "Evidence: confirmation toast from ${event.packageName}: $text")
+                }
+            }
+            return
+        }
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             val eventDisplayId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 event.displayId
@@ -290,6 +301,7 @@ class AgentService : AccessibilityService() {
             reportShellyResult(it)
         }
         shellyRun = null
+        endShellyRunSideEffects()
 
         eventCollectorJob?.cancel()
         eventCollectorJob = null
@@ -407,6 +419,7 @@ class AgentService : AccessibilityService() {
             reportShellyResult(it)
             shellyRun = null
             overlayController?.setQuietBackgroundRun(false)
+            endShellyRunSideEffects()
         }
         if (session != null) {
             Log.i(TAG, "Stopping existing session before starting new one")
@@ -494,6 +507,10 @@ class AgentService : AccessibilityService() {
         // Remember what the user was looking at BEFORE anything of ours becomes visible, so a
         // main-display run can hand the screen back to it when it ends (ShellyForegroundReturn).
         val foregroundAtStart = currentForegroundPackageOnDefaultDisplay()
+        // Nobody is watching: media the agent starts by accident must not be heard. Muted for the
+        // whole run, restored on every end path (finish / stop / replace / destroy).
+        setShellyRunAudioMuted(true)
+        UnattendedEvidence.start()
         // Replace an idle/finished session (FORCE_FRESH semantics). Busy sessions were refused
         // by the receiver's precheck.
         shellyRun?.let {
@@ -565,6 +582,7 @@ class AgentService : AccessibilityService() {
                     // Shizuku went away between the precheck and session creation: PlatformFactory
                     // fell back to the main display. Refuse instead of taking over the screen.
                     Log.w(TAG, "Shelly run: virtual display lost during setup; not starting")
+                    endShellyRunSideEffects()
                     serviceScope.launch { newSession.submit(Op.Shutdown) }
                     shellyNotifier.cancel()
                     shellyNotifier.showBlocked(ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE, goal)
@@ -604,6 +622,7 @@ class AgentService : AccessibilityService() {
                 }
                 observeExternalSession(newSession, effectiveMode)
                 shellyRun = tracker
+                shellyRunAudioOwner = tracker
                 // VD run: the user's screen stays clean (notification is the only surface).
                 overlayController?.setQuietBackgroundRun(!tracker.onMainDisplay)
                 renderShellyRun()
@@ -617,6 +636,7 @@ class AgentService : AccessibilityService() {
             } catch (e: Exception) {
                 Log.e(TAG, "Shelly run failed to start", e)
                 shellyRun = null
+                endShellyRunSideEffects()
                 shellyNotifier.render(
                         ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, e.message)
                 )
@@ -641,7 +661,37 @@ class AgentService : AccessibilityService() {
                 restoreForegroundApp(it)
             }
             shellyRun = null
+            endShellyRunSideEffects()
         }
+    }
+
+    // ── Unattended-run side effects (audio mute + evidence ledger) ──
+
+    /** The run that currently owns the music mute (so a stale end path cannot unmute a newer run). */
+    private var shellyRunAudioOwner: ShellyRunTracker? = null
+    private var shellyAudioMuted = false
+
+    private fun setShellyRunAudioMuted(muted: Boolean) {
+        if (shellyAudioMuted == muted) return
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return
+            am.adjustStreamVolume(
+                    android.media.AudioManager.STREAM_MUSIC,
+                    if (muted) android.media.AudioManager.ADJUST_MUTE else android.media.AudioManager.ADJUST_UNMUTE,
+                    0,
+            )
+            shellyAudioMuted = muted
+            Log.i(TAG, "Shelly run: music stream ${if (muted) "muted" else "unmuted"}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Shelly run: adjustStreamVolume failed: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /** Idempotent: unmute + stop collecting evidence. Call on every path that ends a Shelly run. */
+    private fun endShellyRunSideEffects() {
+        shellyRunAudioOwner = null
+        setShellyRunAudioMuted(false)
+        UnattendedEvidence.stop()
     }
 
     internal fun resumeShellyRun() {
@@ -669,6 +719,7 @@ class AgentService : AccessibilityService() {
         shellyNotifier.render(tracker.state)
         reportShellyResult(tracker)
         shellyRun = null
+        endShellyRunSideEffects()
         overlayController?.setQuietBackgroundRun(false)
     }
 
@@ -680,6 +731,7 @@ class AgentService : AccessibilityService() {
             reportShellyResult(tracker)
             restoreForegroundApp(tracker)
             shellyRun = null
+            endShellyRunSideEffects()
             // Quiet mode is deliberately NOT cleared here: the Done/Error capsule would otherwise
             // pop onto the user's screen. It stays armed until a user-started session replaces
             // it. A terminal Error mode is dismissed so the overlay state settles to Hidden.

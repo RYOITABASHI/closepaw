@@ -2,6 +2,7 @@ package ai.closepaw.agent
 
 import android.util.Log
 import ai.closepaw.agent.cognition.policy.GoalCompletionContract
+import ai.closepaw.agent.cognition.policy.UnattendedEvidence
 import ai.closepaw.agent.cognition.policy.TurnToolPolicy
 import ai.closepaw.history.CompactionOutcome
 import ai.closepaw.history.Compactor
@@ -57,7 +58,9 @@ class Agent(
                             TurnToolPolicy(
                                     completionGate =
                                             if (services.config.unattended) {
-                                                GoalCompletionContract.gateFor(config.goal)
+                                                GoalCompletionContract.gateFor(config.goal) {
+                                                    UnattendedEvidence.ledger.count
+                                                }
                                             } else null
                             ),
                     compactor = compactor

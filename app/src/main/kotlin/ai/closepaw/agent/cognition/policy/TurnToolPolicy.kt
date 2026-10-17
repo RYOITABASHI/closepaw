@@ -44,8 +44,11 @@ internal class TurnToolPolicy(
          * completion must be refused (the agent keeps working), null to accept. Used for
          * unattended Shelly runs, see [GoalCompletionContract].
          */
-        private val completionGate: ((status: String, answer: String) -> String?)? = null
+        private val completionGate: ((status: String, answer: String) -> String?)? = null,
+        /** After this many refused completions the task ends as a FAILURE (bounded credits, never a false success). */
+        private val maxGateRejections: Int = 4
 ) {
+    private var gateRejections = 0
     /**
      * Arbitration rule:
      * - Hoist only cognitive tools.
@@ -126,6 +129,14 @@ internal class TurnToolPolicy(
         if (success && completionGate != null) {
             val rejection = completionGate.invoke(status ?: "success", summary)
             if (rejection != null) {
+                gateRejections++
+                if (gateRejections > maxGateRejections) {
+                    return CompletionDecision(
+                            shouldComplete = true,
+                            summary = "Not verified: $rejection (agent claimed: $summary)",
+                            success = false
+                    )
+                }
                 return CompletionDecision(
                         shouldComplete = false,
                         summary = summary,

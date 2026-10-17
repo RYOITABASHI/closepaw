@@ -49,6 +49,7 @@ jobs:
           --tests 'ai.closepaw.tool.action.TypeExecutorTest'
           --tests 'ai.closepaw.agent.TurnOutcomeDecisionTest'
           --tests 'ai.closepaw.agent.cognition.policy.GoalCompletionContractTest'
+          --tests 'ai.closepaw.agent.cognition.policy.EvidenceLedgerTest'
           --tests 'ai.closepaw.platform.virtualdisplay.PlaybackGuardTest'
           --tests 'ai.closepaw.platform.virtualdisplay.VirtualDisplayTextInjectorTest'
           --tests 'ai.closepaw.tool.PolicyEngineTest'

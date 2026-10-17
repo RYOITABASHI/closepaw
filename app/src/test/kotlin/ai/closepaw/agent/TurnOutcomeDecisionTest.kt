@@ -186,4 +186,25 @@ class TurnOutcomeDecisionTest {
         assertThat(failedOutcome).isInstanceOf(TurnOutcome.Complete::class.java)
         assertThat((failedOutcome as TurnOutcome.Complete).success).isFalse()
     }
+
+    @Test
+    fun `after the rejection budget the task ends as a failure, never a success`() {
+        val gated = TurnToolPolicy(completionGate = { _, _ -> "NOT FINISHED: observed 1 of 3" }, maxGateRejections = 2)
+        fun attempt(): TurnOutcome {
+            val call = toolCall("complete_task", JSONObject("""{"status":"success","answer":"3 of 3"}"""))
+            val calls = listOf(call)
+            return decideTurnOutcome(
+                gated,
+                TurnResult(content = null, toolCalls = calls, isComplete = true),
+                gated.arbitrateToolCalls(calls),
+                ExecutionPhaseResult(setOf(call.id), false, ToolCallResult.Success(call.id, "ok"))
+            )
+        }
+        assertThat(attempt()).isEqualTo(TurnOutcome.Continue)
+        assertThat(attempt()).isEqualTo(TurnOutcome.Continue)
+        val last = attempt()
+        assertThat(last).isInstanceOf(TurnOutcome.Complete::class.java)
+        assertThat((last as TurnOutcome.Complete).success).isFalse()
+        assertThat(last.message).contains("Not verified")
+    }
 }
