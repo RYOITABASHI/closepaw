@@ -25,7 +25,7 @@ data class ListGoalSpec(
     companion object {
         private val QUOTED_RE = Regex("[\"“”「『]([^\"“”」』]{1,80})[\"“”」』]")
         private val FROM_RE = Regex(
-            "\\b(?:from|by|of)\\s+((?:(?!\\b(?:then|and then|keep|until|after|before|so that)\\b)[^.;:!?\\n])+)",
+            "\\b(?:from|by)\\s+((?:(?!\\b(?:then|and then|keep|until|after|before|so that|to|into|in|on|at)\\b)[^.;:!?\\n])+)",
             RegexOption.IGNORE_CASE,
         )
         private val SPLIT_RE = Regex("\\s*(?:,|;|/|&|\\band\\b|\\bor\\b)\\s*", RegexOption.IGNORE_CASE)
