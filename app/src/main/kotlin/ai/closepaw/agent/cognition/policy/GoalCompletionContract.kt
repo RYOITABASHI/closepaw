@@ -74,7 +74,9 @@ object GoalCompletionContract {
         if (status.trim().lowercase() == "failure") return null
         val required = requiredCount(goal) ?: return null
         val reported = reportedCount(answer)
-        if (observed != null && observed < required) {
+        if (observed != null) {
+            // Device-side evidence decides; the agent's own count is neither required nor trusted.
+            if (observed >= required) return null
             return "NOT FINISHED: observed $observed of $required. ClosePaw counted only $observed " +
                 "on-screen confirmation(s) such as \"Added to <playlist>\"; your own count is not " +
                 "evidence. Keep adding one item at a time and wait for each confirmation, then call " +

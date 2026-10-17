@@ -71,8 +71,8 @@ class GoalCompletionContractTest {
         assertThat(claimed).contains("observed 1 of 10")
         // Enough confirmations: the claim is accepted even without a stated count.
         assertThat(GoalCompletionContract.completionRejection(wrapped, "success", "Playlist is ready.", observed = 10)).isNull()
-        // Evidence present but the agent still claims fewer than required: still not finished.
-        assertThat(GoalCompletionContract.completionRejection(wrapped, "success", "Added 4 songs so far.", observed = 10)).isNotNull()
+        // Evidence decides: a confused self-report does not undo 10 observed confirmations.
+        assertThat(GoalCompletionContract.completionRejection(wrapped, "success", "Added 4 songs so far.", observed = 10)).isNull()
         // Declared failure is never gated.
         assertThat(GoalCompletionContract.completionRejection(wrapped, "failure", "Could not add songs.", observed = 0)).isNull()
         var observed = 0
