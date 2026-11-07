@@ -11,11 +11,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import ai.closepaw.draft.SaveDraftRequestParser
 import ai.closepaw.onboarding.OnboardingStore
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
-import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -23,8 +23,12 @@ import java.util.concurrent.Executors
 /**
  * Non-UI entry for the fixed draft routine. Same proof of origin as [ShellyGoalReceiver]: a
  * [ShellyTrustedCaller] token plus, on API 34+, the broadcast's shared sender identity. The
- * request has no goal text: `platform` and the Substack subdomain are extras, the article is a
- * `content://` file served by Shelly's own provider and read once here.
+ * request has no goal text: `platform`, the Substack subdomain and the file's SHA-256 are extras,
+ * and the article is a `content://` file served by Shelly's own provider, read once here. Nothing
+ * but the extras above is taken from the intent; anything else the run uses comes from the file.
+ *
+ * The ordered answer is given within [ShellySaveDraft.ANSWER_CAP_MS], read and parse included. A
+ * watchdog on the main thread holds that cap even if the read blocks, and a late decision refuses.
  */
 class ShellySaveDraftReceiver : BroadcastReceiver() {
 
@@ -46,6 +50,7 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
             subdomainExtra = safeString(intent, ShellySaveDraft.EXTRA_SUBSTACK_SUBDOMAIN),
             reqIdExtra = safeString(intent, ShellyBackgroundRun.EXTRA_SHELLY_REQ_ID),
             nonceExtra = safeString(intent, ShellyBackgroundRun.EXTRA_SHELLY_RESULT_NONCE),
+            sha256Extra = safeString(intent, ShellySaveDraft.EXTRA_REQUEST_SHA256),
         )
         intent.removeExtra(ShellyTrustedCaller.EXTRA_CALLER_TOKEN)
         val uri = intent.data
@@ -57,32 +62,49 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
 
         val ordered = isOrderedBroadcast
         val pending = goAsync()
+        val window = ShellySaveDraft.AnswerWindow(ShellySaveDraft.ANSWER_CAP_MS, SystemClock::elapsedRealtime)
+        val respond = { decide: () -> Pair<Int, String> ->
+            ShellySaveDraft.answer(
+                decide = decide,
+                reply = { code, data ->
+                    // Tells Shelly the run will report through ShellyResultCallback.
+                    val extras = if (code == ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY) {
+                        Bundle().apply { putInt(ShellyBackgroundRun.RESULT_EXTRA_RESULT_CALLBACK, 1) }
+                    } else {
+                        null
+                    }
+                    if (ordered) pending.setResult(code, data, extras)
+                },
+                finish = { pending.finish() },
+            )
+        }
+        val tooSlow = { ShellyBackgroundRun.RESULT_REJECTED to ShellySaveDraft.REASON_TOO_SLOW }
+        val watchdog = Runnable {
+            if (window.claim() != ShellySaveDraft.AnswerWindow.Claim.ALREADY_ANSWERED) {
+                Log.w(TAG, "request too slow; refused")
+                respond(tooSlow)
+            }
+        }
+        MAIN.postDelayed(watchdog, ShellySaveDraft.ANSWER_CAP_MS)
         WORKER.execute {
             // Disk, binder and provider work stays off the main thread. Anything thrown here,
             // errors included, ends in START_FAILED rather than a dead process or a broadcast
             // that never finishes.
             val checks = try {
-                gather(app, target, uri)
+                gather(app, target, uri, window)
             } catch (e: Throwable) {
                 Log.e(TAG, "checks failed: ${e.javaClass.simpleName}")
                 null
             }
             MAIN.post {
-                ShellySaveDraft.answer(
-                    decide = {
-                        decideAndStart(target, checks!!)
-                    },
-                    reply = { code, data ->
-                        // Tells Shelly the run will report through ShellyResultCallback.
-                        val extras = if (code == ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY) {
-                            Bundle().apply { putInt(ShellyBackgroundRun.RESULT_EXTRA_RESULT_CALLBACK, 1) }
-                        } else {
-                            null
-                        }
-                        if (ordered) pending.setResult(code, data, extras)
-                    },
-                    finish = { pending.finish() },
-                )
+                when (window.claim()) {
+                    ShellySaveDraft.AnswerWindow.Claim.ALREADY_ANSWERED -> Unit
+                    ShellySaveDraft.AnswerWindow.Claim.LATE -> respond(tooSlow)
+                    ShellySaveDraft.AnswerWindow.Claim.IN_TIME -> {
+                        MAIN.removeCallbacks(watchdog)
+                        respond { decideAndStart(target, checks!!) }
+                    }
+                }
             }
         }
     }
@@ -94,8 +116,15 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
         val locked: Boolean,
     )
 
-    private fun gather(app: Context, target: ShellySaveDraft.Target, uri: Uri): Checks {
-        val parsed = ShellySaveDraft.readRequest(target.site) { readFile(app.contentResolver, uri) }
+    private fun gather(
+        app: Context,
+        target: ShellySaveDraft.Target,
+        uri: Uri,
+        window: ShellySaveDraft.AnswerWindow,
+    ): Checks {
+        val parsed = ShellySaveDraft.readRequest(target.site, target.requestSha256) {
+            readFile(app.contentResolver, uri, window)
+        }
         val virtualDisplayReady = try {
             ShizukuClient().let { it.isAvailable() && it.hasPermission() }
         } catch (e: Throwable) {
@@ -159,19 +188,10 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun readFile(resolver: ContentResolver, uri: Uri): String {
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(64 * 1024)
+    private fun readFile(resolver: ContentResolver, uri: Uri, window: ShellySaveDraft.AnswerWindow): ByteArray =
         resolver.openInputStream(uri)?.use { input ->
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                out.write(buffer, 0, read)
-                if (out.size() > SaveDraftRequestParser.MAX_FILE_BYTES) throw IOException("file too large")
-            }
+            ShellySaveDraft.readLimited(input, SaveDraftRequestParser.MAX_FILE_BYTES, window::isExpired)
         } ?: throw IOException("no stream")
-        return out.toString(Charsets.UTF_8.name())
-    }
 
     private fun sentFromPackageSafe(): String? = try {
         if (Build.VERSION.SDK_INT >= 34) sentFromPackage else null
@@ -188,7 +208,8 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
     private companion object {
         const val TAG = "ShellySaveDraftReceiver"
         const val RESULT_DATA_REJECTED = "REJECTED"
-        val WORKER: ExecutorService = Executors.newSingleThreadExecutor()
+        // Cached, not single: a read stuck in a provider must not hold up the next request.
+        val WORKER: ExecutorService = Executors.newCachedThreadPool()
         val MAIN = Handler(Looper.getMainLooper())
         val REPLAY_GUARD = ShellySaveDraft.ReplayGuard()
     }

@@ -25,6 +25,8 @@ class SaveDraftRequest(
  * `images` is used on note only. `image_hosts` is the exact-host list for `img` in the HTML, used
  * on Substack only and empty by default. Unknown keys are refused, so a newer Shelly fails visibly
  * instead of having a field silently ignored.
+ *
+ * Call this through ShellySaveDraft.readRequest, which verifies the bytes first.
  */
 object SaveDraftRequestParser {
     /** Upper bound for the whole file, enforced while reading it. */

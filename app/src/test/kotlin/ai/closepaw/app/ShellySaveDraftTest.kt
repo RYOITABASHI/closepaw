@@ -18,7 +18,8 @@ class ShellySaveDraftTest {
         subdomain: String? = null,
         req: String? = reqId,
         non: String? = nonce,
-    ) = ShellySaveDraft.parseTarget(action, verified, platform, subdomain, req, non)
+        sha: String? = "a".repeat(64),
+    ) = ShellySaveDraft.parseTarget(action, verified, platform, subdomain, req, non, sha)
 
     @Test
     fun `a verified request becomes a target`() {
@@ -37,6 +38,17 @@ class ShellySaveDraftTest {
         assertThat(target(platform = "substack")).isNull()
         assertThat(target(platform = "substack", subdomain = "evil.com/")).isNull()
         assertThat(target(subdomain = "unexpected")).isNull()
+    }
+
+    @Test
+    fun `the file hash is required and must be lowercase SHA-256 hex`() {
+        assertThat(target()!!.requestSha256).isEqualTo("a".repeat(64))
+        assertThat(target(sha = null)).isNull()
+        assertThat(target(sha = "")).isNull()
+        assertThat(target(sha = "a".repeat(63))).isNull()
+        assertThat(target(sha = "a".repeat(65))).isNull()
+        assertThat(target(sha = "A".repeat(64))).isNull()
+        assertThat(target(sha = "g".repeat(64))).isNull()
     }
 
     @Test
@@ -90,8 +102,14 @@ class ShellySaveDraftTest {
 
     private val site = DraftSite.of(DraftPlatform.NOTE, null)!!
 
-    private fun badReason(read: () -> String): String =
-        (ShellySaveDraft.readRequest(site, read) as SaveDraftRequestParser.Parsed.Bad).reason
+    private fun sha256(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private fun badReason(read: () -> ByteArray): String =
+        (ShellySaveDraft.readRequest(site, "a".repeat(64), read) as SaveDraftRequestParser.Parsed.Bad).reason
+
+    private fun fileBytes(html: String, extra: String = ""): ByteArray =
+        "{\"version\":1,\"title\":\"t\",\"html\":\"$html\"$extra}".toByteArray()
 
     @Test
     fun `errors from hostile input become a refusal, not a dead process`() {
@@ -104,8 +122,143 @@ class ShellySaveDraftTest {
     @Test
     fun `a file of thousands of attributes is refused whole`() {
         val html = "<p" + " a=\\\"b\\\"".repeat(50_000) + ">t</p>"
-        val text = "{\"version\":1,\"title\":\"t\",\"html\":\"$html\"}"
-        assertThat(badReason { text }).isEqualTo("html-unreadable-tag")
+        val bytes = fileBytes(html)
+        val parsed = ShellySaveDraft.readRequest(site, sha256(bytes)) { bytes }
+        assertThat((parsed as SaveDraftRequestParser.Parsed.Bad).reason).isEqualTo("html-unreadable-tag")
+    }
+
+    // ── File hash ──
+
+    private val substackSite = DraftSite.of(DraftPlatform.SUBSTACK, "example-pub")!!
+    private val imageHtml = "<img src=\\\"https://img.example.com/a.jpg\\\">some text here"
+    private val hostsField = ",\"image_hosts\":[\"img.example.com\"]"
+
+    @Test
+    fun `the bytes that match the hash are what get parsed`() {
+        val bytes = fileBytes(imageHtml, hostsField)
+        val parsed = ShellySaveDraft.readRequest(substackSite, sha256(bytes)) { bytes }
+        assertThat(parsed).isInstanceOf(SaveDraftRequestParser.Parsed.Ok::class.java)
+    }
+
+    @Test
+    fun `any change to the file after approval is refused before parsing`() {
+        val approved = fileBytes("<p>some approved text</p>")
+        val swapped = fileBytes(imageHtml, hostsField)
+        val parsed = ShellySaveDraft.readRequest(substackSite, sha256(approved)) { swapped }
+        assertThat((parsed as SaveDraftRequestParser.Parsed.Bad).reason).isEqualTo("request-hash-mismatch")
+
+        val oneByte = approved.copyOf().also { it[it.size - 3] = (it[it.size - 3] + 1).toByte() }
+        val again = ShellySaveDraft.readRequest(site, sha256(approved)) { oneByte }
+        assertThat((again as SaveDraftRequestParser.Parsed.Bad).reason).isEqualTo("request-hash-mismatch")
+    }
+
+    @Test
+    fun `garbage with a wrong hash reports the hash, proving nothing was parsed first`() {
+        assertThat(badReason { "not json".toByteArray() }).isEqualTo("request-hash-mismatch")
+    }
+
+    @Test
+    fun `the file is read exactly once`() {
+        val bytes = fileBytes("<p>some body text</p>")
+        var reads = 0
+        ShellySaveDraft.readRequest(site, sha256(bytes)) {
+            reads++
+            bytes
+        }
+        assertThat(reads).isEqualTo(1)
+    }
+
+    @Test
+    fun `invalid UTF-8 is refused, not replaced`() {
+        val bytes = byteArrayOf(0x7B, 0xC3.toByte(), 0x28, 0x7D)
+        val parsed = ShellySaveDraft.readRequest(site, sha256(bytes)) { bytes }
+        assertThat((parsed as SaveDraftRequestParser.Parsed.Bad).reason).isEqualTo("file-not-utf8")
+    }
+
+    @Test
+    fun `image hosts are never taken from the intent`() {
+        val source = java.io.File("src/main/kotlin/ai/closepaw/app/ShellySaveDraftReceiver.kt").readText()
+        assertThat(source).doesNotContain("image_hosts")
+        assertThat(source.lowercase()).doesNotContain("imagehosts")
+        assertThat(source).doesNotContain("SaveDraftRequestParser.parse(")
+        assertThat(source).contains("ShellySaveDraft.readRequest(target.site, target.requestSha256)")
+    }
+
+    // ── Reading under the cap ──
+
+    @Test
+    fun `a read stops at the size limit and at the deadline`() {
+        val input = { java.io.ByteArrayInputStream(ByteArray(300_000)) }
+        assertThat(ShellySaveDraft.readLimited(input(), 300_000) { false }).hasLength(300_000)
+        assertThat(runCatching { ShellySaveDraft.readLimited(input(), 299_999) { false } }.exceptionOrNull())
+            .isInstanceOf(java.io.IOException::class.java)
+        assertThat(runCatching { ShellySaveDraft.readLimited(input(), 300_000) { true } }.exceptionOrNull())
+            .isInstanceOf(java.io.IOException::class.java)
+    }
+
+    @Test
+    fun `the deadline ends a slow read part way`() {
+        var checks = 0
+        val failure = runCatching {
+            ShellySaveDraft.readLimited(java.io.ByteArrayInputStream(ByteArray(1_000_000)), 2_000_000) { ++checks > 3 }
+        }.exceptionOrNull()
+        assertThat(failure).isInstanceOf(java.io.IOException::class.java)
+        assertThat(checks).isEqualTo(4)
+    }
+
+    private class Clock(var ms: Long = 1_000L)
+
+    private fun window(clock: Clock) = ShellySaveDraft.AnswerWindow(ShellySaveDraft.ANSWER_CAP_MS) { clock.ms }
+
+    @Test
+    fun `the cap sits well under the caller's wait and the system limit`() {
+        assertThat(ShellySaveDraft.ANSWER_CAP_MS).isAtMost(3_000L)
+    }
+
+    @Test
+    fun `a decision in time may start`() {
+        val clock = Clock()
+        val window = window(clock)
+        clock.ms += ShellySaveDraft.ANSWER_CAP_MS - 1
+        assertThat(window.isExpired()).isFalse()
+        assertThat(window.claim()).isEqualTo(ShellySaveDraft.AnswerWindow.Claim.IN_TIME)
+    }
+
+    @Test
+    fun `a decision after the cap is refused, even if the watchdog has not run`() {
+        val clock = Clock()
+        val window = window(clock)
+        clock.ms += ShellySaveDraft.ANSWER_CAP_MS
+        assertThat(window.isExpired()).isTrue()
+        assertThat(window.claim()).isEqualTo(ShellySaveDraft.AnswerWindow.Claim.LATE)
+    }
+
+    @Test
+    fun `only the first claim answers, so a late worker cannot start after the watchdog`() {
+        val clock = Clock()
+        val window = window(clock)
+        clock.ms += ShellySaveDraft.ANSWER_CAP_MS
+        assertThat(window.claim()).isEqualTo(ShellySaveDraft.AnswerWindow.Claim.LATE)
+        assertThat(window.claim()).isEqualTo(ShellySaveDraft.AnswerWindow.Claim.ALREADY_ANSWERED)
+    }
+
+    @Test
+    fun `the watchdog cannot answer after the worker has`() {
+        val clock = Clock()
+        val window = window(clock)
+        assertThat(window.claim()).isEqualTo(ShellySaveDraft.AnswerWindow.Claim.IN_TIME)
+        clock.ms += ShellySaveDraft.ANSWER_CAP_MS
+        assertThat(window.claim()).isEqualTo(ShellySaveDraft.AnswerWindow.Claim.ALREADY_ANSWERED)
+    }
+
+    @Test
+    fun `the receiver starts a run only from an in-time claim`() {
+        val source = java.io.File("src/main/kotlin/ai/closepaw/app/ShellySaveDraftReceiver.kt").readText()
+            .replace("\r\n", "\n")
+        assertThat(source).contains("MAIN.postDelayed(watchdog, ShellySaveDraft.ANSWER_CAP_MS)")
+        assertThat(Regex("decideAndStart\\(target").findAll(source).count()).isEqualTo(1)
+        val inTime = source.substringAfter("Claim.IN_TIME -> {").substringBefore("}\n")
+        assertThat(inTime).contains("respond { decideAndStart(target, checks!!)")
     }
 
     @Test
