@@ -19,9 +19,12 @@ class SaveDraftRequest(
 
 /**
  * Parser for the one-shot file Shelly hands over:
- * `{"version":1,"title":"…","html":"…","images":[{"name":"…","mime":"…","base64":"…"}]}`.
- * `images` is optional and is used on note only. Unknown keys are refused, so a newer Shelly
- * fails visibly instead of having a field silently ignored.
+ * `{"version":1,"title":"…","html":"…","images":[{"name":"…","mime":"…","base64":"…"}],
+ * "image_hosts":["…"]}`.
+ *
+ * `images` is used on note only. `image_hosts` is the exact-host list for `img` in the HTML, used
+ * on Substack only and empty by default. Unknown keys are refused, so a newer Shelly fails visibly
+ * instead of having a field silently ignored.
  */
 object SaveDraftRequestParser {
     /** Upper bound for the whole file, enforced while reading it. */
@@ -30,7 +33,8 @@ object SaveDraftRequestParser {
     private const val MAX_HTML_CHARS = 1024 * 1024
     private const val MAX_IMAGES = 4
     private const val MAX_IMAGE_BYTES = 6 * 1024 * 1024
-    private val TOP_KEYS = setOf("version", "title", "html", "images")
+    private const val MAX_IMAGE_HOSTS = 8
+    private val TOP_KEYS = setOf("version", "title", "html", "images", "image_hosts")
     private val IMAGE_KEYS = setOf("name", "mime", "base64")
     private val MIME_TYPES = setOf("image/jpeg", "image/png", "image/webp", "image/gif")
     private val IMAGE_NAME_RE = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -48,14 +52,19 @@ object SaveDraftRequestParser {
             null
         } ?: return Parsed.Bad("file-not-json")
         if (!TOP_KEYS.containsAll(root.keys)) return Parsed.Bad("file-unknown-key")
-        if (string(root, "version") != "1") return Parsed.Bad("file-version")
+        if (!isVersionOne(root)) return Parsed.Bad("file-version")
 
         val title = string(root, "title")?.trim()
             ?.takeIf { it.isNotEmpty() && it.length <= MAX_TITLE_CHARS && !CONTROL_RE.containsMatchIn(it) }
             ?: return Parsed.Bad("title-invalid")
         val html = string(root, "html")?.takeIf { it.length <= MAX_HTML_CHARS }
             ?: return Parsed.Bad("html-invalid")
-        ArticleHtmlPolicy.rejection(html)?.let { return Parsed.Bad(it) }
+        val imageHosts = when (val raw = root["image_hosts"]) {
+            null -> emptySet()
+            is JsonArray -> parseImageHosts(raw) ?: return Parsed.Bad("image-hosts-invalid")
+            else -> return Parsed.Bad("image-hosts-invalid")
+        }
+        ArticleHtmlPolicy.rejection(html, site.platform, imageHosts)?.let { return Parsed.Bad(it) }
         val samples = ArticleHtmlPolicy.samples(html)
         if (samples.isEmpty()) return Parsed.Bad("html-no-sample")
 
@@ -73,6 +82,20 @@ object SaveDraftRequestParser {
                 images = if (site.platform == DraftPlatform.NOTE) images else emptyList(),
             ),
         )
+    }
+
+    private fun isVersionOne(root: JsonObject): Boolean {
+        val version = root["version"] as? JsonPrimitive ?: return false
+        return !version.isString && version.content == "1"
+    }
+
+    private fun parseImageHosts(raw: JsonArray): Set<String>? {
+        if (raw.size > MAX_IMAGE_HOSTS) return null
+        return raw.map { element ->
+            val primitive = element as? JsonPrimitive ?: return null
+            if (!primitive.isString || !ArticleHtmlPolicy.isAllowableImageHost(primitive.content)) return null
+            primitive.content
+        }.toSet()
     }
 
     private fun parseImages(raw: JsonArray): List<DraftImage>? {
@@ -94,6 +117,7 @@ object SaveDraftRequestParser {
         -1
     }
 
+    /** A JSON string only: `null` and numbers are also primitives, and their content is text. */
     private fun string(obj: JsonObject, key: String): String? =
-        (obj[key] as? JsonPrimitive)?.content
+        (obj[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 }

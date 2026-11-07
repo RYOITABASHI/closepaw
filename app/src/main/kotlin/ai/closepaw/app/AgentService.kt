@@ -160,6 +160,9 @@ class AgentService : AccessibilityService() {
     /** The running draft routine, if any. Set and cleared on the main thread. */
     private var draftJob: Job? = null
 
+    /** Why the running draft routine was stopped from outside. Main thread. */
+    private var draftStopReason: String? = null
+
     fun observeExternalSession(
             externalSession: AgentSession,
             platformMode: PlatformMode = PlatformMode.ACCESSIBILITY
@@ -680,9 +683,9 @@ class AgentService : AccessibilityService() {
         }
     }
 
-    /** True when Chrome is what the user has in front on the main display. */
+    /** True when Chrome is, or may be, what the user has in front on the main display. */
     internal fun isChromeInFront(): Boolean =
-            currentForegroundPackageOnDefaultDisplay() == ChromeFlagDeepLink.CHROME_PACKAGE
+            ShellySaveDraft.chromeInFront(currentForegroundPackageOnDefaultDisplay())
 
     /**
      * Runs the fixed draft routine for a verified Shelly request. Unlike [startShellyRun] it opens
@@ -695,19 +698,23 @@ class AgentService : AccessibilityService() {
             correlation: ShellyBackgroundRun.ResultCorrelation,
     ) {
         shellyNotifier.render(ShellyRunState.Working(false, listOf(ChromeFlagDeepLink.CHROME_PACKAGE)))
+        // Same evidence window as a goal run, so a toast seen during this run is not left for
+        // the next one. It does not decide the save: the routine's own probes do.
+        UnattendedEvidence.start()
         val browser = ChromeDraftBrowser(this, serviceScope)
-        val routine = SaveDraftRoutine(browser)
+        val routine = SaveDraftRoutine(browser, request, ownerHasChrome = ::isChromeInFront)
+        draftStopReason = null
         draftJob = serviceScope.launch(Dispatchers.Default) {
             var result: SaveDraftResult? = null
             try {
                 result = if (browser.start()) {
-                    routine.run(request)
+                    routine.run()
                 } else {
                     routine.resultSoFar("virtual-display-unavailable")
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.w(TAG, "Draft routine failed: ${e.javaClass.simpleName}")
                 result = routine.resultSoFar("error-${e.javaClass.simpleName}")
             } finally {
@@ -719,7 +726,11 @@ class AgentService : AccessibilityService() {
                     }
                     withContext(Dispatchers.Main) {
                         draftJob = null
-                        finishShellySaveDraft(result ?: routine.resultSoFar("stopped"), correlation)
+                        UnattendedEvidence.stop()
+                        finishShellySaveDraft(
+                                result ?: routine.resultSoFar(draftStopReason ?: "stopped"),
+                                correlation,
+                        )
                     }
                 }
             }
@@ -915,6 +926,20 @@ class AgentService : AccessibilityService() {
     }
 
     private fun trackShellyRunWindow(packageName: String?, className: String?, displayId: Int) {
+        // A draft run has no tracker, so this comes first. The owner's Chrome wins at once.
+        draftJob?.let { job ->
+            val opened = ShellySaveDraft.ownerOpenedChrome(
+                    packageName,
+                    isActivityWindowClass(className),
+                    displayId == Display.DEFAULT_DISPLAY,
+            )
+            if (opened) {
+                Log.i(TAG, "Draft routine: owner opened Chrome; stopping")
+                draftStopReason = "chrome-opened"
+                job.cancel()
+            }
+            return
+        }
         val tracker = shellyRun ?: return
         if (!isActivityWindowClass(className)) return
         if (displayId != Display.DEFAULT_DISPLAY) {

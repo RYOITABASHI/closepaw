@@ -162,6 +162,11 @@ class ShizukuClient {
         return shellExecutor.execute(command)
     }
 
+    /** [executeShellCommand] for a command that must not reach logcat. */
+    fun executeQuietShellCommand(command: Array<String>): Int {
+        return shellExecutor.execute(command, quiet = true)
+    }
+
     // ── Proxy Lifecycle ──────────────────────────────────────────
 
     /**

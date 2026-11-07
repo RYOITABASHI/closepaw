@@ -1,7 +1,9 @@
 package ai.closepaw.app
 
+import ai.closepaw.browser.setup.ChromeFlagDeepLink
 import ai.closepaw.draft.DraftPlatform
 import ai.closepaw.draft.DraftSite
+import ai.closepaw.draft.SaveDraftRequestParser
 
 /**
  * Pure rules for the draft entry ([ShellySaveDraftReceiver]). Result codes follow
@@ -42,6 +44,39 @@ object ShellySaveDraft {
         return Target(site, correlation)
     }
 
+    /**
+     * Reads and parses the file, turning every failure into a refusal. [Throwable] on purpose: the
+     * input is hostile, and a [StackOverflowError] or [OutOfMemoryError] left to escape this worker
+     * would kill the process, and with it every other run.
+     */
+    fun readRequest(site: DraftSite, read: () -> String): SaveDraftRequestParser.Parsed = try {
+        SaveDraftRequestParser.parse(site, read())
+    } catch (e: SecurityException) {
+        SaveDraftRequestParser.Parsed.Bad("file-no-grant")
+    } catch (e: Throwable) {
+        SaveDraftRequestParser.Parsed.Bad("file-unreadable")
+    }
+
+    /** The broadcast's answer, whatever [decide] does. [finish] runs exactly once, last. */
+    fun answer(
+        decide: () -> Pair<Int, String>,
+        reply: (Int, String) -> Unit,
+        finish: () -> Unit,
+    ) {
+        try {
+            val (code, data) = try {
+                decide()
+            } catch (e: Throwable) {
+                ShellyBackgroundRun.RESULT_REJECTED to "START_FAILED"
+            }
+            reply(code, data)
+        } catch (e: Throwable) {
+            // Nothing left to tell the caller; only finish() must still happen.
+        } finally {
+            finish()
+        }
+    }
+
     /** The result code that refuses this run, or null to start it. */
     fun refusal(
         accessibilityConnected: Boolean,
@@ -59,6 +94,14 @@ object ShellySaveDraft {
         chromeInFront -> RESULT_CHROME_IN_USE
         else -> null
     }
+
+    /** Fails closed: an unknown foreground app counts as Chrome. */
+    fun chromeInFront(foregroundPackage: String?): Boolean =
+        foregroundPackage == null || foregroundPackage == ChromeFlagDeepLink.CHROME_PACKAGE
+
+    /** A window event that means the owner just opened Chrome on the main display. */
+    fun ownerOpenedChrome(packageName: String?, isActivityWindow: Boolean, onMainDisplay: Boolean): Boolean =
+        isActivityWindow && onMainDisplay && packageName == ChromeFlagDeepLink.CHROME_PACKAGE
 
     /** Remembers request ids, so one approved request starts at most one run. */
     class ReplayGuard {

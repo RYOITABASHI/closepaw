@@ -5,6 +5,10 @@ import kotlinx.serialization.json.JsonObject
 private const val BODY_LOOKUP =
     "document.querySelector('.ProseMirror[contenteditable=true]') || document.querySelector('[contenteditable=true]')"
 
+/** First line of every script that changes the page: do nothing unless this is the same draft. */
+private const val SAME_DRAFT =
+    "if (location.href !== a.editorUrl) return { ok: false, moved: true };"
+
 private const val CARET_TO_END =
     "body.focus(); var selection = getSelection(); selection.selectAllChildren(body); selection.collapseToEnd();"
 
@@ -16,30 +20,36 @@ private const val IMAGE_FILE =
 /** The one control the routine may press, on note only. */
 internal const val NOTE_SAVE_LABEL = "下書き保存"
 
+/** The words of note's saved toast. An editor can hold them too, so only text outside counts. */
+private const val NOTE_SAVED_WORDS = "保存しました"
+
 /**
  * Every JavaScript string the routine can run in the editor tab. [DraftBrowser.evaluate] takes
  * this enum, so no expression can be built from request data: values travel only in the JSON
  * argument of [expression].
  *
- * SaveDraftScriptsTest scans this file. It must never name any other control, and comments count.
+ * SaveDraftScriptsTest scans this file, comments included, and pins each script's full text.
  */
 enum class DraftScript(val source: String) {
-    /** Is the exact title on a line of the draft list? */
+    /** Rows of the draft list that hold a link, and which of them show the exact title. */
     LIST_PROBE(
         """
         function (a) {
           var norm = function (s) { return s.replace(/\s+/g, ' ').trim(); };
           var want = norm(a.title);
-          var lines = (document.body ? document.body.innerText : '').split('\n').map(norm);
-          var found = lines.indexOf(want) >= 0;
-          var url = null;
-          if (found) {
-            var links = document.querySelectorAll('a[href]');
-            for (var i = 0; i < links.length; i++) {
-              if (norm(links[i].textContent).indexOf(want) >= 0) { url = links[i].href; break; }
+          var rows = [];
+          var items = document.querySelectorAll('li, [role=listitem], article, tr');
+          for (var i = 0; i < items.length && rows.length < 200; i++) {
+            var anchors = items[i].querySelectorAll('a[href]');
+            var hrefs = [];
+            for (var j = 0; j < anchors.length && hrefs.length < 8; j++) hrefs.push(anchors[j].href);
+            var outer = items[i].closest('a[href]');
+            if (outer) hrefs.push(outer.href);
+            if (hrefs.length > 0) {
+              rows.push({ hrefs: hrefs, match: items[i].innerText.split('\n').map(norm).indexOf(want) >= 0 });
             }
           }
-          return { href: location.href, ready: document.readyState === 'complete', found: found, url: url };
+          return { href: location.href, rows: rows };
         }
         """,
     ),
@@ -65,6 +75,7 @@ enum class DraftScript(val source: String) {
     SET_TITLE(
         """
         function (a) {
+          $SAME_DRAFT
           var title = document.querySelector('textarea');
           if (!title) return { ok: false };
           var setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
@@ -80,6 +91,7 @@ enum class DraftScript(val source: String) {
     PASTE_HTML(
         """
         function (a) {
+          $SAME_DRAFT
           var body = $BODY_LOOKUP;
           if (!body) return { ok: false };
           $CARET_TO_END
@@ -104,6 +116,7 @@ enum class DraftScript(val source: String) {
     PASTE_IMAGE(
         """
         function (a) {
+          $SAME_DRAFT
           var body = $BODY_LOOKUP;
           if (!body) return { ok: false };
           $CARET_TO_END
@@ -121,6 +134,7 @@ enum class DraftScript(val source: String) {
     FILE_INPUT_IMAGE(
         """
         function (a) {
+          $SAME_DRAFT
           var input = document.querySelector('input[type=file]');
           if (!input) return { ok: false };
           $IMAGE_FILE
@@ -131,16 +145,16 @@ enum class DraftScript(val source: String) {
         """,
     ),
 
-    /** Do the title and every sample appear in the live editor? */
+    /** Do the title and every sample appear in the live editor of this draft? */
     READ_BACK(
         """
         function (a) {
+          $SAME_DRAFT
           var norm = function (s) { return s.replace(/\s+/g, ' ').trim(); };
           var title = document.querySelector('textarea');
           var body = $BODY_LOOKUP;
           var text = body ? norm(body.textContent) : '';
           return {
-            href: location.href,
             titleOk: !!title && title.value === a.title,
             bodyOk: a.samples.every(function (s) { return text.indexOf(s) >= 0; }),
           };
@@ -152,28 +166,64 @@ enum class DraftScript(val source: String) {
     NOTE_SAVE_CLICK(
         """
         function (a) {
+          $SAME_DRAFT
           var matches = [];
           var buttons = document.querySelectorAll('button');
           for (var i = 0; i < buttons.length; i++) {
             if (buttons[i].textContent.trim() === '$NOTE_SAVE_LABEL') matches.push(buttons[i]);
           }
-          if (matches.length !== 1 || matches[0].disabled) return { clicked: false, matches: matches.length };
+          if (matches.length !== 1 || matches[0].disabled) return { ok: false, matches: matches.length };
           var at = performance.now();
           matches[0].click();
-          return { clicked: true, matches: 1, at: at };
+          return { ok: true, matches: 1, at: at };
         }
         """,
     ),
 
-    /** note only: a saved toast, or a finished save request after the click. */
+    /**
+     * note only. Saved means all of: the saved words outside the editor, a 2xx answer after the
+     * click from a note API on the same site, and no stored copy that disagrees. An image or the
+     * article's own text cannot supply either signal: the first ignores the editor and a title
+     * that holds the words, the second accepts only fetch or XHR and needs a real status.
+     */
     NOTE_SAVED_PROBE(
         """
         function (a) {
-          var toast = /保存しました/.test(document.body ? document.body.innerText : '');
-          var request = performance.getEntriesByType('resource').some(function (entry) {
-            return entry.startTime >= a.at && entry.responseEnd > 0 && entry.name.indexOf('draft_save') >= 0;
+          $SAME_DRAFT
+          var norm = function (s) { return s.replace(/\s+/g, ' ').trim(); };
+          var words = '$NOTE_SAVED_WORDS';
+          var editor = $BODY_LOOKUP;
+          var outside = false;
+          if (a.title.indexOf(words) < 0) {
+            var all = document.body.querySelectorAll('*');
+            for (var i = 0; i < all.length && !outside; i++) {
+              var el = all[i];
+              var leaf = el.children.length === 0 && el.tagName !== 'TEXTAREA';
+              if (leaf && !(editor && editor.contains(el))) outside = el.textContent.indexOf(words) >= 0;
+            }
+          }
+          var api = performance.getEntriesByType('resource').some(function (entry) {
+            if (entry.startTime < a.at) return false;
+            if (entry.initiatorType !== 'fetch' && entry.initiatorType !== 'xmlhttprequest') return false;
+            if (!(entry.responseStatus >= 200 && entry.responseStatus < 300)) return false;
+            var url = new URL(entry.name);
+            var host = url.hostname === 'note.com' || url.hostname === 'editor.note.com';
+            return host && url.pathname.indexOf('/api/') === 0 && url.pathname.indexOf('draft_save') >= 0;
           });
-          return { saved: toast || request };
+          var evidence = 'outside=' + outside + ' api=' + api;
+          if (!outside || !api) return { ok: true, saved: false, evidence: evidence };
+          return fetch('https://note.com/api/v3/notes/' + encodeURIComponent(a.key) + '?draft=true', { credentials: 'include' })
+            .then(function (response) {
+              if (!response.ok) return { ok: true, saved: true, evidence: evidence + ' stored=unread-' + response.status };
+              return response.json().then(function (json) {
+                var note = json.data || {};
+                var html = note.body || '';
+                var text = norm(new DOMParser().parseFromString(html, 'text/html').body.textContent);
+                var same = note.name === a.title && a.samples.every(function (s) { return text.indexOf(s) >= 0; });
+                return { ok: true, saved: same, evidence: evidence + ' stored=' + (same ? 'same' : 'different') };
+              });
+            })
+            .catch(function () { return { ok: true, saved: true, evidence: evidence + ' stored=unread' }; });
         }
         """,
     ),
@@ -182,6 +232,7 @@ enum class DraftScript(val source: String) {
     SUBSTACK_SAVED_PROBE(
         """
         function (a) {
+          $SAME_DRAFT
           var norm = function (s) { return s.replace(/\s+/g, ' ').trim(); };
           var collect = function (node) {
             if (!node || typeof node !== 'object') return '';
@@ -190,18 +241,19 @@ enum class DraftScript(val source: String) {
           var storedText = function (raw) {
             try { return norm(collect(JSON.parse(raw))); } catch (e) { return norm(String(raw)); }
           };
-          return fetch('/api/v1/drafts/' + encodeURIComponent(a.id), { credentials: 'same-origin' })
+          return fetch('/api/v1/drafts/' + encodeURIComponent(a.key), { credentials: 'same-origin' })
             .then(function (response) {
-              if (!response.ok) return { saved: false, http: response.status };
+              if (!response.ok) return { ok: true, saved: false, evidence: 'http=' + response.status };
               return response.json().then(function (draft) {
                 var text = storedText(draft.draft_body);
                 return {
+                  ok: true,
                   saved: draft.draft_title === a.title && a.samples.every(function (s) { return text.indexOf(s) >= 0; }),
-                  http: response.status,
+                  evidence: 'http=' + response.status,
                 };
               });
             })
-            .catch(function () { return { saved: false, http: 0 }; });
+            .catch(function () { return { ok: true, saved: false, evidence: 'http=0' }; });
         }
         """,
     );

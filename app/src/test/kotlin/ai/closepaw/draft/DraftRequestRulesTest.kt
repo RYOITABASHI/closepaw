@@ -14,6 +14,11 @@ class DraftRequestRulesTest {
     private val substack = DraftSite.of(DraftPlatform.SUBSTACK, "example-pub")!!
     private val note = DraftSite.of(DraftPlatform.NOTE, null)!!
 
+    private fun onSubstack(html: String, hosts: Set<String> = emptySet()) =
+        ArticleHtmlPolicy.rejection(html, DraftPlatform.SUBSTACK, hosts)
+
+    private fun onNote(html: String) = ArticleHtmlPolicy.rejection(html, DraftPlatform.NOTE)
+
     // ── Sites ──
 
     @Test
@@ -57,13 +62,14 @@ class DraftRequestRulesTest {
         assertThat(note.isEditorUrl("https://editor.note.com/notes/n0a1b2c3d/publish/")).isFalse()
     }
 
-    // ── HTML ──
+    // ── HTML: structure ──
 
     @Test
     fun `plain article markup passes`() {
         val html = """<h2>Head</h2><p>Text with <a href="https://example.com/a?x=1&amp;y=2">a link</a>, <strong>bold</strong> &amp; more.</p>""" +
-            """<ul><li>One</li></ul><figure><img src="https://example.com/a.jpg" alt="x"><figcaption>c</figcaption></figure><br/>"""
-        assertThat(ArticleHtmlPolicy.rejection(html)).isNull()
+            """<ul><li>One</li></ul><br/><hr />"""
+        assertThat(onSubstack(html)).isNull()
+        assertThat(onNote(html)).isNull()
     }
 
     @Test
@@ -84,17 +90,161 @@ class DraftRequestRulesTest {
             "<style>*{}</style>t",
             "<!-- c --><p>t</p>",
             "<p>t</p onclick=\"x()\">",
+            "<p/onclick=\"x()\">t</p>",
             "<p>t<",
             "a < b",
             "<p style=\"color:red\">t</p>",
             "<p\nonclick='x()'>t</p>",
-        ).forEach { assertThat(ArticleHtmlPolicy.rejection(it)).isNotNull() }
+            "<a href=\"https://e.com\"href=\"https://f.com\">t</a>",
+            "<a href=\"https://e.com\" href=\"https://f.com\">t</a>",
+            "<a href='https://e.com'>t</a>",
+        ).forEach { assertThat(onSubstack(it)).isNotNull() }
     }
 
     @Test
     fun `a body with no text is refused`() {
-        assertThat(ArticleHtmlPolicy.rejection("<p> </p><br/>")).isEqualTo("html-no-text")
+        assertThat(onSubstack("<p> </p><br/>")).isEqualTo("html-no-text")
     }
+
+    // ── HTML: whitespace agrees with the tokenizer ──
+
+    @Test
+    fun `whitespace a browser does not count ends no tag`() {
+        listOf("\u000B", " ", "　", " ", "\u0085").forEach { space ->
+            assertThat(onSubstack("<p${space}onclick=\"x()\">t</p>")).isNotNull()
+            assertThat(onSubstack("<a${space}href=\"https://e.com\">t</a>")).isNotNull()
+            assertThat(onSubstack("<a href=\"https://e.com\"${space}>t</a>")).isNotNull()
+            assertThat(onSubstack("<br$space/>t")).isNotNull()
+        }
+    }
+
+    @Test
+    fun `the HTML tokenizer's own whitespace is accepted`() {
+        listOf(" ", "\t", "\n", "\u000C", "\r").forEach { space ->
+            assertThat(onSubstack("<a${space}href=\"https://e.com\"$space>t</a>")).isNull()
+        }
+    }
+
+    @Test
+    fun `those characters are refused inside alt values and URLs too`() {
+        val hosts = setOf("img.example.com")
+        val ok = "<img src=\"https://img.example.com/a.jpg\" alt=\"a b\">t"
+        assertThat(onSubstack(ok, hosts)).isNull()
+        listOf("\u000B", " ", "　", "​", "‮", "\t", "\n").forEach { char ->
+            val html = "<img src=\"https://img.example.com/a.jpg\" alt=\"a${char}b\">t"
+            assertThat(onSubstack(html, hosts)).isEqualTo("html-unreadable-tag")
+            assertThat(onSubstack("<a href=\"https://e.com/${char}x\">t</a>")).isNotNull()
+        }
+    }
+
+    // ── HTML: hostile size ──
+
+    @Test
+    fun `thousands of attributes neither overflow nor pass`() {
+        val many = " a=\"b\"".repeat(50_000)
+        assertThat(onSubstack("<p$many>t</p>")).isEqualTo("html-unreadable-tag")
+        val manyValid = " href=\"https://e.com\"".repeat(50_000)
+        assertThat(onSubstack("<a$manyValid>t</a>")).isEqualTo("html-unreadable-tag")
+    }
+
+    @Test
+    fun `a tag longer than the limit is refused, and so is a huge value`() {
+        assertThat(onSubstack("<a href=\"https://e.com/${"x".repeat(5_000)}\">t</a>")).isEqualTo("html-unreadable-tag")
+        assertThat(onSubstack("<p${" ".repeat(5_000)}>t</p>")).isEqualTo("html-unreadable-tag")
+        assertThat(onSubstack("<a href=\"https://e.com/${"x".repeat(2_000)}\">t</a>")).isNull()
+    }
+
+    @Test
+    fun `a megabyte of tags scans in linear time`() {
+        val html = "<p>t</p>".repeat(130_000)
+        assertThat(onSubstack(html)).isNull()
+        assertThat(ArticleHtmlPolicy.samples("<p>first of many paragraphs</p>" + html)).isNotEmpty()
+    }
+
+    // ── HTML: images ──
+
+    @Test
+    fun `note refuses every img, whatever its host`() {
+        assertThat(onNote("<img src=\"https://img.example.com/a.jpg\">t")).isEqualTo("html-image-not-allowed")
+        assertThat(ArticleHtmlPolicy.rejection("<img src=\"https://img.example.com/a.jpg\">t", DraftPlatform.NOTE, setOf("img.example.com")))
+            .isEqualTo("html-image-not-allowed")
+    }
+
+    @Test
+    fun `substack refuses img by default and takes exact hosts only`() {
+        val html = "<img src=\"https://img.example.com/a.jpg\">t"
+        assertThat(onSubstack(html)).isEqualTo("html-image-not-allowed")
+        assertThat(onSubstack(html, setOf("img.example.com"))).isNull()
+        assertThat(onSubstack(html, setOf("example.com"))).isEqualTo("html-image-not-allowed")
+        assertThat(onSubstack("<img src=\"https://sub.img.example.com/a.jpg\">t", setOf("img.example.com"))).isNotNull()
+        assertThat(onSubstack("<img alt=\"x\">t", setOf("img.example.com"))).isNotNull()
+    }
+
+    @Test
+    fun `an image on a signed-in site is refused even if the caller lists it`() {
+        val listed = setOf("example-pub.substack.com", "note.com")
+        assertThat(onSubstack("<img src=\"https://example-pub.substack.com/a.jpg\">t", listed)).isNotNull()
+        assertThat(onSubstack("<img src=\"https://note.com/a.jpg\">t", listed)).isNotNull()
+        assertThat(ArticleHtmlPolicy.isAllowableImageHost("substack.com")).isFalse()
+        assertThat(ArticleHtmlPolicy.isAllowableImageHost("x.note.com")).isFalse()
+        assertThat(ArticleHtmlPolicy.isAllowableImageHost("img.example.com")).isTrue()
+    }
+
+    // ── HTML: links ──
+
+    @Test
+    fun `links to signed-in sites must be plain article links`() {
+        listOf(
+            "https://other-pub.substack.com/p/some-article",
+            "https://other-pub.substack.com/p/some-article/",
+            "https://note.com/creator_1/n/nabc123def",
+        ).forEach { assertThat(onSubstack("<a href=\"$it\">t</a>")).isNull() }
+
+        listOf(
+            "https://substack.com",
+            "https://substack.com/p/x",
+            "https://other-pub.substack.com/",
+            "https://other-pub.substack.com/publish/post/1",
+            "https://other-pub.substack.com/api/v1/drafts/1",
+            "https://other-pub.substack.com/p/x?utm=1",
+            "https://other-pub.substack.com/p/x#a",
+            "https://other-pub.substack.com/p/x/y",
+            "https://other-pub.substack.com/p/x&#63;token=1",
+            "https://other-pub.substack.com/p/x&#x3f;token=1",
+            "https://note.com/",
+            "https://note.com/notes/new",
+            "https://note.com/api/v1/x",
+            "https://note.com/creator/n/nabc?x=1",
+            "https://editor.note.com/notes/nabc/edit/",
+            "https://x.note.com/creator/n/nabc",
+        ).forEach { assertThat(onSubstack("<a href=\"$it\">t</a>")).isEqualTo("html-link-not-allowed") }
+    }
+
+    @Test
+    fun `lookalike hosts are not the signed-in sites`() {
+        assertThat(onSubstack("<a href=\"https://notsubstack.com/x?y=1\">t</a>")).isNull()
+        assertThat(onSubstack("<a href=\"https://note.com.example.org/a?b=1\">t</a>")).isNull()
+    }
+
+    @Test
+    fun `a link cannot hide its host`() {
+        listOf(
+            "https://note.com@evil.test/",
+            "https://evil.test:8443/",
+            "https://127.0.0.1/",
+            "https://192.168.1.1/x",
+            "https://localhost/",
+            "https://e.com./",
+            "https://E.COM/",
+            "https://note.com&#47;notes/new",
+            "https://e&#46;com/",
+            "https:\\\\e.com/",
+            "https://e.com\\x",
+            "https://",
+        ).forEach { assertThat(onSubstack("<a href=\"$it\">t</a>")).isEqualTo("html-link-not-allowed") }
+    }
+
+    // ── Samples ──
 
     @Test
     fun `samples come from the first and last text runs`() {
@@ -124,6 +274,7 @@ class DraftRequestRulesTest {
         title: String = "A title",
         html: String = "<p>Some body text here</p>",
         images: JsonArray? = null,
+        imageHosts: JsonArray? = null,
         extra: Pair<String, String>? = null,
     ): String = JsonObject(
         buildMap {
@@ -131,6 +282,7 @@ class DraftRequestRulesTest {
             put("title", JsonPrimitive(title))
             put("html", JsonPrimitive(html))
             images?.let { put("images", it) }
+            imageHosts?.let { put("image_hosts", it) }
             extra?.let { put(it.first, JsonPrimitive(it.second)) }
         },
     ).toString()
@@ -149,15 +301,40 @@ class DraftRequestRulesTest {
     }
 
     @Test
+    fun `image hosts come from the file and must be ordinary exact hosts`() {
+        val html = "<img src=\"https://img.example.com/a.jpg\">text here"
+        val hosts = JsonArray(listOf(JsonPrimitive("img.example.com")))
+        assertThat(reason(substack, file(html = html))).isEqualTo("html-image-not-allowed")
+        assertThat(reason(substack, file(html = html, imageHosts = hosts))).isNull()
+        assertThat(reason(note, file(html = html, imageHosts = hosts))).isEqualTo("html-image-not-allowed")
+        listOf("*.example.com", "note.com", "x.substack.com", "https://e.com", "localhost", "1.2.3.4").forEach {
+            assertThat(reason(substack, file(html = html, imageHosts = JsonArray(listOf(JsonPrimitive(it))))))
+                .isEqualTo("image-hosts-invalid")
+        }
+    }
+
+    @Test
     fun `malformed files are refused with a reason`() {
         assertThat(reason(note, "not json")).isEqualTo("file-not-json")
         assertThat(reason(note, "[]")).isEqualTo("file-not-json")
         assertThat(reason(note, file(extra = "goal" to "do something else"))).isEqualTo("file-unknown-key")
         assertThat(reason(note, """{"version":2,"title":"t","html":"<p>t</p>"}""")).isEqualTo("file-version")
+        assertThat(reason(note, """{"version":"1","title":"t","html":"<p>t</p>"}""")).isEqualTo("file-version")
         assertThat(reason(note, file(title = "  "))).isEqualTo("title-invalid")
         assertThat(reason(note, file(title = "two\nlines"))).isEqualTo("title-invalid")
         assertThat(reason(note, file(title = "x".repeat(301)))).isEqualTo("title-invalid")
         assertThat(reason(note, file(html = "<script>x</script>"))).isEqualTo("html-tag-not-allowed")
+    }
+
+    @Test
+    fun `a null or a number is not a string`() {
+        val body = "\"html\":\"<p>Some body text here</p>\""
+        assertThat(reason(note, """{"version":1,"title":null,$body}""")).isEqualTo("title-invalid")
+        assertThat(reason(note, """{"version":1,"title":123,$body}""")).isEqualTo("title-invalid")
+        assertThat(reason(note, """{"version":1,"title":true,$body}""")).isEqualTo("title-invalid")
+        assertThat(reason(note, """{"version":1,"title":"t","html":null}""")).isEqualTo("html-invalid")
+        val nullBase64 = """{"name":"a.jpg","mime":"image/jpeg","base64":null}"""
+        assertThat(reason(note, """{"version":1,"title":"t",$body,"images":[$nullBase64]}""")).isEqualTo("images-invalid")
     }
 
     @Test

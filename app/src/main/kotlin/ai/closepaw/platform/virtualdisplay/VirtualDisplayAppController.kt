@@ -31,25 +31,23 @@ internal class VirtualDisplayAppController(
                 }
         }
 
+        /** Brings Chrome onto this display without opening a tab. */
+        suspend fun showChrome(): ActionResult = startChrome(emptyArray())
+
         /** Opens [url] in Chrome on this display, as a new tab. Argv only, no shell parsing. */
-        suspend fun openUrlInChrome(url: String): ActionResult {
+        suspend fun openUrlInChrome(url: String): ActionResult =
+                startChrome(arrayOf("-a", "android.intent.action.VIEW", "-d", url))
+
+        private suspend fun startChrome(intentArgs: Array<String>): ActionResult {
                 val displayId = displayIdProvider()
                 return withContext(Dispatchers.IO) {
-                        val code =
-                                shizuku.executeShellCommand(
-                                        arrayOf(
-                                                "am",
-                                                "start",
-                                                "-a",
-                                                "android.intent.action.VIEW",
-                                                "-d",
-                                                url,
-                                                "-n",
-                                                "${ChromeFlagDeepLink.CHROME_PACKAGE}/${ChromeFlagDeepLink.CHROME_MAIN_ACTIVITY}",
-                                                "--display",
-                                                "$displayId"
-                                        )
-                                )
+                        val component =
+                                "${ChromeFlagDeepLink.CHROME_PACKAGE}/${ChromeFlagDeepLink.CHROME_MAIN_ACTIVITY}"
+                        val command =
+                                arrayOf("am", "start") +
+                                        intentArgs +
+                                        arrayOf("-n", component, "--display", "$displayId")
+                        val code = shizuku.executeQuietShellCommand(command)
                         if (code == 0) ActionResult.Success("Opened Chrome on display $displayId")
                         else ActionResult.Failure("am start failed with code $code")
                 }

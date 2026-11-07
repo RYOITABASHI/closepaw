@@ -65,6 +65,9 @@ class VirtualDisplayPlatform(
     private val arbiter = VdLifecycleArbiter()
     private var binderDeadListener: Shizuku.OnBinderDeadListener? = null
 
+    /** Set by [stopKeepingTasks]; read during the stop it starts. */
+    @Volatile private var keepTasksOnStop = false
+
     // ── Component Wiring ─────────────────────────────────────────
 
     private val displayIdProvider: () -> Int = {
@@ -263,7 +266,17 @@ class VirtualDisplayPlatform(
         imageReader.close()
     }
 
+    /**
+     * [stop] for a run that may have pulled the user's own task onto this display: the tasks are
+     * left alone, and releasing the display moves them to the main display.
+     */
+    suspend fun stopKeepingTasks() {
+        keepTasksOnStop = true
+        stop()
+    }
+
     private fun removeRootTasksBeforeRelease(displayId: Int) {
+        if (keepTasksOnStop) return
         try {
             shizuku.removeRootTasksOnDisplay(displayId)
         } catch (e: Exception) {
@@ -574,6 +587,15 @@ class VirtualDisplayPlatform(
     override suspend fun launchApp(packageName: String): ActionResult {
         return try {
             arbiter.withRunningLease { appController.launchApp(packageName) }
+        } catch (e: PlatformNotRunningException) {
+            ActionResult.Failure("Virtual display not running (${e.message})")
+        }
+    }
+
+    /** Brings Chrome onto this virtual display without opening a tab. */
+    suspend fun showChrome(): ActionResult {
+        return try {
+            arbiter.withRunningLease { appController.showChrome() }
         } catch (e: PlatformNotRunningException) {
             ActionResult.Failure("Virtual display not running (${e.message})")
         }

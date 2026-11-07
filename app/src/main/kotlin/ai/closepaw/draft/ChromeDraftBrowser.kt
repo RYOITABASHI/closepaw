@@ -13,6 +13,8 @@ import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
@@ -43,16 +45,35 @@ internal class ChromeDraftBrowser(
         return true
     }
 
+    /**
+     * Releases the display without removing its tasks. `am start --display` can move the owner's
+     * existing Chrome task here, so anything on this display may be theirs, with tabs and unsaved
+     * editors in it. Android then moves the task back to the main display, behind what is in front
+     * there, because the display is not created to destroy its content. A tab this run left open
+     * therefore stays open in Chrome.
+     */
     suspend fun stop() {
         sessions.close()
-        display?.stop()
+        display?.stopKeepingTasks()
         display = null
+    }
+
+    override suspend fun showChrome() {
+        val platform = display ?: throw IOException("no virtual display")
+        if (platform.showChrome() is ActionResult.Failure) throw IOException("chrome did not start")
+    }
+
+    override suspend fun createTab(url: String): String {
+        val response = sessions.withCdpClient { client ->
+            client.send("Target.createTarget", buildJsonObject { put("url", url) })
+        }
+        return response.jsonObject["targetId"]?.jsonPrimitive?.content
+            ?: throw IOException("no target id")
     }
 
     override suspend fun open(url: String) {
         val platform = display ?: throw IOException("no virtual display")
-        val opened = platform.openUrlInChrome(url)
-        if (opened is ActionResult.Failure) throw IOException("chrome did not open")
+        if (platform.openUrlInChrome(url) is ActionResult.Failure) throw IOException("chrome did not open")
     }
 
     override suspend fun tabs(): List<DraftTab> =

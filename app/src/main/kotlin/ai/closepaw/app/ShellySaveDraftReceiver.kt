@@ -58,38 +58,55 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
         val ordered = isOrderedBroadcast
         val pending = goAsync()
         WORKER.execute {
-            // Disk, binder and provider work stays off the main thread.
-            val parsed = try {
-                SaveDraftRequestParser.parse(target.site, readFile(app.contentResolver, uri))
-            } catch (e: IOException) {
-                SaveDraftRequestParser.Parsed.Bad("file-unreadable")
-            } catch (e: SecurityException) {
-                SaveDraftRequestParser.Parsed.Bad("file-no-grant")
-            }
-            val virtualDisplayReady = try {
-                ShizukuClient().let { it.isAvailable() && it.hasPermission() }
+            // Disk, binder and provider work stays off the main thread. Anything thrown here,
+            // errors included, ends in START_FAILED rather than a dead process or a broadcast
+            // that never finishes.
+            val checks = try {
+                gather(app, target, uri)
             } catch (e: Throwable) {
-                false
+                Log.e(TAG, "checks failed: ${e.javaClass.simpleName}")
+                null
             }
-            val onboarded = OnboardingStore(app).isCompleted
-            val locked = app.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false
             MAIN.post {
-                val (code, data) = try {
-                    decideAndStart(target, parsed, onboarded, virtualDisplayReady, locked)
-                } catch (e: Throwable) {
-                    Log.e(TAG, "start failed", e)
-                    ShellyBackgroundRun.RESULT_REJECTED to "START_FAILED"
-                }
-                // Tells Shelly the run will report through ShellyResultCallback.
-                val extras = if (code == ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY) {
-                    Bundle().apply { putInt(ShellyBackgroundRun.RESULT_EXTRA_RESULT_CALLBACK, 1) }
-                } else {
-                    null
-                }
-                if (ordered) pending.setResult(code, data, extras)
-                pending.finish()
+                ShellySaveDraft.answer(
+                    decide = {
+                        decideAndStart(target, checks!!)
+                    },
+                    reply = { code, data ->
+                        // Tells Shelly the run will report through ShellyResultCallback.
+                        val extras = if (code == ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY) {
+                            Bundle().apply { putInt(ShellyBackgroundRun.RESULT_EXTRA_RESULT_CALLBACK, 1) }
+                        } else {
+                            null
+                        }
+                        if (ordered) pending.setResult(code, data, extras)
+                    },
+                    finish = { pending.finish() },
+                )
             }
         }
+    }
+
+    private class Checks(
+        val parsed: SaveDraftRequestParser.Parsed,
+        val onboarded: Boolean,
+        val virtualDisplayReady: Boolean,
+        val locked: Boolean,
+    )
+
+    private fun gather(app: Context, target: ShellySaveDraft.Target, uri: Uri): Checks {
+        val parsed = ShellySaveDraft.readRequest(target.site) { readFile(app.contentResolver, uri) }
+        val virtualDisplayReady = try {
+            ShizukuClient().let { it.isAvailable() && it.hasPermission() }
+        } catch (e: Throwable) {
+            false
+        }
+        return Checks(
+            parsed = parsed,
+            onboarded = OnboardingStore(app).isCompleted,
+            virtualDisplayReady = virtualDisplayReady,
+            locked = app.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false,
+        )
     }
 
     /**
@@ -98,21 +115,19 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
      */
     private fun decideAndStart(
         target: ShellySaveDraft.Target,
-        parsed: SaveDraftRequestParser.Parsed,
-        onboarded: Boolean,
-        virtualDisplayReady: Boolean,
-        locked: Boolean,
+        checks: Checks,
     ): Pair<Int, String> {
         val service = AgentService.instance
         val refusal = ShellySaveDraft.refusal(
             accessibilityConnected = service != null,
-            onboardingCompleted = onboarded,
+            onboardingCompleted = checks.onboarded,
             sessionBusy = service?.isSessionBusy() == true,
-            virtualDisplayReady = virtualDisplayReady,
-            deviceLocked = locked,
-            chromeInFront = service?.isChromeInFront() == true,
+            virtualDisplayReady = checks.virtualDisplayReady,
+            deviceLocked = checks.locked,
+            chromeInFront = service?.isChromeInFront() != false,
         )
         if (refusal != null) return refusal to "REFUSED"
+        val parsed = checks.parsed
         if (parsed is SaveDraftRequestParser.Parsed.Bad) {
             Log.w(TAG, "refused file: ${parsed.reason}")
             return ShellyBackgroundRun.RESULT_REJECTED to parsed.reason

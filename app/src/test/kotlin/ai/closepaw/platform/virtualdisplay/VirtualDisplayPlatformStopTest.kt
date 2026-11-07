@@ -60,6 +60,37 @@ class VirtualDisplayPlatformStopTest {
     }
 
     @Test
+    fun `stopKeepingTasks releases the display and leaves its tasks alone`() = runTest {
+        val displayId = 112
+        val imageReader = mockk<ImageReader>(relaxed = true)
+        val shizuku = mockk<ShizukuClient>(relaxed = true)
+        val platform = platform(service(), shizuku)
+
+        setState(platform, VdState.Running(displayId, imageReader))
+
+        platform.stopKeepingTasks()
+
+        verify(exactly = 0) { shizuku.removeRootTasksOnDisplay(any()) }
+        verify(exactly = 1) { shizuku.releaseVirtualDisplay(displayId) }
+        verify(exactly = 1) { imageReader.close() }
+    }
+
+    @Test
+    fun `stopKeepingTasks leaves tasks alone in Broken state too`() = runTest {
+        val displayId = 112
+        val imageReader = mockk<ImageReader>(relaxed = true)
+        val shizuku = mockk<ShizukuClient>(relaxed = true)
+        val platform = platform(service(), shizuku)
+
+        setState(platform, VdState.Broken("binder died", displayId, imageReader))
+
+        platform.stopKeepingTasks()
+
+        verify(exactly = 0) { shizuku.removeRootTasksOnDisplay(any()) }
+        verify(exactly = 1) { shizuku.releaseVirtualDisplay(displayId) }
+    }
+
+    @Test
     fun `stop is idempotent and cleans tasks only once`() = runTest {
         val displayId = 112
         val imageReader = mockk<ImageReader>(relaxed = true)
