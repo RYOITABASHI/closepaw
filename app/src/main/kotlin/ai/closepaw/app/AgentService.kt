@@ -31,6 +31,14 @@ import ai.closepaw.ui.overlay.compose.IslandOverlayHost
 import ai.closepaw.ui.overlay.compose.ServiceLifecycleOwner
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
+import ai.closepaw.browser.setup.ChromeFlagDeepLink
+import ai.closepaw.R
+import ai.closepaw.draft.ChromeDraftBrowser
+import ai.closepaw.draft.DraftOutcome
+import ai.closepaw.draft.SaveDraftRequest
+import ai.closepaw.draft.SaveDraftResult
+import ai.closepaw.draft.SaveDraftRoutine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -148,6 +156,9 @@ class AgentService : AccessibilityService() {
      */
     private var shellyStartInFlight = false
     private val shellyNotifier by lazy { ShellyRunNotifier(this) }
+
+    /** The running draft routine, if any. Set and cleared on the main thread. */
+    private var draftJob: Job? = null
 
     fun observeExternalSession(
             externalSession: AgentSession,
@@ -473,7 +484,7 @@ class AgentService : AccessibilityService() {
 
     /** A session is mid-task (a new background run must not clobber it). */
     internal fun isSessionBusy(): Boolean {
-        if (shellyStartInFlight) return true
+        if (shellyStartInFlight || draftJob != null) return true
         return when (session?.state?.value) {
             SessionState.Running, SessionState.Paused, SessionState.TakeoverPending -> true
             else -> false
@@ -651,6 +662,10 @@ class AgentService : AccessibilityService() {
     }
 
     internal fun stopShellyRun() {
+        draftJob?.let {
+            it.cancel()
+            return
+        }
         if (session != null) {
             submitOp(Op.Shutdown)
         } else {
@@ -663,6 +678,78 @@ class AgentService : AccessibilityService() {
             shellyRun = null
             endShellyRunSideEffects()
         }
+    }
+
+    /** True when Chrome is what the user has in front on the main display. */
+    internal fun isChromeInFront(): Boolean =
+            currentForegroundPackageOnDefaultDisplay() == ChromeFlagDeepLink.CHROME_PACKAGE
+
+    /**
+     * Runs the fixed draft routine for a verified Shelly request. Unlike [startShellyRun] it opens
+     * no session: no LLM, no tools, no policy engine. The receiver's precheck has already refused a
+     * busy service, so the caller's Shelly approval is the only gate, as on the goal path.
+     * Main thread.
+     */
+    internal fun startShellySaveDraft(
+            request: SaveDraftRequest,
+            correlation: ShellyBackgroundRun.ResultCorrelation,
+    ) {
+        shellyNotifier.render(ShellyRunState.Working(false, listOf(ChromeFlagDeepLink.CHROME_PACKAGE)))
+        val browser = ChromeDraftBrowser(this, serviceScope)
+        val routine = SaveDraftRoutine(browser)
+        draftJob = serviceScope.launch(Dispatchers.Default) {
+            var result: SaveDraftResult? = null
+            try {
+                result = if (browser.start()) {
+                    routine.run(request)
+                } else {
+                    routine.resultSoFar("virtual-display-unavailable")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Draft routine failed: ${e.javaClass.simpleName}")
+                result = routine.resultSoFar("error-${e.javaClass.simpleName}")
+            } finally {
+                withContext(NonCancellable) {
+                    try {
+                        browser.stop()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Draft routine teardown failed: ${e.javaClass.simpleName}")
+                    }
+                    withContext(Dispatchers.Main) {
+                        draftJob = null
+                        finishShellySaveDraft(result ?: routine.resultSoFar("stopped"), correlation)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun finishShellySaveDraft(
+            result: SaveDraftResult,
+            correlation: ShellyBackgroundRun.ResultCorrelation,
+    ) {
+        // Never the article text, never the page: only what the summary already says.
+        Log.i(TAG, "Draft routine: ${result.platform.wire} ${result.outcome} reason=${result.reason}")
+        val (kind, messageId) = when (result.outcome) {
+            DraftOutcome.SAVED -> ShellyRunState.Finished.Kind.DONE to R.string.shelly_draft_saved
+            DraftOutcome.ALREADY_EXISTS -> ShellyRunState.Finished.Kind.DONE to R.string.shelly_draft_exists
+            DraftOutcome.UNCERTAIN -> ShellyRunState.Finished.Kind.FAILED to R.string.shelly_draft_uncertain
+            DraftOutcome.FAILED -> ShellyRunState.Finished.Kind.FAILED to R.string.shelly_draft_failed
+        }
+        shellyNotifier.render(ShellyRunState.Finished(kind, getString(messageId)))
+        ShellyResultCallback.send(
+                applicationContext,
+                ShellyResultCallback.Payload(
+                        reqId = correlation.reqId,
+                        nonce = correlation.nonce,
+                        status = result.outcome.status,
+                        summary = ShellyResultCallback.truncateSummary(result.toSummary()),
+                        finishedAtMs = System.currentTimeMillis(),
+                        sessionId = null,
+                ),
+        )
     }
 
     // ── Unattended-run side effects (audio mute + evidence ledger) ──

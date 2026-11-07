@@ -1,0 +1,180 @@
+package ai.closepaw.app
+
+import android.app.KeyguardManager
+import android.content.BroadcastReceiver
+import android.content.ContentResolver
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import ai.closepaw.draft.SaveDraftRequestParser
+import ai.closepaw.onboarding.OnboardingStore
+import ai.closepaw.platform.virtualdisplay.ShizukuClient
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+/**
+ * Non-UI entry for the fixed draft routine. Same proof of origin as [ShellyGoalReceiver]: a
+ * [ShellyTrustedCaller] token plus, on API 34+, the broadcast's shared sender identity. The
+ * request has no goal text: `platform` and the Substack subdomain are extras, the article is a
+ * `content://` file served by Shelly's own provider and read once here.
+ */
+class ShellySaveDraftReceiver : BroadcastReceiver() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        val app = context.applicationContext
+        val verified = intent.action == ShellySaveDraft.ACTION_SAVE_DRAFT &&
+            ShellyTrustedCaller.verify(intent, app.packageManager) &&
+            ShellyTrustedCaller.isBroadcastSenderTrusted(
+                sdkInt = Build.VERSION.SDK_INT,
+                sentFromPackage = sentFromPackageSafe(),
+                pinnedCertsSha256 = ShellyTrustedCaller.PINNED_SHELLY_CERT_SHA256,
+            ) { pkg, cert ->
+                app.packageManager.hasSigningCertificate(pkg, cert, PackageManager.CERT_INPUT_SHA256)
+            }
+        val target = ShellySaveDraft.parseTarget(
+            action = intent.action,
+            callerVerified = verified,
+            platformExtra = safeString(intent, ShellySaveDraft.EXTRA_PLATFORM),
+            subdomainExtra = safeString(intent, ShellySaveDraft.EXTRA_SUBSTACK_SUBDOMAIN),
+            reqIdExtra = safeString(intent, ShellyBackgroundRun.EXTRA_SHELLY_REQ_ID),
+            nonceExtra = safeString(intent, ShellyBackgroundRun.EXTRA_SHELLY_RESULT_NONCE),
+        )
+        intent.removeExtra(ShellyTrustedCaller.EXTRA_CALLER_TOKEN)
+        val uri = intent.data
+        if (target == null || uri == null || !isShellyFile(app, uri)) {
+            Log.w(TAG, "ignored broadcast: action=${intent.action} verified=$verified")
+            reject(RESULT_DATA_REJECTED)
+            return
+        }
+
+        val ordered = isOrderedBroadcast
+        val pending = goAsync()
+        WORKER.execute {
+            // Disk, binder and provider work stays off the main thread.
+            val parsed = try {
+                SaveDraftRequestParser.parse(target.site, readFile(app.contentResolver, uri))
+            } catch (e: IOException) {
+                SaveDraftRequestParser.Parsed.Bad("file-unreadable")
+            } catch (e: SecurityException) {
+                SaveDraftRequestParser.Parsed.Bad("file-no-grant")
+            }
+            val virtualDisplayReady = try {
+                ShizukuClient().let { it.isAvailable() && it.hasPermission() }
+            } catch (e: Throwable) {
+                false
+            }
+            val onboarded = OnboardingStore(app).isCompleted
+            val locked = app.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false
+            MAIN.post {
+                val (code, data) = try {
+                    decideAndStart(target, parsed, onboarded, virtualDisplayReady, locked)
+                } catch (e: Throwable) {
+                    Log.e(TAG, "start failed", e)
+                    ShellyBackgroundRun.RESULT_REJECTED to "START_FAILED"
+                }
+                // Tells Shelly the run will report through ShellyResultCallback.
+                val extras = if (code == ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY) {
+                    Bundle().apply { putInt(ShellyBackgroundRun.RESULT_EXTRA_RESULT_CALLBACK, 1) }
+                } else {
+                    null
+                }
+                if (ordered) pending.setResult(code, data, extras)
+                pending.finish()
+            }
+        }
+    }
+
+    /**
+     * Main thread, where AgentService's busy state lives. Returns the ordered-broadcast code and
+     * data. The data is a reason from a fixed set, never file content.
+     */
+    private fun decideAndStart(
+        target: ShellySaveDraft.Target,
+        parsed: SaveDraftRequestParser.Parsed,
+        onboarded: Boolean,
+        virtualDisplayReady: Boolean,
+        locked: Boolean,
+    ): Pair<Int, String> {
+        val service = AgentService.instance
+        val refusal = ShellySaveDraft.refusal(
+            accessibilityConnected = service != null,
+            onboardingCompleted = onboarded,
+            sessionBusy = service?.isSessionBusy() == true,
+            virtualDisplayReady = virtualDisplayReady,
+            deviceLocked = locked,
+            chromeInFront = service?.isChromeInFront() == true,
+        )
+        if (refusal != null) return refusal to "REFUSED"
+        if (parsed is SaveDraftRequestParser.Parsed.Bad) {
+            Log.w(TAG, "refused file: ${parsed.reason}")
+            return ShellyBackgroundRun.RESULT_REJECTED to parsed.reason
+        }
+        if (!REPLAY_GUARD.firstUse(target.correlation.reqId)) {
+            Log.w(TAG, "refused a repeated request")
+            return ShellyBackgroundRun.RESULT_REJECTED to "REPEATED_REQUEST"
+        }
+        service!!.startShellySaveDraft((parsed as SaveDraftRequestParser.Parsed.Ok).request, target.correlation)
+        return ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY to "STARTED_VIRTUAL_DISPLAY"
+    }
+
+    private fun reject(data: String) {
+        if (isOrderedBroadcast) {
+            resultCode = ShellyBackgroundRun.RESULT_REJECTED
+            resultData = data
+        }
+    }
+
+    /** A `content://` URI whose provider really is Shelly's, not one that merely claims to be. */
+    private fun isShellyFile(app: Context, uri: Uri): Boolean {
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT) return false
+        val authority = uri.authority ?: return false
+        return try {
+            app.packageManager.resolveContentProvider(authority, 0)?.packageName ==
+                ShellyTrustedCaller.SHELLY_PACKAGE
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun readFile(resolver: ContentResolver, uri: Uri): String {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(64 * 1024)
+        resolver.openInputStream(uri)?.use { input ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                out.write(buffer, 0, read)
+                if (out.size() > SaveDraftRequestParser.MAX_FILE_BYTES) throw IOException("file too large")
+            }
+        } ?: throw IOException("no stream")
+        return out.toString(Charsets.UTF_8.name())
+    }
+
+    private fun sentFromPackageSafe(): String? = try {
+        if (Build.VERSION.SDK_INT >= 34) sentFromPackage else null
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun safeString(intent: Intent, name: String): String? = try {
+        intent.getStringExtra(name)
+    } catch (e: Exception) {
+        null
+    }
+
+    private companion object {
+        const val TAG = "ShellySaveDraftReceiver"
+        const val RESULT_DATA_REJECTED = "REJECTED"
+        val WORKER: ExecutorService = Executors.newSingleThreadExecutor()
+        val MAIN = Handler(Looper.getMainLooper())
+        val REPLAY_GUARD = ShellySaveDraft.ReplayGuard()
+    }
+}

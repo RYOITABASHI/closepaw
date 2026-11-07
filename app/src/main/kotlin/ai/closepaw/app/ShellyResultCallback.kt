@@ -18,7 +18,7 @@ import android.util.Log
  *    [ACTION_RESULT];
  *  - extras: [EXTRA_REQ_ID] + [EXTRA_RESULT_NONCE] (echoed from the goal broadcast, see
  *    [ShellyBackgroundRun.EXTRA_SHELLY_REQ_ID]), [EXTRA_STATUS] (completed | failed | cancelled |
- *    timeout), [EXTRA_SUMMARY] (the agent's final answer / error text, at most
+ *    timeout | uncertain), [EXTRA_SUMMARY] (the agent's final answer / error text, at most
  *    [MAX_SUMMARY_CODE_POINTS] code points, may be empty), [EXTRA_FINISHED_AT_MS],
  *    [EXTRA_SESSION_ID] (ClosePaw's session id, informational) and [EXTRA_CALLER_TOKEN] (an
  *    immutable PendingIntent created by ClosePaw, so Shelly can verify the creator package +
@@ -48,6 +48,9 @@ object ShellyResultCallback {
     const val STATUS_FAILED = "failed"
     const val STATUS_CANCELLED = "cancelled"
     const val STATUS_TIMEOUT = "timeout"
+
+    /** A draft routine stopped after writing, or timed out: the draft may or may not exist. */
+    const val STATUS_UNCERTAIN = "uncertain"
 
     const val MAX_SUMMARY_CODE_POINTS = 2_000
 

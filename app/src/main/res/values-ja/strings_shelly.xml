@@ -13,6 +13,10 @@
     <string name="shelly_paused_body_app">ClosePawが使用中の%1$sが開かれたため一時停止しました。使い終わったら「再開」、やめる場合は「停止」を押してください。</string>
     <string name="shelly_paused_body_generic">続けるには「再開」、やめる場合は「停止」を押してください。</string>
     <string name="shelly_done_title">ClosePawの作業が完了しました</string>
+    <string name="shelly_draft_saved">下書きを保存しました。</string>
+    <string name="shelly_draft_exists">同じタイトルの下書きがあります。追加していません。</string>
+    <string name="shelly_draft_uncertain">下書きが保存されたか確認できませんでした。下書き一覧を確認してください。</string>
+    <string name="shelly_draft_failed">下書きを保存できませんでした。</string>
     <string name="shelly_stopped_title">ClosePawを停止しました</string>
     <string name="shelly_failed_title">ClosePawの作業が失敗しました</string>
     <string name="shelly_blocked_title">Shellyからの依頼を実行できません</string>

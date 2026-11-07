@@ -6,6 +6,7 @@ import android.util.Log
 import ai.closepaw.platform.ActionResult
 import ai.closepaw.platform.AppInfo
 import ai.closepaw.platform.AppManager
+import ai.closepaw.browser.setup.ChromeFlagDeepLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -27,6 +28,30 @@ internal class VirtualDisplayAppController(
                                 Log.e(TAG, "Failed to get installed apps", e)
                                 emptyList()
                         }
+                }
+        }
+
+        /** Opens [url] in Chrome on this display, as a new tab. Argv only, no shell parsing. */
+        suspend fun openUrlInChrome(url: String): ActionResult {
+                val displayId = displayIdProvider()
+                return withContext(Dispatchers.IO) {
+                        val code =
+                                shizuku.executeShellCommand(
+                                        arrayOf(
+                                                "am",
+                                                "start",
+                                                "-a",
+                                                "android.intent.action.VIEW",
+                                                "-d",
+                                                url,
+                                                "-n",
+                                                "${ChromeFlagDeepLink.CHROME_PACKAGE}/${ChromeFlagDeepLink.CHROME_MAIN_ACTIVITY}",
+                                                "--display",
+                                                "$displayId"
+                                        )
+                                )
+                        if (code == 0) ActionResult.Success("Opened Chrome on display $displayId")
+                        else ActionResult.Failure("am start failed with code $code")
                 }
         }
 

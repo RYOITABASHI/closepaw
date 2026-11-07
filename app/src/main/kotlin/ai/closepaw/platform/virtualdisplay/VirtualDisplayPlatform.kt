@@ -579,6 +579,15 @@ class VirtualDisplayPlatform(
         }
     }
 
+    /** Opens a URL in Chrome on this virtual display. */
+    suspend fun openUrlInChrome(url: String): ActionResult {
+        return try {
+            arbiter.withRunningLease { appController.openUrlInChrome(url) }
+        } catch (e: PlatformNotRunningException) {
+            ActionResult.Failure("Virtual display not running (${e.message})")
+        }
+    }
+
     // ── IME Suppression ──────────────────────────────────────────
 
     /** Actions that can trigger IME on the wrong display. */
