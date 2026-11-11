@@ -3,6 +3,7 @@ package ai.closepaw.platform.virtualdisplay
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.util.Log
+import android.view.Display
 import ai.closepaw.platform.ActionResult
 import ai.closepaw.platform.AppInfo
 import ai.closepaw.platform.AppManager
@@ -29,8 +30,16 @@ internal class VirtualDisplayAppController(
         /** Where [openChromeWindow] put Chrome. */
         enum class ChromeWindowLaunch { FAILED, ON_DISPLAY, ELSEWHERE }
 
-        /** [launch], and for [ChromeWindowLaunch.ON_DISPLAY] the Chrome task ids that appeared. */
-        data class ChromeWindow(val launch: ChromeWindowLaunch, val createdTaskIds: Set<Int> = emptySet())
+        /**
+         * [launch]; for [ChromeWindowLaunch.ON_DISPLAY] the Chrome task ids that appeared, and
+         * every Chrome task id that existed before, on this display or the main one (null when
+         * either list could not be read).
+         */
+        data class ChromeWindow(
+                val launch: ChromeWindowLaunch,
+                val createdTaskIds: Set<Int> = emptySet(),
+                val preexistingTaskIds: Set<Int>? = null,
+        )
 
         /** Chrome's root task ids on this display, or null when they cannot be read. */
         suspend fun chromeTaskIds(): Set<Int>? {
@@ -75,6 +84,8 @@ internal class VirtualDisplayAppController(
                 return withContext(Dispatchers.IO) {
                         val chrome = ChromeFlagDeepLink.CHROME_PACKAGE
                         val before = shizuku.rootTaskIdsOnDisplay(displayId, chrome)
+                        val beforeMain = shizuku.rootTaskIdsOnDisplay(Display.DEFAULT_DISPLAY, chrome)
+                        val preexisting = if (before != null && beforeMain != null) before + beforeMain else null
                         val component = "$chrome/${ChromeFlagDeepLink.CHROME_MAIN_ACTIVITY}"
                         val command =
                                 arrayOf(
@@ -99,7 +110,7 @@ internal class VirtualDisplayAppController(
                                 val created = now - before
                                 if (created.isNotEmpty()) {
                                         Log.i(TAG, "chrome window: new task on display $displayId tasks=$created")
-                                        return@withContext ChromeWindow(ChromeWindowLaunch.ON_DISPLAY, created)
+                                        return@withContext ChromeWindow(ChromeWindowLaunch.ON_DISPLAY, created, preexisting)
                                 }
                                 delay(WINDOW_CHECK_MS)
                         }

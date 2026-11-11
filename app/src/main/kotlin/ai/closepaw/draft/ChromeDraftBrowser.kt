@@ -25,7 +25,8 @@ import kotlinx.serialization.json.put
 /**
  * [DraftBrowser] over the owner's Chrome: a Shizuku virtual display to keep Chrome visible, and
  * CDP through the same relay `browser_script` uses. The CDP calls below are the complete list
- * (SaveDraftScriptsTest pins it); input events are not among them. JavaScript dialogs are answered
+ * (SaveDraftScriptsTest pins it). The one input event is a left click, at a point a fixed script
+ * has just shown to be inside a plain block of the editor body. JavaScript dialogs are answered
  * by the CDP client itself, by [draftDialogAccept]: an open dialog freezes the page, and every
  * `Runtime.evaluate` behind it would wait out its timeout.
  */
@@ -41,8 +42,12 @@ internal class ChromeDraftBrowser(
     private var display: VirtualDisplayPlatform? = null
     private val dialogs = AtomicInteger(0)
 
-    /** The Chrome tasks [openOwnWindow] created on the display, and the run's tab in them. */
-    @Volatile private var ownTasks: Set<Int> = emptySet()
+    /**
+     * Every Chrome task that existed before [openOwnWindow] put a window on the display (null when
+     * there is no own window or the lists were unreadable), and the run's tab in that window.
+     */
+    @Volatile private var preexistingTasks: Set<Int>? = null
+    @Volatile private var ownWindow = false
     @Volatile private var ownTabId: String? = null
 
     /** False when the virtual display cannot be had. Never falls back to the main display. */
@@ -68,20 +73,19 @@ internal class ChromeDraftBrowser(
      * to the owner's screen. Only the tasks [openOwnWindow] saw appear are removed.
      */
     suspend fun stop() {
-        val created = ownTasks
-        val tabId = ownTabId
-        if (created.isNotEmpty() || tabId != null) {
-            val removed = withTimeoutOrNull(WINDOW_CLOSE_TIMEOUT_MS) {
+        if (ownWindow) {
+            val closing = withTimeoutOrNull(WINDOW_CLOSE_TIMEOUT_MS) {
                 closeDraftWindow(
-                    tabId = tabId,
-                    created = created,
+                    tabId = ownTabId,
+                    preexisting = preexistingTasks,
                     closeTab = { close(it) },
                     tasksOnDisplay = { display?.chromeTaskIds() },
                     removeTask = { display?.removeTask(it) == true },
                 )
             }
-            Log.i(TAG, "draft chrome window closed: tab=${tabId != null} tasks=${removed ?: -1}/${created.size}")
-            ownTasks = emptySet()
+            Log.i(TAG, "draft chrome window closing: ${closing ?: "timed out"} preexisting=${preexistingTasks != null}")
+            ownWindow = false
+            preexistingTasks = null
             ownTabId = null
         }
         sessions.close()
@@ -97,7 +101,8 @@ internal class ChromeDraftBrowser(
     override suspend fun openOwnWindow(url: String): DraftWindow {
         val platform = display ?: return DraftWindow.NONE
         val launched = platform.openChromeWindow(url)
-        ownTasks = launched.createdTaskIds
+        ownWindow = launched.launch == VirtualDisplayAppController.ChromeWindowLaunch.ON_DISPLAY
+        preexistingTasks = launched.preexistingTaskIds.takeIf { ownWindow }
         val window = when (launched.launch) {
             VirtualDisplayAppController.ChromeWindowLaunch.ON_DISPLAY -> DraftWindow.VIRTUAL_DISPLAY
             VirtualDisplayAppController.ChromeWindowLaunch.ELSEWHERE -> DraftWindow.ELSEWHERE
@@ -160,10 +165,34 @@ internal class ChromeDraftBrowser(
         return draftEvaluateResult(script, response)
     }
 
+    override suspend fun bringToFront(tabId: String) {
+        withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
+            cdp { client -> client.send("Page.bringToFront", JsonObject(emptyMap()), CdpOptions(targetId = tabId)) }
+        } ?: throw IOException("bringToFront timed out")
+    }
+
+    override suspend fun click(tabId: String, x: Double, y: Double) {
+        withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
+            cdp { client ->
+                for (type in listOf("mousePressed", "mouseReleased")) {
+                    val event = buildJsonObject {
+                        put("type", type)
+                        put("x", x)
+                        put("y", y)
+                        put("button", "left")
+                        put("clickCount", 1)
+                    }
+                    client.send("Input.dispatchMouseEvent", event, CdpOptions(targetId = tabId))
+                }
+            }
+        } ?: throw IOException("click timed out")
+    }
+
     override suspend fun close(tabId: String) {
         cdp { client ->
             client.send("Target.closeTarget", buildJsonObject { put("targetId", tabId) }, CdpOptions(targetId = tabId))
         }
+        if (ownTabId == tabId) ownTabId = null
     }
 }
 

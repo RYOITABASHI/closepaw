@@ -126,7 +126,8 @@ class SaveDraftScriptsTest {
     @Test
     fun `every script that changes the page checks the draft URL first`() {
         val guarded = listOf(
-            DraftScript.SET_TITLE, DraftScript.PASTE_HTML, DraftScript.PASTE_IMAGE, DraftScript.FILE_INPUT_IMAGE,
+            DraftScript.SET_TITLE, DraftScript.PASTE_HTML, DraftScript.INSERT_HTML, DraftScript.FOCUS_TARGET,
+            DraftScript.PASTE_IMAGE, DraftScript.FILE_INPUT_IMAGE,
             DraftScript.NOTE_SAVE_CLICK, DraftScript.READ_BACK, DraftScript.NOTE_SAVED_PROBE,
             DraftScript.SUBSTACK_SAVED_PROBE,
         )
@@ -148,7 +149,10 @@ class SaveDraftScriptsTest {
     @Test
     fun `chrome is driven by exactly these CDP commands`() {
         val sent = Regex("\\.send\\(\\s*\"([^\"]+)\"").findAll(browserFile.readText()).map { it.groupValues[1] }.toSet()
-        assertThat(sent).containsExactly("Page.navigate", "Runtime.evaluate", "Target.createTarget", "Target.closeTarget")
+        assertThat(sent).containsExactly(
+            "Page.navigate", "Runtime.evaluate", "Target.createTarget", "Target.closeTarget",
+            "Page.bringToFront", "Input.dispatchMouseEvent",
+        )
     }
 
     @Test

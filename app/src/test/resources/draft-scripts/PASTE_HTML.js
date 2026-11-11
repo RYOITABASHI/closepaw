@@ -5,6 +5,6 @@ function (a) {
           body.focus(); var selection = getSelection(); selection.selectAllChildren(body); selection.collapseToEnd();
           var data = new DataTransfer();
           data.setData('text/html', a.html);
-          body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
-          return { ok: true };
+          var handled = !body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+          return { ok: true, accepted: handled, chars: body.textContent.length };
         }

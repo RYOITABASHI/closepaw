@@ -42,7 +42,8 @@ class SaveDraftRoutineTest {
         val opened = mutableListOf<String>()
         val navigated = mutableListOf<String>()
         val closed = mutableListOf<String>()
-        val scripts = mutableListOf<DraftScript>()
+        /** Scripts run, in order; null marks a click. */
+        val scripts = mutableListOf<DraftScript?>()
         val tabsTouched = mutableSetOf<String>()
         var createTargetWorks = true
         var chromeAnswers = true
@@ -68,7 +69,13 @@ class SaveDraftRoutineTest {
         var window = DraftWindow.NONE
         val windowsOpened = mutableListOf<String>()
         var windowTabAppears = true
+        var windowTabKeepsMarker = true
         val ownWindowTabs = mutableListOf<String>()
+        var pasteIgnored = false
+        var insertWorks = true
+        var focusTargetOk = true
+        val fronted = mutableListOf<String>()
+        val clicks = mutableListOf<Pair<Double, Double>>()
 
         override suspend fun showChrome() {
             shown += Unit
@@ -76,8 +83,19 @@ class SaveDraftRoutineTest {
 
         override suspend fun openOwnWindow(url: String): DraftWindow {
             windowsOpened += url
-            if (window != DraftWindow.NONE && windowTabAppears) currentUrl = url
+            if (window != DraftWindow.NONE && windowTabAppears) {
+                currentUrl = if (windowTabKeepsMarker) url else url.substringBefore('#')
+            }
             return window
+        }
+
+        override suspend fun bringToFront(tabId: String) {
+            fronted += tabId
+        }
+
+        override suspend fun click(tabId: String, x: Double, y: Double) {
+            scripts += null
+            clicks += x to y
         }
 
         override fun ownWindowTab(tabId: String) {
@@ -165,9 +183,44 @@ class SaveDraftRoutineTest {
                             dialogs++
                             bodyFilled = true
                         }
+                        pasteIgnored -> {}
                         else -> bodyFilled = true
                     }
-                    buildJsonObject { put("ok", true) }
+                    buildJsonObject {
+                        put("ok", true)
+                        put("accepted", bodyFilled)
+                        put("chars", if (bodyFilled) BODY_CHARS else 0)
+                    }
+                }
+                DraftScript.INSERT_HTML -> {
+                    onWrite()
+                    if (bodyFilled || editorHasContent) {
+                        buildJsonObject {
+                            put("ok", false)
+                            put("notEmpty", true)
+                        }
+                    } else {
+                        if (insertWorks) bodyFilled = true
+                        buildJsonObject {
+                            put("ok", true)
+                            put("accepted", insertWorks)
+                            put("chars", if (bodyFilled) BODY_CHARS else 0)
+                        }
+                    }
+                }
+                DraftScript.FOCUS_TARGET -> buildJsonObject {
+                    put("ok", focusTargetOk)
+                    if (focusTargetOk) {
+                        put("x", 18.0)
+                        put("y", 110.0)
+                    } else {
+                        put("why", "no-block")
+                    }
+                }
+                DraftScript.FOCUS_PROBE -> buildJsonObject {
+                    put("href", currentUrl)
+                    put("focused", clicks.isNotEmpty())
+                    put("pageFocused", false)
                 }
                 DraftScript.IMAGE_COUNT -> buildJsonObject {
                     val uploading = uploadingLeft > 0
@@ -186,7 +239,7 @@ class SaveDraftRoutineTest {
                 }
                 DraftScript.READ_BACK -> buildJsonObject {
                     put("titleOk", readBackOk)
-                    put("bodyOk", readBackOk)
+                    put("bodyOk", readBackOk && bodyFilled)
                 }
                 DraftScript.NOTE_SAVE_CLICK -> buildJsonObject {
                     put("ok", saveLabelMatches == 1)
@@ -201,10 +254,11 @@ class SaveDraftRoutineTest {
             }
         }
 
-        val writes get() = scripts.filter { it in WRITES }
+        val writes get() = scripts.filterNotNull().filter { it in WRITES }
 
         companion object {
             const val OURS = "ours"
+            const val BODY_CHARS = 14
             val WRITES = setOf(
                 DraftScript.SET_TITLE, DraftScript.PASTE_HTML, DraftScript.PASTE_IMAGE,
                 DraftScript.FILE_INPUT_IMAGE, DraftScript.NOTE_SAVE_CLICK,
@@ -213,6 +267,7 @@ class SaveDraftRoutineTest {
     }
 
     private val logged = mutableListOf<String>()
+    private val info = mutableListOf<String>()
 
     private fun TestScope.routine(
         browser: DraftBrowser,
@@ -226,6 +281,7 @@ class SaveDraftRoutineTest {
         now = { testScheduler.currentTime },
         newMarker = { "closepaw-test" },
         logFailure = { message, _ -> logged += message },
+        logInfo = { message -> info += message },
     )
 
     private fun substackBrowser() = FakeBrowser(substack.draftListUrl, substackEditor)
@@ -717,6 +773,8 @@ class SaveDraftRoutineTest {
 
         assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
         assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(2)
+        // After the second refused paste, the editing command gets one go at the empty body.
+        assertThat(browser.scripts.count { it == DraftScript.INSERT_HTML }).isEqualTo(1)
     }
 
     @Test
@@ -729,12 +787,141 @@ class SaveDraftRoutineTest {
     }
 
     @Test
-    fun `without a dialog the body is pasted once and not probed again`() = runTest {
+    fun `a paste that fills the body is checked once and not repeated`() = runTest {
         val browser = noteBrowser()
         routine(browser, note).run()
 
         assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(1)
-        assertThat(browser.scripts.count { it == DraftScript.EDITOR_PROBE }).isEqualTo(1)
+        assertThat(browser.scripts.count { it == DraftScript.EDITOR_PROBE }).isEqualTo(2)
+        assertThat(browser.scripts).doesNotContain(DraftScript.INSERT_HTML)
+    }
+
+    @Test
+    fun `a paste the editor ignores goes in once through the editing command`() = runTest {
+        val browser = noteBrowser().apply { pasteIgnored = true }
+        val result = routine(browser, note).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(1)
+        assertThat(browser.scripts.count { it == DraftScript.INSERT_HTML }).isEqualTo(1)
+        val probeBefore = browser.scripts.lastIndexOf(DraftScript.EDITOR_PROBE)
+        assertThat(probeBefore).isLessThan(browser.scripts.indexOf(DraftScript.INSERT_HTML))
+    }
+
+    @Test
+    fun `when nothing takes the body the run says so and inserts only once`() = runTest {
+        val browser = noteBrowser().apply {
+            pasteIgnored = true
+            insertWorks = false
+        }
+        val result = routine(browser, note).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
+        assertThat(result.reason).isEqualTo("read-back-mismatch")
+        assertThat(browser.scripts.count { it == DraftScript.INSERT_HTML }).isEqualTo(1)
+        assertThat(info).contains("body method=insert ok=true accepted=false bodyChars=0 dialogs=0")
+    }
+
+    // ── Focus before the body ──
+
+    @Test
+    fun `the body is focused for real before the paste`() = runTest {
+        val browser = noteBrowser()
+        routine(browser, note).run()
+
+        val target = browser.scripts.indexOf(DraftScript.FOCUS_TARGET)
+        val click = browser.scripts.indexOf(null)
+        val probe = browser.scripts.indexOf(DraftScript.FOCUS_PROBE)
+        val paste = browser.scripts.indexOf(DraftScript.PASTE_HTML)
+        assertThat(listOf(target, click, probe, paste)).isInOrder()
+        assertThat(browser.clicks).containsExactly(18.0 to 110.0)
+        // Not the run's own window: the owner's window is not rearranged.
+        assertThat(browser.fronted).isEmpty()
+        assertThat(info).contains("focus front=false clicked=true target=ok focused=true pageFocused=false")
+    }
+
+    @Test
+    fun `the run's own window shows its tab before the click`() = runTest {
+        val browser = noteBrowser().apply { window = DraftWindow.VIRTUAL_DISPLAY }
+        routine(browser, note).run()
+
+        assertThat(browser.fronted).containsExactly(FakeBrowser.OURS)
+        assertThat(browser.clicks).hasSize(1)
+    }
+
+    @Test
+    fun `no safe point means no click, and the paste still goes ahead`() = runTest {
+        val browser = noteBrowser().apply { focusTargetOk = false }
+        val result = routine(browser, note).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.clicks).isEmpty()
+        assertThat(info).contains("focus front=false clicked=false target=no-block focused=false pageFocused=false")
+    }
+
+    @Test
+    fun `a click that fails is logged and the paste goes ahead`() = runTest {
+        val inner = noteBrowser()
+        val browser = object : DraftBrowser by inner {
+            override suspend fun click(tabId: String, x: Double, y: Double) = throw IOException("x")
+        }
+        val result = routine(browser, note).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(info).contains("focus front=false clicked=false failed=IOException")
+    }
+
+    @Test
+    fun `the step log holds outcomes and lengths, never article text`() = runTest {
+        val browser = noteBrowser().apply { imageRouteWorks = DraftScript.PASTE_IMAGE }
+        routine(browser, note, listOf(image)).run()
+
+        assertThat(info).containsAtLeast(
+            "window=NONE tab=false",
+            "editor reached",
+            "title set",
+            "images placed=1/1",
+            "body method=paste ok=true accepted=true bodyChars=14 dialogs=0",
+        ).inOrder()
+        info.forEach { line ->
+            assertThat(line).doesNotContain("A title")
+            assertThat(line).doesNotContain("Body text")
+        }
+    }
+
+    @Test
+    fun `the window's tab is known even when the page drops the fragment`() = runTest {
+        val browser = substackBrowser().apply {
+            window = DraftWindow.VIRTUAL_DISPLAY
+            windowTabKeepsMarker = false
+        }
+        val routine = routine(browser, substack, ownerHasChrome = { true })
+        val result = routine.run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(routine.drivesOwnWindow).isTrue()
+        assertThat(browser.ownWindowTabs).containsExactly(FakeBrowser.OURS)
+        assertThat(browser.created).isEmpty()
+    }
+
+    @Test
+    fun `a new tab is not taken as the window's when the earlier tab list is unknown`() = runTest {
+        val inner = substackBrowser().apply {
+            window = DraftWindow.VIRTUAL_DISPLAY
+            windowTabKeepsMarker = false
+        }
+        var calls = 0
+        val browser = object : DraftBrowser by inner {
+            override suspend fun tabs(): List<DraftTab> {
+                if (calls++ == 0) throw IOException("devtools not up yet")
+                return inner.tabs()
+            }
+        }
+        val routine = routine(browser, substack, ownerHasChrome = { true })
+        val result = routine.run()
+
+        assertThat(result.reason).isEqualTo("chrome-opened")
+        assertThat(inner.ownWindowTabs).isEmpty()
     }
 
     // ── Chrome in its own window ──
@@ -813,58 +1000,60 @@ class SaveDraftRoutineTest {
     // ── Closing the run's own window ──
 
     @Test
-    fun `closing the window closes its tab, then only the tasks this run created`() = runTest {
+    fun `closing removes only Chrome tasks that did not exist before the window`() = runTest {
         val calls = mutableListOf<String>()
-        val removed = closeDraftWindow(
+        val closing = closeDraftWindow(
             tabId = "t1",
-            created = setOf(7, 8),
+            // 42 is the owner's task (main display), 5 an older task on this display.
+            preexisting = setOf(42, 5),
             closeTab = { calls += "close:$it" },
-            tasksOnDisplay = { calls += "list"; setOf(7, 42) },
+            // Chrome moved the window from the task first seen into 9.
+            tasksOnDisplay = { calls += "list"; setOf(5, 9, 42) },
             removeTask = { calls += "remove:$it"; true },
         )
 
-        assertThat(removed).isEqualTo(1)
-        assertThat(calls).containsExactly("close:t1", "list", "remove:7").inOrder()
+        assertThat(calls).containsExactly("close:t1", "list", "remove:9").inOrder()
+        assertThat(closing).isEqualTo(DraftWindowClosing("closed", setOf(5, 9, 42), listOf(9), emptyList()))
     }
 
     @Test
-    fun `a failed tab close still removes the window, and unreadable tasks remove nothing`() = runTest {
-        val removedAfterFailedClose = closeDraftWindow(
+    fun `closing says why a part failed`() = runTest {
+        val closing = closeDraftWindow(
             tabId = "t1",
-            created = setOf(7),
+            preexisting = emptySet(),
             closeTab = { throw IOException("gone") },
-            tasksOnDisplay = { setOf(7) },
-            removeTask = { true },
+            tasksOnDisplay = { setOf(7, 8) },
+            removeTask = { id -> if (id == 7) false else throw SecurityException("no") },
         )
-        assertThat(removedAfterFailedClose).isEqualTo(1)
 
+        assertThat(closing.tab).isEqualTo("failed-IOException")
+        assertThat(closing.removed).isEmpty()
+        assertThat(closing.notRemoved).containsExactly("7:refused", "8:SecurityException")
+    }
+
+    @Test
+    fun `without the earlier task list nothing is removed`() = runTest {
+        var listed = false
         val asked = mutableListOf<Int>()
-        val removedUnreadable = closeDraftWindow(
+        val unknown = closeDraftWindow(
             tabId = null,
-            created = setOf(7),
+            preexisting = null,
+            closeTab = { },
+            tasksOnDisplay = { listed = true; setOf(9) },
+            removeTask = { asked += it; true },
+        )
+        assertThat(unknown).isEqualTo(DraftWindowClosing("none", null, emptyList(), emptyList()))
+        assertThat(listed).isFalse()
+
+        val unreadable = closeDraftWindow(
+            tabId = null,
+            preexisting = setOf(42),
             closeTab = { },
             tasksOnDisplay = { null },
             removeTask = { asked += it; true },
         )
-        assertThat(removedUnreadable).isEqualTo(0)
+        assertThat(unreadable.notRemoved).containsExactly("tasks-unreadable")
         assertThat(asked).isEmpty()
-    }
-
-    @Test
-    fun `with no window of its own nothing is removed`() = runTest {
-        var listed = false
-        val closed = mutableListOf<String>()
-        val removed = closeDraftWindow(
-            tabId = "t1",
-            created = emptySet(),
-            closeTab = { closed += it },
-            tasksOnDisplay = { listed = true; setOf(42) },
-            removeTask = { true },
-        )
-
-        assertThat(removed).isEqualTo(0)
-        assertThat(listed).isFalse()
-        assertThat(closed).containsExactly("t1")
     }
 
     // ── Failure reasons ──

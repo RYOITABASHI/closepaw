@@ -24,7 +24,7 @@ class El {
   }
   focus() {}
   addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
-  dispatchEvent(e) { (this.listeners[e.type] || []).forEach((f) => f(e)); return true; }
+  dispatchEvent(e) { (this.listeners[e.type] || []).forEach((f) => f(e)); return !e.defaultPrevented; }
   click() { this.clicks = (this.clicks || 0) + 1; }
   contains(other) { return other === this || this.children.includes(other); }
   closest() { return this.outerLink || null; }
@@ -33,12 +33,16 @@ class El {
     throw new Error('selector ' + sel);
   }
 }
-class FakeEvent { constructor(type, init) { this.type = type; Object.assign(this, init); } }
+class FakeEvent {
+  constructor(type, init) { this.type = type; Object.assign(this, init); }
+  preventDefault() { this.defaultPrevented = true; }
+}
 
 function page(options = {}) {
   const {
     href = EDITOR, buttons = [], withTextarea = true, withBody = true, fileInput = null, images = 0,
     resources = [], items = [], outside = [], bodyChildren = [], fetchImpl,
+    hitAt = null, active = null, pageFocused = false, execResult = true,
   } = options;
   const textarea = new El('textarea');
   let value = '';
@@ -46,6 +50,8 @@ function page(options = {}) {
   Object.defineProperty(textarea, 'value', descriptor);
   const body = new El('div');
   body.children = bodyChildren;
+  body.lastElementChild = bodyChildren[bodyChildren.length - 1] || null;
+  const execCalls = [];
   const root = {
     querySelectorAll(sel) {
       if (sel === '*') return [textarea, body, ...bodyChildren, ...outside];
@@ -54,6 +60,10 @@ function page(options = {}) {
   };
   const document = {
     body: root,
+    activeElement: active,
+    hasFocus: () => pageFocused,
+    elementFromPoint: (x, y) => (hitAt ? hitAt(x, y) : null),
+    execCommand: (...args) => { execCalls.push(args); return execResult; },
     querySelector(sel) {
       if (sel === 'textarea') return withTextarea ? textarea : null;
       if (sel === 'input[type=file]') return fileInput;
@@ -78,7 +88,7 @@ function page(options = {}) {
   }
   const selection = { selectAllChildren(n) { this.node = n; }, collapseToEnd() { this.end = true; } };
   const sandbox = {
-    document, location: { href }, getSelection: () => selection,
+    document, location: { href }, getSelection: () => selection, Math,
     DataTransfer: DT, ClipboardEvent: FakeEvent, Event: FakeEvent, File: FakeFile, DOMParser: FakeDOMParser, URL,
     atob: (s) => Buffer.from(s, 'base64').toString('binary'),
     HTMLTextAreaElement: { prototype: {} },
@@ -86,7 +96,7 @@ function page(options = {}) {
     fetch: fetchImpl || (() => Promise.reject(new Error('no fetch expected'))),
   };
   Object.defineProperty(sandbox.HTMLTextAreaElement.prototype, 'value', descriptor);
-  return { sandbox, textarea, body, selection };
+  return { sandbox, textarea, body, selection, execCalls };
 }
 const run = (name, sandbox, args = {}) => {
   const out = vm.runInNewContext(`(${scripts[name]})(${JSON.stringify(args)})`, sandbox);
@@ -94,7 +104,7 @@ const run = (name, sandbox, args = {}) => {
 };
 const same = { editorUrl: EDITOR };
 const image = { ...same, name: 'a.jpg', mime: 'image/jpeg', base64: Buffer.from([255, 0, 10]).toString('base64') };
-const WRITERS = ['SET_TITLE', 'PASTE_HTML', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
+const WRITERS = ['SET_TITLE', 'PASTE_HTML', 'INSERT_HTML', 'FOCUS_TARGET', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
 const toast = (text = '下書きを保存しました') => new El('div', { textContent: text });
 const apiEntry = (over = {}) => ({
   startTime: 6, initiatorType: 'fetch', responseStatus: 200,
@@ -108,7 +118,7 @@ const noRead = () => Promise.reject(new Error('blocked'));
 
 const tests = {
   'every script parses': () => {
-    assert.strictEqual(Object.keys(scripts).length, 11);
+    assert.strictEqual(Object.keys(scripts).length, 14);
     for (const [name, src] of Object.entries(scripts)) new vm.Script(`(${src})({})`, { filename: name });
   },
 
@@ -177,6 +187,55 @@ const tests = {
     assert.strictEqual(english.uploading, true);
     const inBody = run('IMAGE_COUNT', page({ images: stored, bodyChildren: [new El('p', { textContent: 'アップロード中' })] }).sandbox);
     assert.strictEqual(inBody.uploading, false);
+  },
+
+  'paste reports whether the editor took it and the body length after': () => {
+    const p = page();
+    p.body.addEventListener('paste', (e) => { e.preventDefault(); p.body.textContent = 'Body'; });
+    assert.deepStrictEqual(run('PASTE_HTML', p.sandbox, { ...same, html: '<p>Body</p>' }), { ok: true, accepted: true, chars: 4 });
+    const ignored = page();
+    assert.deepStrictEqual(run('PASTE_HTML', ignored.sandbox, { ...same, html: '<p>Body</p>' }), { ok: true, accepted: false, chars: 0 });
+  },
+
+  'insert html uses the editing command, and only into an empty body': () => {
+    const p = page();
+    const out = run('INSERT_HTML', p.sandbox, { ...same, html: '<h2>H</h2><p>x</p>' });
+    assert.deepStrictEqual(out, { ok: true, accepted: true, chars: 0 });
+    assert.deepStrictEqual(p.execCalls, [['insertHTML', false, '<h2>H</h2><p>x</p>']]);
+    assert.strictEqual(p.selection.end, true);
+    const full = page();
+    full.body.textContent = 'already';
+    assert.deepStrictEqual(run('INSERT_HTML', full.sandbox, { ...same, html: '<p>x</p>' }), { ok: false, notEmpty: true });
+    assert.deepStrictEqual(full.execCalls, []);
+  },
+
+  'focus target points into the last plain block, and nowhere else': () => {
+    const block = (tag, props = {}) => {
+      const el = new El(tag, props);
+      el.scrollIntoView = () => { el.scrolled = true; };
+      el.getBoundingClientRect = () => ({ left: 10, top: 100, width: 300, height: 20 });
+      el.querySelector = () => props.inner || null;
+      return el;
+    };
+    const para = block('p');
+    const p = page({ bodyChildren: [new El('figure'), para], hitAt: () => para });
+    assert.deepStrictEqual(run('FOCUS_TARGET', p.sandbox, same), { ok: true, x: 18, y: 110 });
+    assert.strictEqual(para.scrolled, true);
+
+    const fig = block('figure');
+    assert.strictEqual(run('FOCUS_TARGET', page({ bodyChildren: [fig], hitAt: () => fig }).sandbox, same).why, 'no-block');
+    const withLink = block('p', { inner: new El('a') });
+    assert.strictEqual(run('FOCUS_TARGET', page({ bodyChildren: [withLink], hitAt: () => withLink }).sandbox, same).why, 'busy-block');
+    const covered = block('p');
+    assert.strictEqual(run('FOCUS_TARGET', page({ bodyChildren: [covered], hitAt: () => new El('div') }).sandbox, same).why, 'covered');
+    assert.strictEqual(run('FOCUS_TARGET', page({ bodyChildren: [] }).sandbox, same).why, 'no-block');
+  },
+
+  'focus probe says whether the focus is in the body': () => {
+    const inside = new El('p');
+    const p = page({ bodyChildren: [inside], active: inside, pageFocused: true });
+    assert.deepStrictEqual(run('FOCUS_PROBE', p.sandbox), { href: EDITOR, focused: true, pageFocused: true });
+    assert.strictEqual(run('FOCUS_PROBE', page({ active: new El('textarea') }).sandbox).focused, false);
   },
 
   'title uses the native setter and an input event': () => {

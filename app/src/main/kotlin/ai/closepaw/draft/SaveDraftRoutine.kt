@@ -54,6 +54,15 @@ interface DraftBrowser {
      */
     fun ownWindowTab(tabId: String) {}
 
+    /** Makes [tabId] the shown tab of its window. Used only for the run's own window. */
+    suspend fun bringToFront(tabId: String) {}
+
+    /**
+     * One left click at a viewport point of [tabId]. The routine only clicks a point that
+     * [DraftScript.FOCUS_TARGET] has just shown to be inside a plain block of the body.
+     */
+    suspend fun click(tabId: String, x: Double, y: Double) {}
+
     /** Asks Chrome over CDP for a new tab at [url] and returns its target id. */
     suspend fun createTab(url: String): String
 
@@ -148,6 +157,8 @@ class SaveDraftRoutine(
     private val newMarker: () -> String = ::randomMarker,
     /** Gets the class and the step, never page or article text. */
     private val logFailure: (String, Throwable) -> Unit = { message, e -> Log.w(TAG, message, e) },
+    /** Step outcomes: flags, counts and lengths only, never page or article text. */
+    private val logInfo: (String) -> Unit = { message -> Log.i(TAG, message) },
 ) {
     private val site = request.site
 
@@ -217,6 +228,16 @@ class SaveDraftRoutine(
     private suspend fun steps(): SaveDraftResult {
         step = STEP_CHROME
         val windowMarker = "#" + newMarker()
+        // Chrome's tabs before the window, when Chrome already answers: a tab that appears after
+        // the window opened, alone and on the site, is the window's tab even if the page dropped
+        // the fragment. Without this list only the fragment counts.
+        val tabsBefore = try {
+            browser.tabs().map { it.id }.toSet()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
         val window = try {
             browser.openOwnWindow(site.draftListUrl + windowMarker)
         } catch (e: CancellationException) {
@@ -235,9 +256,10 @@ class SaveDraftRoutine(
         // The window's tab carries a fragment this run just made up, so it is provably ours.
         val windowTab = when (window) {
             DraftWindow.NONE -> null
-            DraftWindow.VIRTUAL_DISPLAY -> findMarked(windowMarker, timing.tabWaitMs)
+            DraftWindow.VIRTUAL_DISPLAY -> findWindowTab(windowMarker, tabsBefore)
             DraftWindow.ELSEWHERE -> findMarked(windowMarker, minOf(timing.tabWaitMs, WINDOW_TAB_GLANCE_MS))
         }
+        logInfo("window=$window tab=${windowTab != null}")
         if (windowTab != null && drivesOwnWindow) browser.ownWindowTab(windowTab.id)
         if (windowTab == null && drivesOwnWindow) {
             // The window's tab never showed: the fallback works in the owner's Chrome window, so
@@ -268,16 +290,21 @@ class SaveDraftRoutine(
         if (!editor.flag("titleEmpty") || !editor.flag("bodyEmpty")) {
             return result(DraftOutcome.FAILED, "editor-not-empty")
         }
+        logInfo("editor reached")
 
         step = STEP_TITLE
         val titleSet = write(tab, editorUrl, DraftScript.SET_TITLE) { put("title", request.title) }
         if (!titleSet.flag("ok")) return result(DraftOutcome.UNCERTAIN, "title-not-set")
+        logInfo("title set")
 
         // Images first: the caret is at the end of an empty body, so they lead the article.
         step = STEP_IMAGE
         request.images.forEach { placeImage(tab, editorUrl, it) }
         // A paste while an image is still uploading gets note's "uploading" alert and no body.
-        if (request.images.isNotEmpty()) waitForUploads(tab)
+        if (request.images.isNotEmpty()) {
+            waitForUploads(tab)
+            logInfo("images placed=$imagesPlaced/${request.images.size}")
+        }
 
         step = STEP_PASTE
         if (!pasteBody(tab, editorUrl)) return result(DraftOutcome.UNCERTAIN, "body-not-pasted")
@@ -299,6 +326,16 @@ class SaveDraftRoutine(
      */
     private suspend fun findMarked(marker: String, limitMs: Long): DraftTab? =
         pollUntil(limitMs) { browser.tabs().firstOrNull { it.url.endsWith(marker) } }
+
+    /** The tab of the run's own window: the marked one, or the one new tab on the site. */
+    private suspend fun findWindowTab(marker: String, before: Set<String>?): DraftTab? =
+        pollUntil(timing.tabWaitMs) {
+            val tabs = browser.tabs()
+            tabs.firstOrNull { it.url.contains(marker) }
+                ?: before?.let { known ->
+                    tabs.filter { it.id !in known }.singleOrNull()?.takeIf { sameHost(it.url, site.draftListUrl) }
+                }
+        }
 
     private suspend fun openOwnTab(url: String): DraftTab? {
         val created = try {
@@ -379,25 +416,87 @@ class SaveDraftRoutine(
     }
 
     /**
-     * Pastes the body. If the page answered with a dialog meanwhile (note's "image uploading"
-     * alert), the paste may have been refused: when the body is then still empty, after any upload
-     * has finished, it is pasted once more. An empty body cannot hold a first copy, so this never
-     * doubles the article.
+     * Pastes the body, after giving the editor real focus. When the body is still empty after the
+     * paste, and after any upload has finished:
+     * - if the page answered with a dialog meanwhile (note's "image uploading" alert), the paste is
+     *   repeated once;
+     * - if it is still empty, the same HTML goes in once through the browser's editing command.
+     * Every second attempt goes only into a body shown empty just before, so the article is never
+     * doubled.
      */
     private suspend fun pasteBody(tab: DraftTab, editorUrl: String): Boolean {
         val dialogsBefore = browser.dialogsAnswered()
+        focusEditor(tab, editorUrl)
         val pasted = write(tab, editorUrl, DraftScript.PASTE_HTML) { put("html", request.html) }
+        logPaste("paste", pasted, browser.dialogsAnswered() - dialogsBefore)
         if (!pasted.flag("ok")) return false
-        if (browser.dialogsAnswered() == dialogsBefore) return true
-
-        // Give a slow editor a moment to show what it took.
-        val filled = pollUntil(minOf(timing.imageWaitMs, PASTE_SETTLE_MS)) {
-            true.takeUnless { bodyEmpty(tab, editorUrl) }
-        }
-        if (filled == true) return true
+        if (bodyFilledSoon(tab, editorUrl)) return true
         waitForUploads(tab)
         if (!bodyEmpty(tab, editorUrl)) return true
-        return write(tab, editorUrl, DraftScript.PASTE_HTML) { put("html", request.html) }.flag("ok")
+
+        if (browser.dialogsAnswered() > dialogsBefore) {
+            val again = write(tab, editorUrl, DraftScript.PASTE_HTML) { put("html", request.html) }
+            logPaste("paste-again", again, browser.dialogsAnswered() - dialogsBefore)
+            if (again.flag("ok") && bodyFilledSoon(tab, editorUrl)) return true
+            if (!bodyEmpty(tab, editorUrl)) return true
+        }
+
+        focusEditor(tab, editorUrl)
+        val inserted = write(tab, editorUrl, DraftScript.INSERT_HTML) { put("html", request.html) }
+        logPaste("insert", inserted, browser.dialogsAnswered() - dialogsBefore)
+        return inserted.flag("ok") || inserted.flag("notEmpty")
+    }
+
+    /** Gives a slow editor a moment to show what it took. */
+    private suspend fun bodyFilledSoon(tab: DraftTab, editorUrl: String): Boolean =
+        pollUntil(minOf(timing.imageWaitMs, PASTE_SETTLE_MS)) {
+            true.takeUnless { bodyEmpty(tab, editorUrl) }
+        } == true
+
+    private fun logPaste(method: String, answer: JsonObject, dialogs: Int) {
+        logInfo(
+            "body method=$method ok=${answer.flag("ok")} accepted=${answer.flag("accepted")} " +
+                "bodyChars=${answer["chars"]?.jsonPrimitive?.intOrNull ?: -1} dialogs=$dialogs",
+        )
+    }
+
+    /**
+     * Gives the body real focus before text goes in: the run's own window shows the tab, a click
+     * lands in the body's last plain block when the page shows one, and a probe reports where the
+     * focus ended up. Best effort: a failure here is logged and the paste goes ahead.
+     */
+    private suspend fun focusEditor(tab: DraftTab, editorUrl: String) {
+        var front = false
+        var clicked = false
+        var why: String? = null
+        try {
+            stopIfOwnerHasChrome()
+            if (drivesOwnWindow) {
+                browser.bringToFront(tab.id)
+                front = true
+            }
+            val target = browser.evaluate(tab.id, DraftScript.FOCUS_TARGET, buildJsonObject { put("editorUrl", editorUrl) })
+            stopIfMoved(target)
+            val x = target["x"]?.jsonPrimitive?.doubleOrNull
+            val y = target["y"]?.jsonPrimitive?.doubleOrNull
+            why = target.str("why")
+            if (target.flag("ok") && x != null && y != null) {
+                stopIfOwnerHasChrome()
+                browser.click(tab.id, x, y)
+                clicked = true
+            }
+            val probe = browser.evaluate(tab.id, DraftScript.FOCUS_PROBE, NO_ARGS)
+            logInfo(
+                "focus front=$front clicked=$clicked target=${why ?: "ok"} " +
+                    "focused=${probe.flag("focused")} pageFocused=${probe.flag("pageFocused")}",
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Halt) {
+            throw e
+        } catch (e: Exception) {
+            logInfo("focus front=$front clicked=$clicked failed=${e.javaClass.simpleName}")
+        }
     }
 
     /** True only when the probe shows this draft's editor with an empty body. */
@@ -467,6 +566,12 @@ class SaveDraftRoutine(
         if (answer.flag("moved")) throw Halt("editor-moved")
     }
 
+    private fun sameHost(a: String, b: String): Boolean {
+        val hostA = runCatching { java.net.URI(a).host }.getOrNull() ?: return false
+        val hostB = runCatching { java.net.URI(b).host }.getOrNull() ?: return false
+        return hostA.equals(hostB, ignoreCase = true)
+    }
+
     private suspend fun closeTab(tab: DraftTab) {
         tabClosed = try {
             browser.close(tab.id)
@@ -532,45 +637,65 @@ internal const val STEP_PASTE = "paste"
 internal const val STEP_SAVE = "save"
 internal const val STEP_READBACK = "readback"
 
+/** What [closeDraftWindow] did, for the log: ids and class names only. */
+internal data class DraftWindowClosing(
+    /** "none", "closed", or "failed-<class>". */
+    val tab: String,
+    /** Chrome tasks on the display at the end; null when unread or not looked at. */
+    val onDisplay: Set<Int>?,
+    val removed: List<Int>,
+    val notRemoved: List<String>,
+)
+
 /**
  * Closes the run's own Chrome window before the virtual display goes: its tab over CDP, then the
- * window's task. Only tasks this run created ([created]) that are still Chrome tasks on the
- * display ([tasksOnDisplay]) are removed, never the owner's. Each part is best effort. Returns
- * the number of tasks removed.
+ * window's tasks. A Chrome task on the display counts as the run's only if it did not exist,
+ * on this display or the main one, before the window was opened ([preexisting]). Chrome may move
+ * the window into a task other than the one first seen, so the comparison is made at the end.
+ * The owner's tasks all predate the window and are never removed. Without [preexisting] nothing
+ * is removed. Each part is best effort.
  */
 internal suspend fun closeDraftWindow(
     tabId: String?,
-    created: Set<Int>,
+    preexisting: Set<Int>?,
     closeTab: suspend (String) -> Unit,
     tasksOnDisplay: suspend () -> Set<Int>?,
     removeTask: suspend (Int) -> Boolean,
-): Int {
-    if (tabId != null) {
+): DraftWindowClosing {
+    val tab = if (tabId == null) {
+        "none"
+    } else {
         try {
             closeTab(tabId)
+            "closed"
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             // The task removal below still takes the window away.
+            "failed-" + e.javaClass.simpleName
         }
     }
-    if (created.isEmpty()) return 0
+    if (preexisting == null) return DraftWindowClosing(tab, null, emptyList(), emptyList())
     val onDisplay = try {
         tasksOnDisplay()
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         null
-    } ?: return 0
-    return (created intersect onDisplay).count { id ->
-        try {
-            removeTask(id)
+    } ?: return DraftWindowClosing(tab, null, emptyList(), listOf("tasks-unreadable"))
+    val removed = mutableListOf<Int>()
+    val notRemoved = mutableListOf<String>()
+    for (id in onDisplay - preexisting) {
+        val outcome = try {
+            if (removeTask(id)) null else "refused"
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            false
+            e.javaClass.simpleName
         }
+        if (outcome == null) removed += id else notRemoved += "$id:$outcome"
     }
+    return DraftWindowClosing(tab, onDisplay, removed, notRemoved)
 }
 
 /** `error-<class>@<step>`: the class's simple name, never its message, which may hold page text. */

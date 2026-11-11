@@ -90,7 +90,10 @@ enum class DraftScript(val source: String) {
         """,
     ),
 
-    /** Synthetic paste of the validated HTML at the end of the body. */
+    /**
+     * Synthetic paste of the validated HTML at the end of the body. `accepted` is true when the
+     * editor took the event (it cancels a paste it handles); `chars` is the body's length after.
+     */
     PASTE_HTML(
         """
         function (a) {
@@ -100,8 +103,63 @@ enum class DraftScript(val source: String) {
           $CARET_TO_END
           var data = new DataTransfer();
           data.setData('text/html', a.html);
-          body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
-          return { ok: true };
+          var handled = !body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+          return { ok: true, accepted: handled, chars: body.textContent.length };
+        }
+        """,
+    ),
+
+    /**
+     * The second way in, for an editor that ignored the paste event: the browser's own editing
+     * command inserts the same validated HTML at the caret. Only into an empty body.
+     */
+    INSERT_HTML(
+        """
+        function (a) {
+          $SAME_DRAFT
+          var body = $BODY_LOOKUP;
+          if (!body) return { ok: false };
+          if (body.textContent.trim() !== '') return { ok: false, notEmpty: true };
+          $CARET_TO_END
+          var done = document.execCommand('insertHTML', false, a.html);
+          return { ok: true, accepted: !!done, chars: body.textContent.length };
+        }
+        """,
+    ),
+
+    /**
+     * Where to put the pointer to give the body real focus: inside the body's last block, which
+     * must be a plain paragraph or heading with nothing in it that reacts to a pointer, and must
+     * be what the page shows at that point. Otherwise no point is given.
+     */
+    FOCUS_TARGET(
+        """
+        function (a) {
+          $SAME_DRAFT
+          var body = $BODY_LOOKUP;
+          if (!body) return { ok: false, why: 'no-body' };
+          var block = body.lastElementChild;
+          if (!block || !/^(P|H[1-6])$/.test(block.tagName)) return { ok: false, why: 'no-block' };
+          if (block.querySelector('img, figure, a, button, input, [contenteditable=false]')) return { ok: false, why: 'busy-block' };
+          block.scrollIntoView({ block: 'center' });
+          var rect = block.getBoundingClientRect();
+          if (rect.width < 4 || rect.height < 4) return { ok: false, why: 'no-size' };
+          var x = rect.left + Math.min(8, rect.width / 2);
+          var y = rect.top + rect.height / 2;
+          var hit = document.elementFromPoint(x, y);
+          if (!hit || !block.contains(hit)) return { ok: false, why: 'covered' };
+          return { ok: true, x: x, y: y };
+        }
+        """,
+    ),
+
+    /** Is the focus inside the body, and does the page have focus at all? */
+    FOCUS_PROBE(
+        """
+        function (a) {
+          var body = $BODY_LOOKUP;
+          var active = document.activeElement;
+          return { href: location.href, focused: !!body && !!active && body.contains(active), pageFocused: document.hasFocus() };
         }
         """,
     ),
