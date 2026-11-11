@@ -129,6 +129,21 @@ class ShizukuClient {
         return activityTaskTransport.removeRootTask(taskId)
     }
 
+    /** Root tasks on [displayId], front first; null when they cannot be read. */
+    fun rootTasksOnDisplay(displayId: Int): List<ShizukuActivityTaskTransport.RootTask>? {
+        return activityTaskTransport.rootTasksOnDisplay(displayId)
+    }
+
+    /** Moves a root task to [displayId]. */
+    fun moveRootTaskToDisplay(taskId: Int, displayId: Int): Boolean {
+        return activityTaskTransport.moveRootTaskToDisplay(taskId, displayId)
+    }
+
+    /** Puts a task in front on its display. */
+    fun moveTaskToFront(taskId: Int): Boolean {
+        return activityTaskTransport.moveTaskToFront(taskId)
+    }
+
     /** Root task ids of [packageName] on [displayId], or null when they cannot be read. */
     fun rootTaskIdsOnDisplay(displayId: Int, packageName: String): Set<Int>? {
         return activityTaskTransport.rootTaskIdsOnDisplay(displayId, packageName)

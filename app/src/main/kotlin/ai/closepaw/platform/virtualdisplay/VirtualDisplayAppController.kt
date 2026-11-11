@@ -9,7 +9,6 @@ import ai.closepaw.platform.AppInfo
 import ai.closepaw.platform.AppManager
 import ai.closepaw.browser.setup.ChromeFlagDeepLink
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /** App-level operations on the virtual display (launch/list apps). */
@@ -21,25 +20,7 @@ internal class VirtualDisplayAppController(
         companion object {
                 private const val TAG = "VDAppController"
 
-                /** FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_MULTIPLE_TASK | FLAG_ACTIVITY_NEW_DOCUMENT. */
-                internal const val NEW_WINDOW_FLAGS = "0x18080000"
-                private const val WINDOW_CHECKS = 10
-                private const val WINDOW_CHECK_MS = 300L
         }
-
-        /** Where [openChromeWindow] put Chrome. */
-        enum class ChromeWindowLaunch { FAILED, ON_DISPLAY, ELSEWHERE }
-
-        /**
-         * [launch]; for [ChromeWindowLaunch.ON_DISPLAY] the Chrome task ids that appeared, and
-         * every Chrome task id that existed before, on this display or the main one (null when
-         * either list could not be read).
-         */
-        data class ChromeWindow(
-                val launch: ChromeWindowLaunch,
-                val createdTaskIds: Set<Int> = emptySet(),
-                val preexistingTaskIds: Set<Int>? = null,
-        )
 
         /** Chrome's root task ids on this display, or null when they cannot be read. */
         suspend fun chromeTaskIds(): Set<Int>? {
@@ -52,6 +33,26 @@ internal class VirtualDisplayAppController(
         /** Removes one task by id. Callers pass only a task they created. */
         suspend fun removeTask(taskId: Int): Boolean =
                 withContext(Dispatchers.IO) { shizuku.removeRootTask(taskId) }
+
+        /** Root tasks on the main display, the one in front first; null when unreadable. */
+        suspend fun mainDisplayTasks(): List<ShizukuActivityTaskTransport.RootTask>? =
+                withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(Display.DEFAULT_DISPLAY) }
+
+        /** Moves a root task (with its windows) onto this display. */
+        suspend fun moveTaskHere(taskId: Int): Boolean {
+                val displayId = displayIdProvider()
+                return withContext(Dispatchers.IO) { shizuku.moveRootTaskToDisplay(taskId, displayId) }
+        }
+
+        /** Moves a root task back to the main display. */
+        suspend fun moveTaskToMainDisplay(taskId: Int): Boolean =
+                withContext(Dispatchers.IO) {
+                        shizuku.moveRootTaskToDisplay(taskId, Display.DEFAULT_DISPLAY)
+                }
+
+        /** Puts a task in front on its display. */
+        suspend fun moveTaskToFront(taskId: Int): Boolean =
+                withContext(Dispatchers.IO) { shizuku.moveTaskToFront(taskId) }
 
         suspend fun getInstalledApps(): List<AppInfo> {
                 return withContext(Dispatchers.IO) {
@@ -70,54 +71,6 @@ internal class VirtualDisplayAppController(
         /** Opens [url] in Chrome on this display, as a new tab. Argv only, no shell parsing. */
         suspend fun openUrlInChrome(url: String): ActionResult =
                 startChrome(arrayOf("-a", "android.intent.action.VIEW", "-d", url))
-
-        /**
-         * Opens [url] in a new Chrome window task on this display. Chrome's launcher activity is a
-         * trampoline: a plain `am start --display` brings Chrome's existing task forward wherever it
-         * is, so Chrome lands on the owner's screen. The multiple-task flags ask for a new task,
-         * which `--display` can place. Whether Chrome makes one depends on its version and the
-         * device, so the result is checked: a Chrome root task on this display that was not there
-         * before. Argv only, no shell parsing; the URL is not logged.
-         */
-        suspend fun openChromeWindow(url: String): ChromeWindow {
-                val displayId = displayIdProvider()
-                return withContext(Dispatchers.IO) {
-                        val chrome = ChromeFlagDeepLink.CHROME_PACKAGE
-                        val before = shizuku.rootTaskIdsOnDisplay(displayId, chrome)
-                        val beforeMain = shizuku.rootTaskIdsOnDisplay(Display.DEFAULT_DISPLAY, chrome)
-                        val preexisting = if (before != null && beforeMain != null) before + beforeMain else null
-                        val component = "$chrome/${ChromeFlagDeepLink.CHROME_MAIN_ACTIVITY}"
-                        val command =
-                                arrayOf(
-                                        "am", "start",
-                                        "-f", NEW_WINDOW_FLAGS,
-                                        "--display", "$displayId",
-                                        "-a", "android.intent.action.VIEW",
-                                        "-d", url,
-                                        "-n", component,
-                                )
-                        val code = shizuku.executeQuietShellCommand(command)
-                        if (code != 0) {
-                                Log.i(TAG, "chrome window: am start failed code=$code")
-                                return@withContext ChromeWindow(ChromeWindowLaunch.FAILED)
-                        }
-                        if (before == null) {
-                                Log.i(TAG, "chrome window: tasks on display $displayId unreadable")
-                                return@withContext ChromeWindow(ChromeWindowLaunch.ELSEWHERE)
-                        }
-                        repeat(WINDOW_CHECKS) {
-                                val now = shizuku.rootTaskIdsOnDisplay(displayId, chrome).orEmpty()
-                                val created = now - before
-                                if (created.isNotEmpty()) {
-                                        Log.i(TAG, "chrome window: new task on display $displayId tasks=$created")
-                                        return@withContext ChromeWindow(ChromeWindowLaunch.ON_DISPLAY, created, preexisting)
-                                }
-                                delay(WINDOW_CHECK_MS)
-                        }
-                        Log.i(TAG, "chrome window: no new task on display $displayId; Chrome opened it elsewhere")
-                        ChromeWindow(ChromeWindowLaunch.ELSEWHERE)
-                }
-        }
 
         private suspend fun startChrome(intentArgs: Array<String>): ActionResult {
                 val displayId = displayIdProvider()

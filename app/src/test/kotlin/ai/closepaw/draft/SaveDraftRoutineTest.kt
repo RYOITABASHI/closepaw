@@ -66,11 +66,9 @@ class SaveDraftRoutineTest {
         var dialogWithPaste = false
         var dialogs = 0
         var bodyFilled = false
-        var window = DraftWindow.NONE
-        val windowsOpened = mutableListOf<String>()
-        var windowTabAppears = true
-        var windowTabKeepsMarker = true
-        val ownWindowTabs = mutableListOf<String>()
+        var prepareRefusal: String? = null
+        val prepared = mutableListOf<Unit>()
+        val runTabs = mutableListOf<String>()
         var pasteIgnored = false
         var insertWorks = true
         var focusTargetOk = true
@@ -81,12 +79,9 @@ class SaveDraftRoutineTest {
             shown += Unit
         }
 
-        override suspend fun openOwnWindow(url: String): DraftWindow {
-            windowsOpened += url
-            if (window != DraftWindow.NONE && windowTabAppears) {
-                currentUrl = if (windowTabKeepsMarker) url else url.substringBefore('#')
-            }
-            return window
+        override suspend fun prepareChrome(): String? {
+            prepared += Unit
+            return prepareRefusal
         }
 
         override suspend fun bringToFront(tabId: String) {
@@ -98,8 +93,8 @@ class SaveDraftRoutineTest {
             clicks += x to y
         }
 
-        override fun ownWindowTab(tabId: String) {
-            ownWindowTabs += tabId
+        override fun runTab(tabId: String) {
+            runTabs += tabId
         }
 
         override fun dialogsAnswered(): Int = dialogs
@@ -835,18 +830,9 @@ class SaveDraftRoutineTest {
         val paste = browser.scripts.indexOf(DraftScript.PASTE_HTML)
         assertThat(listOf(target, click, probe, paste)).isInOrder()
         assertThat(browser.clicks).containsExactly(18.0 to 110.0)
-        // Not the run's own window: the owner's window is not rearranged.
-        assertThat(browser.fronted).isEmpty()
-        assertThat(info).contains("focus front=false clicked=true target=ok focused=true pageFocused=false")
-    }
-
-    @Test
-    fun `the run's own window shows its tab before the click`() = runTest {
-        val browser = noteBrowser().apply { window = DraftWindow.VIRTUAL_DISPLAY }
-        routine(browser, note).run()
-
+        // Chrome is on the run's display, so the run's tab is shown there.
         assertThat(browser.fronted).containsExactly(FakeBrowser.OURS)
-        assertThat(browser.clicks).hasSize(1)
+        assertThat(info).contains("focus front=true clicked=true target=ok focused=true pageFocused=false")
     }
 
     @Test
@@ -856,7 +842,7 @@ class SaveDraftRoutineTest {
 
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
         assertThat(browser.clicks).isEmpty()
-        assertThat(info).contains("focus front=false clicked=false target=no-block focused=false pageFocused=false")
+        assertThat(info).contains("focus front=true clicked=false target=no-block focused=false pageFocused=false")
     }
 
     @Test
@@ -868,7 +854,7 @@ class SaveDraftRoutineTest {
         val result = routine(browser, note).run()
 
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
-        assertThat(info).contains("focus front=false clicked=false failed=IOException")
+        assertThat(info).contains("focus front=true clicked=false failed=IOException")
     }
 
     @Test
@@ -877,7 +863,7 @@ class SaveDraftRoutineTest {
         routine(browser, note, listOf(image)).run()
 
         assertThat(info).containsAtLeast(
-            "window=NONE tab=false",
+            "tab ready",
             "editor reached",
             "title set",
             "images placed=1/1",
@@ -889,171 +875,31 @@ class SaveDraftRoutineTest {
         }
     }
 
-    @Test
-    fun `the window's tab is known even when the page drops the fragment`() = runTest {
-        val browser = substackBrowser().apply {
-            window = DraftWindow.VIRTUAL_DISPLAY
-            windowTabKeepsMarker = false
-        }
-        val routine = routine(browser, substack, ownerHasChrome = { true })
-        val result = routine.run()
-
-        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
-        assertThat(routine.drivesOwnWindow).isTrue()
-        assertThat(browser.ownWindowTabs).containsExactly(FakeBrowser.OURS)
-        assertThat(browser.created).isEmpty()
-    }
+    // ── Chrome kept off the owner's screen ──
 
     @Test
-    fun `a new tab is not taken as the window's when the earlier tab list is unknown`() = runTest {
-        val inner = substackBrowser().apply {
-            window = DraftWindow.VIRTUAL_DISPLAY
-            windowTabKeepsMarker = false
-        }
-        var calls = 0
-        val browser = object : DraftBrowser by inner {
-            override suspend fun tabs(): List<DraftTab> {
-                if (calls++ == 0) throw IOException("devtools not up yet")
-                return inner.tabs()
-            }
-        }
-        val routine = routine(browser, substack, ownerHasChrome = { true })
-        val result = routine.run()
-
-        assertThat(result.reason).isEqualTo("chrome-opened")
-        assertThat(inner.ownWindowTabs).isEmpty()
-    }
-
-    // ── Chrome in its own window ──
-
-    @Test
-    fun `a window on the virtual display is used without bringing Chrome forward`() = runTest {
-        val browser = substackBrowser().apply { window = DraftWindow.VIRTUAL_DISPLAY }
+    fun `Chrome is prepared before it is shown, and the run's tab is handed over`() = runTest {
+        val browser = substackBrowser()
         val result = routine(browser, substack).run()
 
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
-        assertThat(browser.windowsOpened).containsExactly(substack.draftListUrl + "#closepaw-test")
+        assertThat(browser.prepared).hasSize(1)
+        assertThat(browser.shown).hasSize(1)
+        assertThat(browser.runTabs).containsExactly(FakeBrowser.OURS)
+    }
+
+    @Test
+    fun `a refused preparation starts nothing`() = runTest {
+        val browser = substackBrowser().apply { prepareRefusal = DraftChromeStage.CHROME_IN_USE }
+        val result = routine(browser, substack).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.FAILED)
+        assertThat(result.reason).isEqualTo("chrome-in-use")
+        assertThat(result.wrote).isFalse()
         assertThat(browser.shown).isEmpty()
         assertThat(browser.created).isEmpty()
-        assertThat(browser.tabsTouched).containsExactly(FakeBrowser.OURS)
-    }
-
-    @Test
-    fun `a window that opened elsewhere keeps today's path`() = runTest {
-        val browser = substackBrowser().apply { window = DraftWindow.ELSEWHERE }
-        val result = routine(browser, substack).run()
-
-        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
-        assertThat(browser.shown).hasSize(1)
-    }
-
-    @Test
-    fun `no window means exactly the old path`() = runTest {
-        val browser = substackBrowser()
-        routine(browser, substack).run()
-
-        assertThat(browser.shown).hasSize(1)
-        assertThat(browser.created).containsExactly(substack.draftListUrl)
-    }
-
-    @Test
-    fun `in its own window the owner's Chrome in front does not stop the run`() = runTest {
-        val browser = substackBrowser().apply { window = DraftWindow.VIRTUAL_DISPLAY }
-        val routine = routine(browser, substack, ownerHasChrome = { true })
-        val result = routine.run()
-
-        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
-        assertThat(routine.drivesOwnWindow).isTrue()
-        assertThat(browser.ownWindowTabs).containsExactly(FakeBrowser.OURS)
-        assertThat(browser.tabsTouched).containsExactly(FakeBrowser.OURS)
-        assertThat(browser.created).isEmpty()
-    }
-
-    @Test
-    fun `a window whose tab never shows falls back under the guard`() = runTest {
-        val browser = substackBrowser().apply {
-            window = DraftWindow.VIRTUAL_DISPLAY
-            windowTabAppears = false
-        }
-        val routine = routine(browser, substack, ownerHasChrome = { true })
-        val result = routine.run()
-
-        assertThat(result.reason).isEqualTo("chrome-opened")
-        assertThat(result.wrote).isFalse()
-        assertThat(routine.drivesOwnWindow).isFalse()
-        assertThat(browser.created).isEmpty()
-        assertThat(browser.ownWindowTabs).isEmpty()
-    }
-
-    @Test
-    fun `a window that opened elsewhere keeps the owner guard`() = runTest {
-        val browser = substackBrowser().apply { window = DraftWindow.ELSEWHERE }
-        val routine = routine(browser, substack, ownerHasChrome = { true })
-        val result = routine.run()
-
-        assertThat(result.reason).isEqualTo("chrome-opened")
-        assertThat(result.wrote).isFalse()
-        assertThat(routine.drivesOwnWindow).isFalse()
-        assertThat(browser.ownWindowTabs).isEmpty()
-    }
-
-    // ── Closing the run's own window ──
-
-    @Test
-    fun `closing removes only Chrome tasks that did not exist before the window`() = runTest {
-        val calls = mutableListOf<String>()
-        val closing = closeDraftWindow(
-            tabId = "t1",
-            // 42 is the owner's task (main display), 5 an older task on this display.
-            preexisting = setOf(42, 5),
-            closeTab = { calls += "close:$it" },
-            // Chrome moved the window from the task first seen into 9.
-            tasksOnDisplay = { calls += "list"; setOf(5, 9, 42) },
-            removeTask = { calls += "remove:$it"; true },
-        )
-
-        assertThat(calls).containsExactly("close:t1", "list", "remove:9").inOrder()
-        assertThat(closing).isEqualTo(DraftWindowClosing("closed", setOf(5, 9, 42), listOf(9), emptyList()))
-    }
-
-    @Test
-    fun `closing says why a part failed`() = runTest {
-        val closing = closeDraftWindow(
-            tabId = "t1",
-            preexisting = emptySet(),
-            closeTab = { throw IOException("gone") },
-            tasksOnDisplay = { setOf(7, 8) },
-            removeTask = { id -> if (id == 7) false else throw SecurityException("no") },
-        )
-
-        assertThat(closing.tab).isEqualTo("failed-IOException")
-        assertThat(closing.removed).isEmpty()
-        assertThat(closing.notRemoved).containsExactly("7:refused", "8:SecurityException")
-    }
-
-    @Test
-    fun `without the earlier task list nothing is removed`() = runTest {
-        var listed = false
-        val asked = mutableListOf<Int>()
-        val unknown = closeDraftWindow(
-            tabId = null,
-            preexisting = null,
-            closeTab = { },
-            tasksOnDisplay = { listed = true; setOf(9) },
-            removeTask = { asked += it; true },
-        )
-        assertThat(unknown).isEqualTo(DraftWindowClosing("none", null, emptyList(), emptyList()))
-        assertThat(listed).isFalse()
-
-        val unreadable = closeDraftWindow(
-            tabId = null,
-            preexisting = setOf(42),
-            closeTab = { },
-            tasksOnDisplay = { null },
-            removeTask = { asked += it; true },
-        )
-        assertThat(unreadable.notRemoved).containsExactly("tasks-unreadable")
-        assertThat(asked).isEmpty()
+        assertThat(browser.opened).isEmpty()
+        assertThat(info).contains("chrome not prepared: chrome-in-use")
     }
 
     // ── Failure reasons ──

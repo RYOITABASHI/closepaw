@@ -2,6 +2,7 @@ package ai.closepaw.platform.virtualdisplay
 
 import android.content.ComponentName
 import android.content.Intent
+import android.os.Bundle
 import android.util.Log
 import java.lang.reflect.InvocationTargetException
 
@@ -15,6 +16,9 @@ internal class ShizukuActivityTaskTransport(
 
         companion object {
                 private const val TAG = "ShizukuActivityTask"
+
+                /** Calls through Shizuku run as the shell user, whose package this is. */
+                private const val SHELL_PACKAGE = "com.android.shell"
         }
 
         fun removeRootTasksOnDisplay(displayId: Int): Int {
@@ -65,6 +69,86 @@ internal class ShizukuActivityTaskTransport(
                 } catch (e: Exception) {
                         Log.w(TAG, "root task query failed: displayId=$displayId err=${e.summary()}")
                         null
+                }
+        }
+
+        /** A root task: its id, the packages of its activities, and whether it is visible. */
+        data class RootTask(val id: Int, val packages: Set<String>, val visible: Boolean?)
+
+        /**
+         * Root tasks on [displayId] in the order the system lists them, which is from the one in
+         * front to the back; null when the transport fails.
+         */
+        fun rootTasksOnDisplay(displayId: Int): List<RootTask>? {
+                if (displayId < 0) return null
+                return try {
+                        getAllRootTaskInfosOnDisplay(activityTaskManagerProxy(), displayId).map { info ->
+                                val visible =
+                                        runCatching { info.javaClass.getField("visible").getBoolean(info) }
+                                                .getOrNull()
+                                RootTask(rootTaskId(info), taskPackages(info), visible)
+                        }
+                } catch (e: Exception) {
+                        Log.w(TAG, "root task list failed: displayId=$displayId err=${e.summary()}")
+                        null
+                }
+        }
+
+        /**
+         * IActivityTaskManager.moveRootTaskToDisplay (moveStackToDisplay before Android 12): the
+         * task and its windows move to [displayId], on top there.
+         */
+        fun moveRootTaskToDisplay(taskId: Int, displayId: Int): Boolean {
+                return try {
+                        val proxy = activityTaskManagerProxy()
+                        val int = Int::class.javaPrimitiveType
+                        val method =
+                                runCatching { proxy.javaClass.getMethod("moveRootTaskToDisplay", int, int) }
+                                        .getOrNull()
+                                        ?: proxy.javaClass.getMethod("moveStackToDisplay", int, int)
+                        method.invoke(proxy, taskId, displayId)
+                        Log.i(TAG, "moved task $taskId to display $displayId")
+                        true
+                } catch (e: Exception) {
+                        Log.w(TAG, "move task failed: taskId=$taskId displayId=$displayId err=${e.summary()}")
+                        false
+                }
+        }
+
+        /**
+         * Puts a task in front on its display: IActivityTaskManager.moveTaskToFront as the shell,
+         * or startActivityFromRecents where that signature is not there.
+         */
+        fun moveTaskToFront(taskId: Int): Boolean {
+                val proxy = try {
+                        activityTaskManagerProxy()
+                } catch (e: Exception) {
+                        Log.w(TAG, "task to front failed: taskId=$taskId err=${e.summary()}")
+                        return false
+                }
+                val toFront = proxy.javaClass.methods.firstOrNull { m ->
+                        m.name == "moveTaskToFront" && m.parameterTypes.size == 5 &&
+                                m.parameterTypes[1] == String::class.java &&
+                                m.parameterTypes[2] == Int::class.javaPrimitiveType
+                }
+                if (toFront != null) {
+                        try {
+                                toFront.invoke(proxy, null, SHELL_PACKAGE, taskId, 0, null)
+                                Log.i(TAG, "task $taskId to front")
+                                return true
+                        } catch (e: Exception) {
+                                Log.w(TAG, "moveTaskToFront failed: taskId=$taskId err=${e.summary()}")
+                        }
+                }
+                return try {
+                        proxy.javaClass
+                                .getMethod("startActivityFromRecents", Int::class.javaPrimitiveType, Bundle::class.java)
+                                .invoke(proxy, taskId, null)
+                        Log.i(TAG, "task $taskId to front from recents")
+                        true
+                } catch (e: Exception) {
+                        Log.w(TAG, "startActivityFromRecents failed: taskId=$taskId err=${e.summary()}")
+                        false
                 }
         }
 

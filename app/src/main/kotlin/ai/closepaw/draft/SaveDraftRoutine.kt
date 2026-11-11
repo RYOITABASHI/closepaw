@@ -22,39 +22,25 @@ import kotlinx.serialization.json.put
 
 data class DraftTab(val id: String, val url: String)
 
-/** Where [DraftBrowser.openOwnWindow] put Chrome. */
-enum class DraftWindow {
-    /** Nothing was started. */
-    NONE,
-
-    /** A new Chrome window task appeared on the run's virtual display. */
-    VIRTUAL_DISPLAY,
-
-    /** Chrome took the intent, but no new task appeared on the virtual display. */
-    ELSEWHERE,
-}
-
 /** What the routine may do to Chrome. Scripts are a closed enum; URLs come from [DraftSite]. */
 interface DraftBrowser {
     /** Brings Chrome onto the run's display, opening nothing. CDP needs it visible. */
     suspend fun showChrome()
 
     /**
-     * Best effort: opens [url] in a new Chrome window task on the run's display, so the owner's
-     * own Chrome window stays where it is. The default opens nothing.
+     * Gets Chrome ready on the run's display without showing it to the owner (see
+     * [DraftChromeStage]). Returns null to go ahead, or the reason the run must not start, in
+     * which case nothing has been done to the page. The default does nothing.
      */
-    suspend fun openOwnWindow(url: String): DraftWindow = DraftWindow.NONE
+    suspend fun prepareChrome(): String? = null
 
     /** How many JavaScript dialogs the browser has answered for this run so far. */
     fun dialogsAnswered(): Int = 0
 
-    /**
-     * The run drives [tabId], the marked tab of the window [openOwnWindow] put on the virtual
-     * display, so the browser can close it on every exit. The default does nothing.
-     */
-    fun ownWindowTab(tabId: String) {}
+    /** The run's own tab, which the browser closes on every exit. The default does nothing. */
+    fun runTab(tabId: String) {}
 
-    /** Makes [tabId] the shown tab of its window. Used only for the run's own window. */
+    /** Makes [tabId] the shown tab of its window, which is on the run's display. */
     suspend fun bringToFront(tabId: String) {}
 
     /**
@@ -143,9 +129,9 @@ data class SaveDraftTiming(
  * - A step is never repeated after a write, so a timeout is `uncertain`: the draft may exist, and
  *   only the owner or a read of the draft list can tell.
  *
- * Only a confirmed save closes the tab. Any other ending leaves it open in Chrome, with what it
- * holds, because a closed editor cannot be recovered; see ChromeDraftBrowser.stop for what happens
- * to the tab when the virtual display goes away.
+ * A confirmed save closes the tab here. On every exit the browser also closes the run's tab and
+ * puts the owner's Chrome back where it was (ChromeDraftBrowser.stop, [DraftChromeStage]), so
+ * nothing the run opened is left in the owner's Chrome.
  */
 class SaveDraftRoutine(
     private val browser: DraftBrowser,
@@ -175,14 +161,6 @@ class SaveDraftRoutine(
 
     /** The step in progress, for the reason and the log when something throws. */
     @Volatile private var step = STEP_CHROME
-
-    /**
-     * True while the run works in its own Chrome window on the virtual display. The owner's Chrome
-     * on the main display is then a different window that the run never touches, so it being in
-     * front is no reason to stop: [stopIfOwnerHasChrome] and the service's window watch skip it.
-     */
-    @Volatile var drivesOwnWindow = false
-        private set
 
     /** Ends the run from any depth, past [pollUntil]. */
     private class Halt(val reason: String) : Exception()
@@ -227,48 +205,19 @@ class SaveDraftRoutine(
 
     private suspend fun steps(): SaveDraftResult {
         step = STEP_CHROME
-        val windowMarker = "#" + newMarker()
-        // Chrome's tabs before the window, when Chrome already answers: a tab that appears after
-        // the window opened, alone and on the site, is the window's tab even if the page dropped
-        // the fragment. Without this list only the fragment counts.
-        val tabsBefore = try {
-            browser.tabs().map { it.id }.toSet()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            null
+        browser.prepareChrome()?.let { refusal ->
+            logInfo("chrome not prepared: $refusal")
+            return result(DraftOutcome.FAILED, refusal)
         }
-        val window = try {
-            browser.openOwnWindow(site.draftListUrl + windowMarker)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            DraftWindow.NONE
-        }
-        // In its own window on the virtual display Chrome is already visible there. Otherwise do
-        // as before: bring Chrome to the display.
-        drivesOwnWindow = window == DraftWindow.VIRTUAL_DISPLAY
-        if (!drivesOwnWindow) browser.showChrome()
+        browser.showChrome()
         pollUntil(timing.tabWaitMs) { browser.tabs() }
             ?: return result(DraftOutcome.UNCERTAIN, "chrome-not-reachable")
 
         step = STEP_LIST
-        // The window's tab carries a fragment this run just made up, so it is provably ours.
-        val windowTab = when (window) {
-            DraftWindow.NONE -> null
-            DraftWindow.VIRTUAL_DISPLAY -> findWindowTab(windowMarker, tabsBefore)
-            DraftWindow.ELSEWHERE -> findMarked(windowMarker, minOf(timing.tabWaitMs, WINDOW_TAB_GLANCE_MS))
-        }
-        logInfo("window=$window tab=${windowTab != null}")
-        if (windowTab != null && drivesOwnWindow) browser.ownWindowTab(windowTab.id)
-        if (windowTab == null && drivesOwnWindow) {
-            // The window's tab never showed: the fallback works in the owner's Chrome window, so
-            // the guard applies again from here.
-            drivesOwnWindow = false
-            stopIfOwnerHasChrome()
-        }
-        val tab = windowTab ?: openOwnTab(site.draftListUrl)
+        val tab = openOwnTab(site.draftListUrl)
             ?: return result(DraftOutcome.UNCERTAIN, "tab-not-found")
+        browser.runTab(tab.id)
+        logInfo("tab ready")
 
         val copy = findExisting(tab)
         if (copy != null) {
@@ -326,16 +275,6 @@ class SaveDraftRoutine(
      */
     private suspend fun findMarked(marker: String, limitMs: Long): DraftTab? =
         pollUntil(limitMs) { browser.tabs().firstOrNull { it.url.endsWith(marker) } }
-
-    /** The tab of the run's own window: the marked one, or the one new tab on the site. */
-    private suspend fun findWindowTab(marker: String, before: Set<String>?): DraftTab? =
-        pollUntil(timing.tabWaitMs) {
-            val tabs = browser.tabs()
-            tabs.firstOrNull { it.url.contains(marker) }
-                ?: before?.let { known ->
-                    tabs.filter { it.id !in known }.singleOrNull()?.takeIf { sameHost(it.url, site.draftListUrl) }
-                }
-        }
 
     private suspend fun openOwnTab(url: String): DraftTab? {
         val created = try {
@@ -471,10 +410,9 @@ class SaveDraftRoutine(
         var why: String? = null
         try {
             stopIfOwnerHasChrome()
-            if (drivesOwnWindow) {
-                browser.bringToFront(tab.id)
-                front = true
-            }
+            // Chrome is on the run's display, so this shows the tab there, not to the owner.
+            browser.bringToFront(tab.id)
+            front = true
             val target = browser.evaluate(tab.id, DraftScript.FOCUS_TARGET, buildJsonObject { put("editorUrl", editorUrl) })
             stopIfMoved(target)
             val x = target["x"]?.jsonPrimitive?.doubleOrNull
@@ -559,17 +497,11 @@ class SaveDraftRoutine(
     }
 
     private fun stopIfOwnerHasChrome() {
-        if (!drivesOwnWindow && ownerHasChrome()) throw Halt("chrome-opened")
+        if (ownerHasChrome()) throw Halt("chrome-opened")
     }
 
     private fun stopIfMoved(answer: JsonObject) {
         if (answer.flag("moved")) throw Halt("editor-moved")
-    }
-
-    private fun sameHost(a: String, b: String): Boolean {
-        val hostA = runCatching { java.net.URI(a).host }.getOrNull() ?: return false
-        val hostB = runCatching { java.net.URI(b).host }.getOrNull() ?: return false
-        return hostA.equals(hostB, ignoreCase = true)
     }
 
     private suspend fun closeTab(tab: DraftTab) {
@@ -616,7 +548,6 @@ class SaveDraftRoutine(
 
     private companion object {
         const val TAG = "SaveDraftRoutine"
-        const val WINDOW_TAB_GLANCE_MS = 5_000L
         const val PASTE_SETTLE_MS = 3_000L
         val NO_ARGS = JsonObject(emptyMap())
         val RANDOM = SecureRandom()
@@ -636,67 +567,6 @@ internal const val STEP_IMAGE = "image"
 internal const val STEP_PASTE = "paste"
 internal const val STEP_SAVE = "save"
 internal const val STEP_READBACK = "readback"
-
-/** What [closeDraftWindow] did, for the log: ids and class names only. */
-internal data class DraftWindowClosing(
-    /** "none", "closed", or "failed-<class>". */
-    val tab: String,
-    /** Chrome tasks on the display at the end; null when unread or not looked at. */
-    val onDisplay: Set<Int>?,
-    val removed: List<Int>,
-    val notRemoved: List<String>,
-)
-
-/**
- * Closes the run's own Chrome window before the virtual display goes: its tab over CDP, then the
- * window's tasks. A Chrome task on the display counts as the run's only if it did not exist,
- * on this display or the main one, before the window was opened ([preexisting]). Chrome may move
- * the window into a task other than the one first seen, so the comparison is made at the end.
- * The owner's tasks all predate the window and are never removed. Without [preexisting] nothing
- * is removed. Each part is best effort.
- */
-internal suspend fun closeDraftWindow(
-    tabId: String?,
-    preexisting: Set<Int>?,
-    closeTab: suspend (String) -> Unit,
-    tasksOnDisplay: suspend () -> Set<Int>?,
-    removeTask: suspend (Int) -> Boolean,
-): DraftWindowClosing {
-    val tab = if (tabId == null) {
-        "none"
-    } else {
-        try {
-            closeTab(tabId)
-            "closed"
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // The task removal below still takes the window away.
-            "failed-" + e.javaClass.simpleName
-        }
-    }
-    if (preexisting == null) return DraftWindowClosing(tab, null, emptyList(), emptyList())
-    val onDisplay = try {
-        tasksOnDisplay()
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        null
-    } ?: return DraftWindowClosing(tab, null, emptyList(), listOf("tasks-unreadable"))
-    val removed = mutableListOf<Int>()
-    val notRemoved = mutableListOf<String>()
-    for (id in onDisplay - preexisting) {
-        val outcome = try {
-            if (removeTask(id)) null else "refused"
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            e.javaClass.simpleName
-        }
-        if (outcome == null) removed += id else notRemoved += "$id:$outcome"
-    }
-    return DraftWindowClosing(tab, onDisplay, removed, notRemoved)
-}
 
 /** `error-<class>@<step>`: the class's simple name, never its message, which may hold page text. */
 internal fun draftErrorReason(e: Throwable, step: String): String = "error-${e.javaClass.simpleName}@$step"

@@ -601,15 +601,6 @@ class VirtualDisplayPlatform(
         }
     }
 
-    /** Opens a URL in a new Chrome window task on this virtual display, if Chrome makes one. */
-    internal suspend fun openChromeWindow(url: String): VirtualDisplayAppController.ChromeWindow {
-        return try {
-            arbiter.withRunningLease { appController.openChromeWindow(url) }
-        } catch (e: PlatformNotRunningException) {
-            VirtualDisplayAppController.ChromeWindow(VirtualDisplayAppController.ChromeWindowLaunch.FAILED)
-        }
-    }
-
     /** Chrome's root task ids on this display; null when not running or unreadable. */
     internal suspend fun chromeTaskIds(): Set<Int>? {
         return try {
@@ -627,6 +618,27 @@ class VirtualDisplayPlatform(
             false
         }
     }
+
+    /** Root tasks on the main display, front first; null when unreadable. */
+    internal suspend fun mainDisplayTasks(): List<ShizukuActivityTaskTransport.RootTask>? =
+            appController.mainDisplayTasks()
+
+    /** Moves a root task onto this virtual display. False when it is not running. */
+    internal suspend fun moveTaskHere(taskId: Int): Boolean {
+        return try {
+            arbiter.withRunningLease { appController.moveTaskHere(taskId) }
+        } catch (e: PlatformNotRunningException) {
+            false
+        }
+    }
+
+    /** Moves a root task to the main display. Works while this display is still up. */
+    internal suspend fun moveTaskToMainDisplay(taskId: Int): Boolean =
+            appController.moveTaskToMainDisplay(taskId)
+
+    /** Puts a task in front on its display. */
+    internal suspend fun moveTaskToFront(taskId: Int): Boolean =
+            appController.moveTaskToFront(taskId)
 
     /** Opens a URL in Chrome on this virtual display. */
     suspend fun openUrlInChrome(url: String): ActionResult {

@@ -33,6 +33,7 @@ import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import ai.closepaw.browser.setup.ChromeFlagDeepLink
+import ai.closepaw.platform.virtualdisplay.ShizukuClient
 import ai.closepaw.R
 import ai.closepaw.draft.ChromeDraftBrowser
 import ai.closepaw.draft.DraftOutcome
@@ -162,9 +163,6 @@ class AgentService : AccessibilityService() {
 
     /** Why the running draft routine was stopped from outside. Main thread. */
     private var draftStopReason: String? = null
-
-    /** The running draft routine, read by the window watch. Main thread. */
-    private var draftRoutine: SaveDraftRoutine? = null
 
     fun observeExternalSession(
             externalSession: AgentSession,
@@ -688,7 +686,22 @@ class AgentService : AccessibilityService() {
 
     /** True when Chrome is, or may be, what the user has in front on the main display. */
     internal fun isChromeInFront(): Boolean =
-            ShellySaveDraft.chromeInFront(currentForegroundPackageOnDefaultDisplay())
+            ShellySaveDraft.chromeInFront(currentForegroundPackageOnDefaultDisplay()) ||
+                    chromeTaskInFrontOnMainDisplay()
+
+    private val taskReader by lazy { ShizukuClient() }
+
+    /**
+     * A second look, from the task list: true when the front visible root task on the main display
+     * is Chrome's. Unreadable counts as false here; the window check above already fails closed.
+     */
+    private fun chromeTaskInFrontOnMainDisplay(): Boolean = try {
+        val tasks = taskReader.rootTasksOnDisplay(Display.DEFAULT_DISPLAY)
+        val front = tasks?.firstOrNull { it.visible != false } ?: tasks?.firstOrNull()
+        front != null && ChromeFlagDeepLink.CHROME_PACKAGE in front.packages
+    } catch (e: Exception) {
+        false
+    }
 
     /**
      * Runs the fixed draft routine for a verified Shelly request. Unlike [startShellyRun] it opens
@@ -707,7 +720,6 @@ class AgentService : AccessibilityService() {
         val browser = ChromeDraftBrowser(this, serviceScope)
         val routine = SaveDraftRoutine(browser, request, ownerHasChrome = ::isChromeInFront)
         draftStopReason = null
-        draftRoutine = routine
         draftJob = serviceScope.launch(Dispatchers.Default) {
             var result: SaveDraftResult? = null
             try {
@@ -730,7 +742,6 @@ class AgentService : AccessibilityService() {
                     }
                     withContext(Dispatchers.Main) {
                         draftJob = null
-                        draftRoutine = null
                         UnattendedEvidence.stop()
                         finishShellySaveDraft(
                                 result ?: routine.resultSoFar(draftStopReason ?: "stopped"),
@@ -938,10 +949,7 @@ class AgentService : AccessibilityService() {
                     isActivityWindowClass(className),
                     displayId == Display.DEFAULT_DISPLAY,
             )
-            if (opened && draftRoutine?.drivesOwnWindow == true) {
-                // The run works in its own window on the virtual display, not in this one.
-                Log.i(TAG, "Draft routine: owner's Chrome in front; the run uses its own window, continuing")
-            } else if (opened) {
+            if (opened) {
                 Log.i(TAG, "Draft routine: owner opened Chrome; stopping")
                 draftStopReason = "chrome-opened"
                 job.cancel()
