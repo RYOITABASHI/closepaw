@@ -43,6 +43,13 @@
 -keep class android.os.IShellCallback { *; }
 -keep class android.os.IRemoteCallback { *; }
 
+# Shizuku instantiates the UserService by class name in a separate app_process;
+# R8 sees no `new` and turned it into an empty abstract class (bind then timed
+# out after 10 s, so every save-draft run ended "chrome-not-reachable").
+-keep class ai.closepaw.browser.cdp.shizuku.ChromeDevtoolsUserService { <init>(...); *; }
+-keep class ai.closepaw.browser.cdp.shizuku.IChromeDevtoolsUserService { *; }
+-keep class ai.closepaw.browser.cdp.shizuku.IChromeDevtoolsUserService$* { *; }
+
 # Hidden-framework AIDL stubs regenerated in the app (virtual display path).
 # IVirtualDisplayCallback is instantiated directly and passed via reflection
 # into IDisplayManager.createVirtualDisplay — R8 must not rename it.
