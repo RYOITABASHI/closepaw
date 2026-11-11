@@ -62,7 +62,7 @@ function page(options = {}) {
     },
     querySelectorAll(sel) {
       if (sel === 'button') return buttons;
-      if (sel === 'img') return new Array(images);
+      if (sel === 'img') return (Array.isArray(images) ? images : new Array(images).fill('https://x/i.png')).map((src) => ({ src }));
       if (sel.startsWith('li,')) return items;
       throw new Error('selector ' + sel);
     },
@@ -155,6 +155,28 @@ const tests = {
     assert.strictEqual(run('EDITOR_PROBE', p.sandbox).bodyEmpty, true);
     p.body.textContent = 'x';
     assert.strictEqual(run('EDITOR_PROBE', p.sandbox).bodyEmpty, false);
+  },
+
+  'image count holds only stored images, and a local preview means still uploading': () => {
+    const count = (options) => run('IMAGE_COUNT', page(options).sandbox);
+    assert.deepStrictEqual(count({ images: [] }), { count: 0, local: 0, uploading: false });
+    assert.deepStrictEqual(count({ images: ['blob:https://editor.note.com/1'] }), { count: 0, local: 1, uploading: true });
+    assert.deepStrictEqual(count({ images: ['https://assets.st-note.com/a.jpg'] }), { count: 1, local: 0, uploading: false });
+    assert.deepStrictEqual(count({ images: ['data:image/png;base64,AAAA', ''] }), { count: 0, local: 0, uploading: false });
+    assert.deepStrictEqual(
+      count({ images: ['https://assets.st-note.com/a.jpg', 'blob:https://editor.note.com/2'] }),
+      { count: 1, local: 1, uploading: true },
+    );
+  },
+
+  'an upload notice outside the body is uploading; the same words in the body are not': () => {
+    const stored = ['https://assets.st-note.com/a.jpg'];
+    const outside = run('IMAGE_COUNT', page({ images: stored, outside: [new El('span', { textContent: '画像アップロード中です' })] }).sandbox);
+    assert.deepStrictEqual(outside, { count: 1, local: 0, uploading: true });
+    const english = run('IMAGE_COUNT', page({ images: stored, outside: [new El('span', { textContent: 'Uploading image…' })] }).sandbox);
+    assert.strictEqual(english.uploading, true);
+    const inBody = run('IMAGE_COUNT', page({ images: stored, bodyChildren: [new El('p', { textContent: 'アップロード中' })] }).sandbox);
+    assert.strictEqual(inBody.uploading, false);
   },
 
   'title uses the native setter and an input event': () => {

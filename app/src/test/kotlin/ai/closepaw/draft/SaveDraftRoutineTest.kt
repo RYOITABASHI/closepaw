@@ -59,10 +59,26 @@ class SaveDraftRoutineTest {
         var movesTo: String? = null
         var movesBefore: DraftScript? = null
         var onWrite: () -> Unit = {}
+        var uploadingPolls = 0
+        var uploadingLeft = 0
+        var pasteRefusals = 0
+        var dialogWithPaste = false
+        var dialogs = 0
+        var bodyFilled = false
+        var window = DraftWindow.NONE
+        val windowsOpened = mutableListOf<String>()
 
         override suspend fun showChrome() {
             shown += Unit
         }
+
+        override suspend fun openOwnWindow(url: String): DraftWindow {
+            windowsOpened += url
+            if (window != DraftWindow.NONE) currentUrl = url
+            return window
+        }
+
+        override fun dialogsAnswered(): Int = dialogs
 
         override suspend fun createTab(url: String): String {
             created += url
@@ -125,15 +141,41 @@ class SaveDraftRoutineTest {
                     put("titleFound", true)
                     put("bodyFound", true)
                     put("titleEmpty", !editorHasContent)
-                    put("bodyEmpty", !editorHasContent)
+                    put("bodyEmpty", !editorHasContent && !bodyFilled)
                 }
-                DraftScript.SET_TITLE, DraftScript.PASTE_HTML -> {
+                DraftScript.SET_TITLE -> {
                     onWrite()
                     buildJsonObject { put("ok", true) }
                 }
-                DraftScript.IMAGE_COUNT -> buildJsonObject { put("count", pageImages) }
+                DraftScript.PASTE_HTML -> {
+                    onWrite()
+                    when {
+                        pasteRefusals > 0 -> {
+                            // note's "uploading" alert, answered by the browser; the body stays empty.
+                            pasteRefusals--
+                            dialogs++
+                        }
+                        dialogWithPaste -> {
+                            dialogs++
+                            bodyFilled = true
+                        }
+                        else -> bodyFilled = true
+                    }
+                    buildJsonObject { put("ok", true) }
+                }
+                DraftScript.IMAGE_COUNT -> buildJsonObject {
+                    val uploading = uploadingLeft > 0
+                    if (uploading) uploadingLeft--
+                    // While uploading, the new image is only a local preview: not counted.
+                    put("count", if (uploading) pageImages - 1 else pageImages)
+                    put("local", if (uploading) 1 else 0)
+                    put("uploading", uploading)
+                }
                 DraftScript.PASTE_IMAGE, DraftScript.FILE_INPUT_IMAGE -> {
-                    if (script == imageRouteWorks) pageImages++
+                    if (script == imageRouteWorks) {
+                        pageImages++
+                        uploadingLeft = uploadingPolls
+                    }
                     buildJsonObject { put("ok", true) }
                 }
                 DraftScript.READ_BACK -> buildJsonObject {
@@ -164,6 +206,8 @@ class SaveDraftRoutineTest {
         }
     }
 
+    private val logged = mutableListOf<String>()
+
     private fun TestScope.routine(
         browser: DraftBrowser,
         site: DraftSite,
@@ -175,6 +219,7 @@ class SaveDraftRoutineTest {
         ownerHasChrome,
         now = { testScheduler.currentTime },
         newMarker = { "closepaw-test" },
+        logFailure = { message, _ -> logged += message },
     )
 
     private fun substackBrowser() = FakeBrowser(substack.draftListUrl, substackEditor)
@@ -587,6 +632,171 @@ class SaveDraftRoutineTest {
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
         assertThat(result.imagesExpected).isEqualTo(1)
         assertThat(result.imagesPlaced).isEqualTo(0)
+    }
+
+    // ── Image upload completion ──
+
+    @Test
+    fun `an image counts only once it is stored and no upload is running`() {
+        val state = { count: Int, uploading: Boolean ->
+            buildJsonObject {
+                put("count", count)
+                put("uploading", uploading)
+            }
+        }
+        assertThat(draftImageLanded(0, state(1, false))).isTrue()
+        assertThat(draftImageLanded(0, state(1, true))).isFalse()
+        assertThat(draftImageLanded(0, state(0, false))).isFalse()
+        assertThat(draftImageLanded(1, state(1, false))).isFalse()
+        assertThat(draftImageLanded(0, buildJsonObject { put("count", 1) })).isFalse()
+        assertThat(draftImageLanded(0, buildJsonObject { put("uploading", false) })).isFalse()
+    }
+
+    @Test
+    fun `a local preview is not a placed image, the upload is awaited`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            uploadingPolls = 5
+        }
+        val result = routine(browser, note, listOf(image)).run()
+
+        assertThat(result.imagesPlaced).isEqualTo(1)
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.scripts.count { it == DraftScript.IMAGE_COUNT }).isAtLeast(6)
+        assertThat(browser.scripts).doesNotContain(DraftScript.FILE_INPUT_IMAGE)
+        assertThat(browser.scripts.lastIndexOf(DraftScript.IMAGE_COUNT))
+            .isLessThan(browser.scripts.indexOf(DraftScript.PASTE_HTML))
+    }
+
+    @Test
+    fun `an upload still running at the limit is not retried by the other route`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            uploadingPolls = 1_000
+        }
+        val result = routine(browser, note, listOf(image)).run()
+
+        assertThat(result.imagesPlaced).isEqualTo(0)
+        assertThat(browser.scripts).doesNotContain(DraftScript.FILE_INPUT_IMAGE)
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_IMAGE }).isEqualTo(1)
+    }
+
+    // ── JavaScript dialogs ──
+
+    @Test
+    fun `only an alert is accepted, every other dialog is dismissed`() {
+        assertThat(draftDialogAccept("alert")).isTrue()
+        assertThat(draftDialogAccept("confirm")).isFalse()
+        assertThat(draftDialogAccept("prompt")).isFalse()
+        assertThat(draftDialogAccept("beforeunload")).isFalse()
+        assertThat(draftDialogAccept("unknown")).isFalse()
+    }
+
+    @Test
+    fun `a paste refused with a dialog is pasted once more into the empty body`() = runTest {
+        val browser = noteBrowser().apply { pasteRefusals = 1 }
+        val result = routine(browser, note).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(2)
+    }
+
+    @Test
+    fun `a paste is retried only once`() = runTest {
+        val browser = noteBrowser().apply {
+            pasteRefusals = 2
+            readBackOk = false
+        }
+        val result = routine(browser, note).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(2)
+    }
+
+    @Test
+    fun `a dialog with a filled body is not a reason to paste again`() = runTest {
+        val browser = noteBrowser().apply { dialogWithPaste = true }
+        val result = routine(browser, note).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(1)
+    }
+
+    @Test
+    fun `without a dialog the body is pasted once and not probed again`() = runTest {
+        val browser = noteBrowser()
+        routine(browser, note).run()
+
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(1)
+        assertThat(browser.scripts.count { it == DraftScript.EDITOR_PROBE }).isEqualTo(1)
+    }
+
+    // ── Chrome in its own window ──
+
+    @Test
+    fun `a window on the virtual display is used without bringing Chrome forward`() = runTest {
+        val browser = substackBrowser().apply { window = DraftWindow.VIRTUAL_DISPLAY }
+        val result = routine(browser, substack).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.windowsOpened).containsExactly(substack.draftListUrl + "#closepaw-test")
+        assertThat(browser.shown).isEmpty()
+        assertThat(browser.created).isEmpty()
+        assertThat(browser.tabsTouched).containsExactly(FakeBrowser.OURS)
+    }
+
+    @Test
+    fun `a window that opened elsewhere keeps today's path`() = runTest {
+        val browser = substackBrowser().apply { window = DraftWindow.ELSEWHERE }
+        val result = routine(browser, substack).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.shown).hasSize(1)
+    }
+
+    @Test
+    fun `no window means exactly the old path`() = runTest {
+        val browser = substackBrowser()
+        routine(browser, substack).run()
+
+        assertThat(browser.shown).hasSize(1)
+        assertThat(browser.created).containsExactly(substack.draftListUrl)
+    }
+
+    // ── Failure reasons ──
+
+    @Test
+    fun `an error reason names the class and the step, not the message`() {
+        assertThat(draftErrorReason(IllegalStateException("page text"), STEP_PASTE))
+            .isEqualTo("error-IllegalStateException@paste")
+    }
+
+    @Test
+    fun `a thrown error reports and logs the step it happened in, without article text`() = runTest {
+        val inner = substackBrowser()
+        val browser = object : DraftBrowser by inner {
+            override suspend fun evaluate(tabId: String, script: DraftScript, args: JsonObject): JsonObject {
+                if (script == DraftScript.SET_TITLE) throw IllegalStateException("A title")
+                return inner.evaluate(tabId, script, args)
+            }
+        }
+        val result = routine(browser, substack).run()
+
+        assertThat(result.reason).isEqualTo("error-IllegalStateException@title")
+        assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
+        assertThat(logged).containsExactly("draft routine failed at step=title: java.lang.IllegalStateException")
+    }
+
+    @Test
+    fun `an error while saving names the save step`() = runTest {
+        val inner = noteBrowser()
+        val browser = object : DraftBrowser by inner {
+            override suspend fun evaluate(tabId: String, script: DraftScript, args: JsonObject): JsonObject {
+                if (script == DraftScript.NOTE_SAVE_CLICK) throw IOException("x")
+                return inner.evaluate(tabId, script, args)
+            }
+        }
+        assertThat(routine(browser, note).run().reason).isEqualTo("error-IOException@save")
     }
 
     // ── Reporting ──

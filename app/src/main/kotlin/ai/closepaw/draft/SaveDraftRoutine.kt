@@ -1,5 +1,6 @@
 package ai.closepaw.draft
 
+import android.util.Log
 import java.security.SecureRandom
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -21,10 +22,31 @@ import kotlinx.serialization.json.put
 
 data class DraftTab(val id: String, val url: String)
 
+/** Where [DraftBrowser.openOwnWindow] put Chrome. */
+enum class DraftWindow {
+    /** Nothing was started. */
+    NONE,
+
+    /** A new Chrome window task appeared on the run's virtual display. */
+    VIRTUAL_DISPLAY,
+
+    /** Chrome took the intent, but no new task appeared on the virtual display. */
+    ELSEWHERE,
+}
+
 /** What the routine may do to Chrome. Scripts are a closed enum; URLs come from [DraftSite]. */
 interface DraftBrowser {
     /** Brings Chrome onto the run's display, opening nothing. CDP needs it visible. */
     suspend fun showChrome()
+
+    /**
+     * Best effort: opens [url] in a new Chrome window task on the run's display, so the owner's
+     * own Chrome window stays where it is. The default opens nothing.
+     */
+    suspend fun openOwnWindow(url: String): DraftWindow = DraftWindow.NONE
+
+    /** How many JavaScript dialogs the browser has answered for this run so far. */
+    fun dialogsAnswered(): Int = 0
 
     /** Asks Chrome over CDP for a new tab at [url] and returns its target id. */
     suspend fun createTab(url: String): String
@@ -118,6 +140,8 @@ class SaveDraftRoutine(
     private val timing: SaveDraftTiming = SaveDraftTiming(),
     private val now: () -> Long = System::currentTimeMillis,
     private val newMarker: () -> String = ::randomMarker,
+    /** Gets the class and the step, never page or article text. */
+    private val logFailure: (String, Throwable) -> Unit = { message, e -> Log.w(TAG, message, e) },
 ) {
     private val site = request.site
 
@@ -132,6 +156,9 @@ class SaveDraftRoutine(
     @Volatile private var imagesPlaced = 0
     @Volatile private var tabClosed = false
 
+    /** The step in progress, for the reason and the log when something throws. */
+    @Volatile private var step = STEP_CHROME
+
     /** Ends the run from any depth, past [pollUntil]. */
     private class Halt(val reason: String) : Exception()
 
@@ -144,8 +171,10 @@ class SaveDraftRoutine(
             } catch (e: Halt) {
                 resultSoFar(e.reason)
             } catch (e: Exception) {
+                val at = step
+                logFailure("draft routine failed at step=$at: ${e.javaClass.name}", e)
                 // Class name only: exception messages can carry page or request text.
-                resultSoFar("error-" + e.javaClass.simpleName)
+                resultSoFar(draftErrorReason(e, at))
             }
         }
         return finished ?: result(DraftOutcome.UNCERTAIN, "timeout")
@@ -172,11 +201,29 @@ class SaveDraftRoutine(
     )
 
     private suspend fun steps(): SaveDraftResult {
-        browser.showChrome()
+        step = STEP_CHROME
+        val windowMarker = "#" + newMarker()
+        val window = try {
+            browser.openOwnWindow(site.draftListUrl + windowMarker)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            DraftWindow.NONE
+        }
+        // In its own window on the virtual display Chrome is already visible there. Otherwise do
+        // as before: bring Chrome to the display.
+        if (window != DraftWindow.VIRTUAL_DISPLAY) browser.showChrome()
         pollUntil(timing.tabWaitMs) { browser.tabs() }
             ?: return result(DraftOutcome.UNCERTAIN, "chrome-not-reachable")
 
-        val tab = openOwnTab(site.draftListUrl)
+        step = STEP_LIST
+        // The window's tab carries a fragment this run just made up, so it is provably ours.
+        val windowTab = when (window) {
+            DraftWindow.NONE -> null
+            DraftWindow.VIRTUAL_DISPLAY -> findMarked(windowMarker, timing.tabWaitMs)
+            DraftWindow.ELSEWHERE -> findMarked(windowMarker, minOf(timing.tabWaitMs, WINDOW_TAB_GLANCE_MS))
+        }
+        val tab = windowTab ?: openOwnTab(site.draftListUrl)
             ?: return result(DraftOutcome.UNCERTAIN, "tab-not-found")
 
         val copy = findExisting(tab)
@@ -186,6 +233,7 @@ class SaveDraftRoutine(
             return result(DraftOutcome.ALREADY_EXISTS, null)
         }
 
+        step = STEP_EDITOR
         stopIfOwnerHasChrome()
         browser.navigate(tab.id, site.newDraftUrl)
         val editor = pollUntil(timing.editorWaitMs) {
@@ -199,14 +247,18 @@ class SaveDraftRoutine(
             return result(DraftOutcome.FAILED, "editor-not-empty")
         }
 
+        step = STEP_TITLE
         val titleSet = write(tab, editorUrl, DraftScript.SET_TITLE) { put("title", request.title) }
         if (!titleSet.flag("ok")) return result(DraftOutcome.UNCERTAIN, "title-not-set")
 
         // Images first: the caret is at the end of an empty body, so they lead the article.
+        step = STEP_IMAGE
         request.images.forEach { placeImage(tab, editorUrl, it) }
+        // A paste while an image is still uploading gets note's "uploading" alert and no body.
+        if (request.images.isNotEmpty()) waitForUploads(tab)
 
-        val pasted = write(tab, editorUrl, DraftScript.PASTE_HTML) { put("html", request.html) }
-        if (!pasted.flag("ok")) return result(DraftOutcome.UNCERTAIN, "body-not-pasted")
+        step = STEP_PASTE
+        if (!pasteBody(tab, editorUrl)) return result(DraftOutcome.UNCERTAIN, "body-not-pasted")
 
         val confirmation = saveAndConfirm(tab, editorUrl)
         if (confirmation.outcome != DraftOutcome.SAVED) return confirmation
@@ -223,6 +275,9 @@ class SaveDraftRoutine(
      * this run just made up: only the tab with that exact fragment is ours. The fragment never
      * leaves the device, because browsers do not send it to the server.
      */
+    private suspend fun findMarked(marker: String, limitMs: Long): DraftTab? =
+        pollUntil(limitMs) { browser.tabs().firstOrNull { it.url.endsWith(marker) } }
+
     private suspend fun openOwnTab(url: String): DraftTab? {
         val created = try {
             browser.createTab(url)
@@ -235,7 +290,7 @@ class SaveDraftRoutine(
 
         val marker = "#" + newMarker()
         browser.open(url + marker)
-        return pollUntil(timing.tabWaitMs) { browser.tabs().firstOrNull { it.url.endsWith(marker) } }
+        return findMarked(marker, timing.tabWaitMs)
     }
 
     /**
@@ -265,27 +320,73 @@ class SaveDraftRoutine(
     private fun editorLinks(row: JsonObject): List<String> =
         (row["hrefs"] as? JsonArray).orEmpty().mapNotNull { it.jsonPrimitive.contentOrNull }.filter(site::isEditorUrl)
 
+    /**
+     * An image has landed when the site holds one more stored image than before and no upload is
+     * running. A local preview shows up at once, so counting it would call an image placed while
+     * note is still uploading it.
+     */
     private suspend fun placeImage(tab: DraftTab, editorUrl: String, image: DraftImage) {
         for (route in listOf(DraftScript.PASTE_IMAGE, DraftScript.FILE_INPUT_IMAGE)) {
-            val before = imageCount(tab)
+            val before = imageState(tab)["count"]?.jsonPrimitive?.intOrNull ?: 0
             val answer = write(tab, editorUrl, route) {
                 put("name", image.name)
                 put("mime", image.mime)
                 put("base64", image.base64)
             }
             if (!answer.flag("ok")) continue
-            val landed = pollUntil(timing.imageWaitMs) { true.takeIf { imageCount(tab) > before } }
+            var last: JsonObject? = null
+            val landed = pollUntil(timing.imageWaitMs) {
+                val state = imageState(tab).also { last = it }
+                true.takeIf { draftImageLanded(before, state) }
+            }
             if (landed == true) {
                 imagesPlaced++
                 return
             }
+            // Still uploading: the second route would add a second copy once this one finishes.
+            if (last?.flag("uploading") == true) return
         }
     }
 
-    private suspend fun imageCount(tab: DraftTab): Int =
-        browser.evaluate(tab.id, DraftScript.IMAGE_COUNT, NO_ARGS)["count"]?.jsonPrimitive?.intOrNull ?: 0
+    private suspend fun imageState(tab: DraftTab): JsonObject =
+        browser.evaluate(tab.id, DraftScript.IMAGE_COUNT, NO_ARGS)
+
+    /** Waits, within the image budget, for no upload to be running. Gives up quietly. */
+    private suspend fun waitForUploads(tab: DraftTab) {
+        pollUntil(timing.imageWaitMs) { true.takeUnless { imageState(tab).flag("uploading") } }
+    }
+
+    /**
+     * Pastes the body. If the page answered with a dialog meanwhile (note's "image uploading"
+     * alert), the paste may have been refused: when the body is then still empty, after any upload
+     * has finished, it is pasted once more. An empty body cannot hold a first copy, so this never
+     * doubles the article.
+     */
+    private suspend fun pasteBody(tab: DraftTab, editorUrl: String): Boolean {
+        val dialogsBefore = browser.dialogsAnswered()
+        val pasted = write(tab, editorUrl, DraftScript.PASTE_HTML) { put("html", request.html) }
+        if (!pasted.flag("ok")) return false
+        if (browser.dialogsAnswered() == dialogsBefore) return true
+
+        // Give a slow editor a moment to show what it took.
+        val filled = pollUntil(minOf(timing.imageWaitMs, PASTE_SETTLE_MS)) {
+            true.takeUnless { bodyEmpty(tab, editorUrl) }
+        }
+        if (filled == true) return true
+        waitForUploads(tab)
+        if (!bodyEmpty(tab, editorUrl)) return true
+        return write(tab, editorUrl, DraftScript.PASTE_HTML) { put("html", request.html) }.flag("ok")
+    }
+
+    /** True only when the probe shows this draft's editor with an empty body. */
+    private suspend fun bodyEmpty(tab: DraftTab, editorUrl: String): Boolean {
+        val probe = browser.evaluate(tab.id, DraftScript.EDITOR_PROBE, NO_ARGS)
+        if (probe.str("href") != editorUrl) throw Halt("editor-moved")
+        return probe.flag("bodyFound") && probe.flag("bodyEmpty")
+    }
 
     private suspend fun saveAndConfirm(tab: DraftTab, editorUrl: String): SaveDraftResult {
+        step = STEP_SAVE
         val key = site.draftId(editorUrl) ?: return result(DraftOutcome.UNCERTAIN, "no-draft-id")
         val (probe, probeArgs) = when (site.platform) {
             DraftPlatform.SUBSTACK -> DraftScript.SUBSTACK_SAVED_PROBE to contentArgs(editorUrl, key, null)
@@ -297,6 +398,7 @@ class SaveDraftRoutine(
             }
         }
 
+        step = STEP_READBACK
         val confirmed = pollUntil(timing.saveWaitMs) {
             stopIfOwnerHasChrome()
             val back = browser.evaluate(tab.id, DraftScript.READ_BACK, contentArgs(editorUrl, key, null))
@@ -386,6 +488,9 @@ class SaveDraftRoutine(
     private fun JsonObject.str(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
     private companion object {
+        const val TAG = "SaveDraftRoutine"
+        const val WINDOW_TAB_GLANCE_MS = 5_000L
+        const val PASTE_SETTLE_MS = 3_000L
         val NO_ARGS = JsonObject(emptyMap())
         val RANDOM = SecureRandom()
 
@@ -395,6 +500,31 @@ class SaveDraftRoutine(
         }
     }
 }
+
+internal const val STEP_CHROME = "chrome"
+internal const val STEP_LIST = "list"
+internal const val STEP_EDITOR = "editor"
+internal const val STEP_TITLE = "title"
+internal const val STEP_IMAGE = "image"
+internal const val STEP_PASTE = "paste"
+internal const val STEP_SAVE = "save"
+internal const val STEP_READBACK = "readback"
+
+/** `error-<class>@<step>`: the class's simple name, never its message, which may hold page text. */
+internal fun draftErrorReason(e: Throwable, step: String): String = "error-${e.javaClass.simpleName}@$step"
+
+/** An [DraftScript.IMAGE_COUNT] answer with one more stored image than [before] and no upload running. */
+internal fun draftImageLanded(before: Int, state: JsonObject): Boolean {
+    val count = state["count"]?.jsonPrimitive?.intOrNull ?: return false
+    val uploading = state["uploading"]?.jsonPrimitive?.booleanOrNull ?: true
+    return count > before && !uploading
+}
+
+/**
+ * The answer to a JavaScript dialog during a draft run. An alert has only OK. Anything else is
+ * dismissed: a confirm could be asking to publish, and dismissing a beforeunload keeps the editor.
+ */
+internal fun draftDialogAccept(type: String): Boolean = type == "alert"
 
 /** The CDP parameters for a fixed script: JSON in, JSON out, awaiting any promise. */
 internal fun draftEvaluateParams(script: DraftScript, args: JsonObject): JsonObject = buildJsonObject {

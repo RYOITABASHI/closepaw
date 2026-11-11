@@ -4,6 +4,10 @@
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
+# Keep exception class names: failure reasons and logs carry the simple name
+# (a save-draft run once reported only "error-c").
+-keepnames class * extends java.lang.Throwable
+
 # Keep all annotations so reflection-based libs keep working
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 

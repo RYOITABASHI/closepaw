@@ -601,6 +601,15 @@ class VirtualDisplayPlatform(
         }
     }
 
+    /** Opens a URL in a new Chrome window task on this virtual display, if Chrome makes one. */
+    internal suspend fun openChromeWindow(url: String): VirtualDisplayAppController.ChromeWindowLaunch {
+        return try {
+            arbiter.withRunningLease { appController.openChromeWindow(url) }
+        } catch (e: PlatformNotRunningException) {
+            VirtualDisplayAppController.ChromeWindowLaunch.FAILED
+        }
+    }
+
     /** Opens a URL in Chrome on this virtual display. */
     suspend fun openUrlInChrome(url: String): ActionResult {
         return try {

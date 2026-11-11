@@ -1,16 +1,21 @@
 package ai.closepaw.draft
 
 import android.accessibilityservice.AccessibilityService
+import android.util.Log
 import ai.closepaw.browser.cdp.CdpOptions
+import ai.closepaw.browser.cdp.ChromeCdpClient
 import ai.closepaw.browser.script.BrowserSessionManager
 import ai.closepaw.platform.ActionResult
 import ai.closepaw.platform.PlatformFactory
+import ai.closepaw.platform.virtualdisplay.VirtualDisplayAppController
 import ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
 import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.protocol.SessionConfig
 import ai.closepaw.trace.NoopTraceRecorder
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -20,7 +25,9 @@ import kotlinx.serialization.json.put
 /**
  * [DraftBrowser] over the owner's Chrome: a Shizuku virtual display to keep Chrome visible, and
  * CDP through the same relay `browser_script` uses. The CDP calls below are the complete list
- * (SaveDraftScriptsTest pins it); input events are not among them.
+ * (SaveDraftScriptsTest pins it); input events are not among them. JavaScript dialogs are answered
+ * by the CDP client itself, by [draftDialogAccept]: an open dialog freezes the page, and every
+ * `Runtime.evaluate` behind it would wait out its timeout.
  */
 internal class ChromeDraftBrowser(
     private val service: AccessibilityService,
@@ -32,6 +39,7 @@ internal class ChromeDraftBrowser(
         traceRecorder = NoopTraceRecorder,
     )
     private var display: VirtualDisplayPlatform? = null
+    private val dialogs = AtomicInteger(0)
 
     /** False when the virtual display cannot be had. Never falls back to the main display. */
     suspend fun start(): Boolean {
@@ -63,8 +71,33 @@ internal class ChromeDraftBrowser(
         if (platform.showChrome() is ActionResult.Failure) throw IOException("chrome did not start")
     }
 
+    override suspend fun openOwnWindow(url: String): DraftWindow {
+        val platform = display ?: return DraftWindow.NONE
+        val window = when (platform.openChromeWindow(url)) {
+            VirtualDisplayAppController.ChromeWindowLaunch.ON_DISPLAY -> DraftWindow.VIRTUAL_DISPLAY
+            VirtualDisplayAppController.ChromeWindowLaunch.ELSEWHERE -> DraftWindow.ELSEWHERE
+            VirtualDisplayAppController.ChromeWindowLaunch.FAILED -> DraftWindow.NONE
+        }
+        Log.i(TAG, "draft chrome window: $window")
+        return window
+    }
+
+    override fun dialogsAnswered(): Int = dialogs.get()
+
+    /** The session's CDP client, with this run's dialog answer installed (it may be rebuilt). */
+    private suspend fun <T> cdp(block: suspend (ChromeCdpClient) -> T): T =
+        sessions.withCdpClient { client ->
+            client.dialogAnswer = { state ->
+                dialogs.incrementAndGet()
+                // The type only: the message is page text.
+                Log.i(TAG, "draft dialog answered: type=${state.type}")
+                draftDialogAccept(state.type)
+            }
+            block(client)
+        }
+
     override suspend fun createTab(url: String): String {
-        val response = sessions.withCdpClient { client ->
+        val response = cdp { client ->
             client.send("Target.createTarget", buildJsonObject { put("url", url) })
         }
         return response.jsonObject["targetId"]?.jsonPrimitive?.content
@@ -80,21 +113,32 @@ internal class ChromeDraftBrowser(
         sessions.listPageTargets().filter { it.type == "page" }.map { DraftTab(it.id, it.url) }
 
     override suspend fun navigate(tabId: String, url: String) {
-        sessions.withCdpClient { client ->
+        cdp { client ->
             client.send("Page.navigate", buildJsonObject { put("url", url) }, CdpOptions(targetId = tabId))
         }
     }
 
+    /**
+     * Capped well under the client's 30 s, so a page that stalls ends the step sooner. The cap
+     * gives up as an [IOException], not a cancellation, so the routine counts it as a miss.
+     */
     override suspend fun evaluate(tabId: String, script: DraftScript, args: JsonObject): JsonObject {
-        val response = sessions.withCdpClient { client ->
-            client.send("Runtime.evaluate", draftEvaluateParams(script, args), CdpOptions(targetId = tabId))
-        }
+        val response = withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
+            cdp { client ->
+                client.send("Runtime.evaluate", draftEvaluateParams(script, args), CdpOptions(targetId = tabId))
+            }
+        } ?: throw DraftEvaluateTimeoutException(script)
         return draftEvaluateResult(script, response)
     }
 
     override suspend fun close(tabId: String) {
-        sessions.withCdpClient { client ->
+        cdp { client ->
             client.send("Target.closeTarget", buildJsonObject { put("targetId", tabId) }, CdpOptions(targetId = tabId))
         }
     }
 }
+
+class DraftEvaluateTimeoutException(script: DraftScript) : IOException("draft script timed out: ${script.name}")
+
+private const val TAG = "ChromeDraftBrowser"
+private const val EVALUATE_TIMEOUT_MS = 10_000L

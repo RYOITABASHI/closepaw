@@ -23,6 +23,9 @@ internal const val NOTE_SAVE_LABEL = "下書き保存"
 /** The words of note's saved toast. An editor can hold them too, so only text outside counts. */
 private const val NOTE_SAVED_WORDS = "保存しました"
 
+/** note's words while an image is still on its way to the server. */
+private const val UPLOADING_WORDS = "アップロード中"
+
 /**
  * Every JavaScript string the routine can run in the editor tab. [DraftBrowser.evaluate] takes
  * this enum, so no expression can be built from request data: values travel only in the JSON
@@ -103,11 +106,34 @@ enum class DraftScript(val source: String) {
         """,
     ),
 
-    /** Number of images in the whole page, so a header slot counts as well as the body. */
+    /**
+     * Images in the whole page that the site has stored, so a header slot counts as well as the
+     * body. A local preview (`blob:`) appears the moment a file is handed over, before the upload
+     * ends, so it is not counted: it, or a leaf outside the body that says an upload is running,
+     * means the upload is still going. `data:` images are page decoration and count as neither.
+     */
     IMAGE_COUNT(
         """
         function (a) {
-          return { count: document.querySelectorAll('img').length };
+          var editor = $BODY_LOOKUP;
+          var images = document.querySelectorAll('img');
+          var uploaded = 0;
+          var local = 0;
+          for (var i = 0; i < images.length; i++) {
+            var src = String(images[i].currentSrc || images[i].src || '');
+            if (src.indexOf('https://') === 0) uploaded++;
+            if (src.indexOf('blob:') === 0) local++;
+          }
+          var busy = false;
+          var all = document.body.querySelectorAll('*');
+          for (var j = 0; j < all.length && !busy; j++) {
+            var el = all[j];
+            if (el.children.length === 0 && !(editor && editor.contains(el))) {
+              var text = String(el.textContent || '');
+              busy = text.indexOf('$UPLOADING_WORDS') >= 0 || text.toLowerCase().indexOf('uploading') >= 0;
+            }
+          }
+          return { count: uploaded, local: local, uploading: busy || local > 0 };
         }
         """,
     ),

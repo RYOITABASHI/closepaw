@@ -66,6 +66,16 @@ class ChromeCdpClient(
 
     val eventBuffer = ChromeCdpEventBuffer()
 
+    /**
+     * Answers a JavaScript dialog as soon as Chrome reports it, for callers that drive a page with
+     * nobody watching (the draft routine). Page JS is frozen while a dialog is open, so without an
+     * answer every `Runtime.evaluate` on that page waits out [commandTimeoutMs]. Returns true to
+     * accept, false to dismiss, null to leave the dialog alone (the default for agent scripts,
+     * which read dialogs through [DIALOG_QUERY_METHOD]). Runs on the socket thread: keep it quick.
+     */
+    @Volatile
+    var dialogAnswer: ((DialogStateTracker.DialogState) -> Boolean?)? = null
+
     @Volatile
     var activeSessionId: String? = null
         private set
@@ -290,31 +300,45 @@ class ChromeCdpClient(
                 // shared event buffer the agent script will drain.
                 if (current === source) {
                     eventBuffer.add(msg)
-                    routeDialogEvent(msg)
+                    routeDialogEvent(source, msg)
                 }
             }
         }
     }
 
-    private fun routeDialogEvent(event: CdpIncoming.Event) {
+    private fun routeDialogEvent(source: LiveConnection, event: CdpIncoming.Event) {
         if (event.method != DIALOG_OPENING_EVENT && event.method != DIALOG_CLOSED_EVENT) return
-        val targetKey = dialogTargetKey(event.sessionId) ?: return
+        val targetKey = dialogTargetKey(event.sessionId)
         when (event.method) {
             DIALOG_OPENING_EVENT -> {
                 val params = event.params
-                eventBuffer.dialogTracker.setOpen(
-                    targetKey,
-                    DialogStateTracker.DialogState(
-                        type = params["type"]?.jsonPrimitive?.contentOrNull ?: "unknown",
-                        message = params["message"]?.jsonPrimitive?.contentOrNull ?: "",
-                        defaultPrompt = params["defaultPrompt"]?.jsonPrimitive?.contentOrNull,
-                        hasBrowserHandler = params["hasBrowserHandler"]?.jsonPrimitive?.booleanOrNull
-                            ?: false,
-                        url = params["url"]?.jsonPrimitive?.contentOrNull,
-                    ),
+                val state = DialogStateTracker.DialogState(
+                    type = params["type"]?.jsonPrimitive?.contentOrNull ?: "unknown",
+                    message = params["message"]?.jsonPrimitive?.contentOrNull ?: "",
+                    defaultPrompt = params["defaultPrompt"]?.jsonPrimitive?.contentOrNull,
+                    hasBrowserHandler = params["hasBrowserHandler"]?.jsonPrimitive?.booleanOrNull
+                        ?: false,
+                    url = params["url"]?.jsonPrimitive?.contentOrNull,
                 )
+                if (targetKey != null) eventBuffer.dialogTracker.setOpen(targetKey, state)
+                dialogAnswer?.invoke(state)?.let { accept -> answerDialog(source, event.sessionId, accept) }
             }
-            DIALOG_CLOSED_EVENT -> eventBuffer.dialogTracker.setClosed(targetKey)
+            DIALOG_CLOSED_EVENT -> if (targetKey != null) eventBuffer.dialogTracker.setClosed(targetKey)
+        }
+    }
+
+    /**
+     * Sends `Page.handleJavaScriptDialog` on the connection and session the dialog came from,
+     * without waiting: this runs on the socket thread that must deliver the answer. Nothing awaits
+     * the response, so it is dropped as an unknown id; the `javascriptDialogClosed` event that
+     * follows clears the tracker.
+     */
+    private fun answerDialog(source: LiveConnection, sessionId: String?, accept: Boolean) {
+        val params = buildJsonObject { put("accept", accept) }
+        try {
+            source.raw?.send(buildCdpRequest(nextId.getAndIncrement(), DIALOG_ANSWER_METHOD, params, sessionId))
+        } catch (_: Exception) {
+            // The evaluate that is stuck behind the dialog times out and reports the failure.
         }
     }
 
@@ -478,5 +502,6 @@ class ChromeCdpClient(
 
         const val DIALOG_OPENING_EVENT: String = "Page.javascriptDialogOpening"
         const val DIALOG_CLOSED_EVENT: String = "Page.javascriptDialogClosed"
+        const val DIALOG_ANSWER_METHOD: String = "Page.handleJavaScriptDialog"
     }
 }

@@ -1,5 +1,7 @@
 package ai.closepaw.platform.virtualdisplay
 
+import android.content.ComponentName
+import android.content.Intent
 import android.util.Log
 import java.lang.reflect.InvocationTargetException
 
@@ -47,6 +49,35 @@ internal class ShizukuActivityTaskTransport(
                         )
                         -1
                 }
+        }
+
+        /**
+         * Ids of the root tasks on [displayId] whose base, top or real activity belongs to
+         * [packageName]; null when the transport fails.
+         */
+        fun rootTaskIdsOnDisplay(displayId: Int, packageName: String): Set<Int>? {
+                if (displayId < 0) return null
+                return try {
+                        getAllRootTaskInfosOnDisplay(activityTaskManagerProxy(), displayId)
+                                .filter { packageName in taskPackages(it) }
+                                .map { rootTaskId(it) }
+                                .toSet()
+                } catch (e: Exception) {
+                        Log.w(TAG, "root task query failed: displayId=$displayId err=${e.summary()}")
+                        null
+                }
+        }
+
+        private fun taskPackages(info: Any): Set<String> {
+                val packages = mutableSetOf<String>()
+                for (name in listOf("baseActivity", "topActivity", "realActivity", "origActivity")) {
+                        val component =
+                                runCatching { info.javaClass.getField(name).get(info) }.getOrNull()
+                        (component as? ComponentName)?.packageName?.let(packages::add)
+                }
+                val intent = runCatching { info.javaClass.getField("baseIntent").get(info) }.getOrNull()
+                (intent as? Intent)?.component?.packageName?.let(packages::add)
+                return packages
         }
 
         private fun getAllRootTaskInfosOnDisplay(proxy: Any, displayId: Int): List<Any> {
