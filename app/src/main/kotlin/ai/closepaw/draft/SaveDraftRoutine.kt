@@ -48,6 +48,12 @@ interface DraftBrowser {
     /** How many JavaScript dialogs the browser has answered for this run so far. */
     fun dialogsAnswered(): Int = 0
 
+    /**
+     * The run drives [tabId], the marked tab of the window [openOwnWindow] put on the virtual
+     * display, so the browser can close it on every exit. The default does nothing.
+     */
+    fun ownWindowTab(tabId: String) {}
+
     /** Asks Chrome over CDP for a new tab at [url] and returns its target id. */
     suspend fun createTab(url: String): String
 
@@ -159,6 +165,14 @@ class SaveDraftRoutine(
     /** The step in progress, for the reason and the log when something throws. */
     @Volatile private var step = STEP_CHROME
 
+    /**
+     * True while the run works in its own Chrome window on the virtual display. The owner's Chrome
+     * on the main display is then a different window that the run never touches, so it being in
+     * front is no reason to stop: [stopIfOwnerHasChrome] and the service's window watch skip it.
+     */
+    @Volatile var drivesOwnWindow = false
+        private set
+
     /** Ends the run from any depth, past [pollUntil]. */
     private class Halt(val reason: String) : Exception()
 
@@ -212,7 +226,8 @@ class SaveDraftRoutine(
         }
         // In its own window on the virtual display Chrome is already visible there. Otherwise do
         // as before: bring Chrome to the display.
-        if (window != DraftWindow.VIRTUAL_DISPLAY) browser.showChrome()
+        drivesOwnWindow = window == DraftWindow.VIRTUAL_DISPLAY
+        if (!drivesOwnWindow) browser.showChrome()
         pollUntil(timing.tabWaitMs) { browser.tabs() }
             ?: return result(DraftOutcome.UNCERTAIN, "chrome-not-reachable")
 
@@ -222,6 +237,13 @@ class SaveDraftRoutine(
             DraftWindow.NONE -> null
             DraftWindow.VIRTUAL_DISPLAY -> findMarked(windowMarker, timing.tabWaitMs)
             DraftWindow.ELSEWHERE -> findMarked(windowMarker, minOf(timing.tabWaitMs, WINDOW_TAB_GLANCE_MS))
+        }
+        if (windowTab != null && drivesOwnWindow) browser.ownWindowTab(windowTab.id)
+        if (windowTab == null && drivesOwnWindow) {
+            // The window's tab never showed: the fallback works in the owner's Chrome window, so
+            // the guard applies again from here.
+            drivesOwnWindow = false
+            stopIfOwnerHasChrome()
         }
         val tab = windowTab ?: openOwnTab(site.draftListUrl)
             ?: return result(DraftOutcome.UNCERTAIN, "tab-not-found")
@@ -438,7 +460,7 @@ class SaveDraftRoutine(
     }
 
     private fun stopIfOwnerHasChrome() {
-        if (ownerHasChrome()) throw Halt("chrome-opened")
+        if (!drivesOwnWindow && ownerHasChrome()) throw Halt("chrome-opened")
     }
 
     private fun stopIfMoved(answer: JsonObject) {
@@ -509,6 +531,47 @@ internal const val STEP_IMAGE = "image"
 internal const val STEP_PASTE = "paste"
 internal const val STEP_SAVE = "save"
 internal const val STEP_READBACK = "readback"
+
+/**
+ * Closes the run's own Chrome window before the virtual display goes: its tab over CDP, then the
+ * window's task. Only tasks this run created ([created]) that are still Chrome tasks on the
+ * display ([tasksOnDisplay]) are removed, never the owner's. Each part is best effort. Returns
+ * the number of tasks removed.
+ */
+internal suspend fun closeDraftWindow(
+    tabId: String?,
+    created: Set<Int>,
+    closeTab: suspend (String) -> Unit,
+    tasksOnDisplay: suspend () -> Set<Int>?,
+    removeTask: suspend (Int) -> Boolean,
+): Int {
+    if (tabId != null) {
+        try {
+            closeTab(tabId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The task removal below still takes the window away.
+        }
+    }
+    if (created.isEmpty()) return 0
+    val onDisplay = try {
+        tasksOnDisplay()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    } ?: return 0
+    return (created intersect onDisplay).count { id ->
+        try {
+            removeTask(id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        }
+    }
+}
 
 /** `error-<class>@<step>`: the class's simple name, never its message, which may hold page text. */
 internal fun draftErrorReason(e: Throwable, step: String): String = "error-${e.javaClass.simpleName}@$step"

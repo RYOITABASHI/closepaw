@@ -124,6 +124,11 @@ class ShizukuClient {
         return activityTaskTransport.removeRootTasksOnDisplay(displayId)
     }
 
+    /** Removes one task by id. */
+    fun removeRootTask(taskId: Int): Boolean {
+        return activityTaskTransport.removeRootTask(taskId)
+    }
+
     /** Root task ids of [packageName] on [displayId], or null when they cannot be read. */
     fun rootTaskIdsOnDisplay(displayId: Int, packageName: String): Set<Int>? {
         return activityTaskTransport.rootTaskIdsOnDisplay(displayId, packageName)

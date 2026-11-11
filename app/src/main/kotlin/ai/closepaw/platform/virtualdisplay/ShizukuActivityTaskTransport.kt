@@ -68,6 +68,16 @@ internal class ShizukuActivityTaskTransport(
                 }
         }
 
+        /** Removes one task by id. False when it was not removed or the transport failed. */
+        fun removeRootTask(taskId: Int): Boolean {
+                return try {
+                        removeTask(activityTaskManagerProxy(), taskId)
+                } catch (e: Exception) {
+                        Log.w(TAG, "remove task failed: taskId=$taskId err=${e.summary()}")
+                        false
+                }
+        }
+
         private fun taskPackages(info: Any): Set<String> {
                 val packages = mutableSetOf<String>()
                 for (name in listOf("baseActivity", "topActivity", "realActivity", "origActivity")) {

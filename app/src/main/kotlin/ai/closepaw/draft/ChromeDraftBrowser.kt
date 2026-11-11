@@ -41,6 +41,10 @@ internal class ChromeDraftBrowser(
     private var display: VirtualDisplayPlatform? = null
     private val dialogs = AtomicInteger(0)
 
+    /** The Chrome tasks [openOwnWindow] created on the display, and the run's tab in them. */
+    @Volatile private var ownTasks: Set<Int> = emptySet()
+    @Volatile private var ownTabId: String? = null
+
     /** False when the virtual display cannot be had. Never falls back to the main display. */
     suspend fun start(): Boolean {
         val platform = PlatformFactory.create(
@@ -59,8 +63,27 @@ internal class ChromeDraftBrowser(
      * editors in it. Android then moves the task back to the main display, behind what is in front
      * there, because the display is not created to destroy its content. A tab this run left open
      * therefore stays open in Chrome.
+     *
+     * The run's own window is the exception: it is closed first, on every exit, so it never moves
+     * to the owner's screen. Only the tasks [openOwnWindow] saw appear are removed.
      */
     suspend fun stop() {
+        val created = ownTasks
+        val tabId = ownTabId
+        if (created.isNotEmpty() || tabId != null) {
+            val removed = withTimeoutOrNull(WINDOW_CLOSE_TIMEOUT_MS) {
+                closeDraftWindow(
+                    tabId = tabId,
+                    created = created,
+                    closeTab = { close(it) },
+                    tasksOnDisplay = { display?.chromeTaskIds() },
+                    removeTask = { display?.removeTask(it) == true },
+                )
+            }
+            Log.i(TAG, "draft chrome window closed: tab=${tabId != null} tasks=${removed ?: -1}/${created.size}")
+            ownTasks = emptySet()
+            ownTabId = null
+        }
         sessions.close()
         display?.stopKeepingTasks()
         display = null
@@ -73,7 +96,9 @@ internal class ChromeDraftBrowser(
 
     override suspend fun openOwnWindow(url: String): DraftWindow {
         val platform = display ?: return DraftWindow.NONE
-        val window = when (platform.openChromeWindow(url)) {
+        val launched = platform.openChromeWindow(url)
+        ownTasks = launched.createdTaskIds
+        val window = when (launched.launch) {
             VirtualDisplayAppController.ChromeWindowLaunch.ON_DISPLAY -> DraftWindow.VIRTUAL_DISPLAY
             VirtualDisplayAppController.ChromeWindowLaunch.ELSEWHERE -> DraftWindow.ELSEWHERE
             VirtualDisplayAppController.ChromeWindowLaunch.FAILED -> DraftWindow.NONE
@@ -83,6 +108,10 @@ internal class ChromeDraftBrowser(
     }
 
     override fun dialogsAnswered(): Int = dialogs.get()
+
+    override fun ownWindowTab(tabId: String) {
+        ownTabId = tabId
+    }
 
     /** The session's CDP client, with this run's dialog answer installed (it may be rebuilt). */
     private suspend fun <T> cdp(block: suspend (ChromeCdpClient) -> T): T =
@@ -142,3 +171,4 @@ class DraftEvaluateTimeoutException(script: DraftScript) : IOException("draft sc
 
 private const val TAG = "ChromeDraftBrowser"
 private const val EVALUATE_TIMEOUT_MS = 10_000L
+private const val WINDOW_CLOSE_TIMEOUT_MS = 8_000L

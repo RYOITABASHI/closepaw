@@ -29,6 +29,21 @@ internal class VirtualDisplayAppController(
         /** Where [openChromeWindow] put Chrome. */
         enum class ChromeWindowLaunch { FAILED, ON_DISPLAY, ELSEWHERE }
 
+        /** [launch], and for [ChromeWindowLaunch.ON_DISPLAY] the Chrome task ids that appeared. */
+        data class ChromeWindow(val launch: ChromeWindowLaunch, val createdTaskIds: Set<Int> = emptySet())
+
+        /** Chrome's root task ids on this display, or null when they cannot be read. */
+        suspend fun chromeTaskIds(): Set<Int>? {
+                val displayId = displayIdProvider()
+                return withContext(Dispatchers.IO) {
+                        shizuku.rootTaskIdsOnDisplay(displayId, ChromeFlagDeepLink.CHROME_PACKAGE)
+                }
+        }
+
+        /** Removes one task by id. Callers pass only a task they created. */
+        suspend fun removeTask(taskId: Int): Boolean =
+                withContext(Dispatchers.IO) { shizuku.removeRootTask(taskId) }
+
         suspend fun getInstalledApps(): List<AppInfo> {
                 return withContext(Dispatchers.IO) {
                         try {
@@ -55,7 +70,7 @@ internal class VirtualDisplayAppController(
          * device, so the result is checked: a Chrome root task on this display that was not there
          * before. Argv only, no shell parsing; the URL is not logged.
          */
-        suspend fun openChromeWindow(url: String): ChromeWindowLaunch {
+        suspend fun openChromeWindow(url: String): ChromeWindow {
                 val displayId = displayIdProvider()
                 return withContext(Dispatchers.IO) {
                         val chrome = ChromeFlagDeepLink.CHROME_PACKAGE
@@ -73,22 +88,23 @@ internal class VirtualDisplayAppController(
                         val code = shizuku.executeQuietShellCommand(command)
                         if (code != 0) {
                                 Log.i(TAG, "chrome window: am start failed code=$code")
-                                return@withContext ChromeWindowLaunch.FAILED
+                                return@withContext ChromeWindow(ChromeWindowLaunch.FAILED)
                         }
                         if (before == null) {
                                 Log.i(TAG, "chrome window: tasks on display $displayId unreadable")
-                                return@withContext ChromeWindowLaunch.ELSEWHERE
+                                return@withContext ChromeWindow(ChromeWindowLaunch.ELSEWHERE)
                         }
                         repeat(WINDOW_CHECKS) {
                                 val now = shizuku.rootTaskIdsOnDisplay(displayId, chrome).orEmpty()
-                                if ((now - before).isNotEmpty()) {
-                                        Log.i(TAG, "chrome window: new task on display $displayId")
-                                        return@withContext ChromeWindowLaunch.ON_DISPLAY
+                                val created = now - before
+                                if (created.isNotEmpty()) {
+                                        Log.i(TAG, "chrome window: new task on display $displayId tasks=$created")
+                                        return@withContext ChromeWindow(ChromeWindowLaunch.ON_DISPLAY, created)
                                 }
                                 delay(WINDOW_CHECK_MS)
                         }
                         Log.i(TAG, "chrome window: no new task on display $displayId; Chrome opened it elsewhere")
-                        ChromeWindowLaunch.ELSEWHERE
+                        ChromeWindow(ChromeWindowLaunch.ELSEWHERE)
                 }
         }
 

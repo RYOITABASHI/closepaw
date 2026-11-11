@@ -163,6 +163,9 @@ class AgentService : AccessibilityService() {
     /** Why the running draft routine was stopped from outside. Main thread. */
     private var draftStopReason: String? = null
 
+    /** The running draft routine, read by the window watch. Main thread. */
+    private var draftRoutine: SaveDraftRoutine? = null
+
     fun observeExternalSession(
             externalSession: AgentSession,
             platformMode: PlatformMode = PlatformMode.ACCESSIBILITY
@@ -704,6 +707,7 @@ class AgentService : AccessibilityService() {
         val browser = ChromeDraftBrowser(this, serviceScope)
         val routine = SaveDraftRoutine(browser, request, ownerHasChrome = ::isChromeInFront)
         draftStopReason = null
+        draftRoutine = routine
         draftJob = serviceScope.launch(Dispatchers.Default) {
             var result: SaveDraftResult? = null
             try {
@@ -726,6 +730,7 @@ class AgentService : AccessibilityService() {
                     }
                     withContext(Dispatchers.Main) {
                         draftJob = null
+                        draftRoutine = null
                         UnattendedEvidence.stop()
                         finishShellySaveDraft(
                                 result ?: routine.resultSoFar(draftStopReason ?: "stopped"),
@@ -933,7 +938,10 @@ class AgentService : AccessibilityService() {
                     isActivityWindowClass(className),
                     displayId == Display.DEFAULT_DISPLAY,
             )
-            if (opened) {
+            if (opened && draftRoutine?.drivesOwnWindow == true) {
+                // The run works in its own window on the virtual display, not in this one.
+                Log.i(TAG, "Draft routine: owner's Chrome in front; the run uses its own window, continuing")
+            } else if (opened) {
                 Log.i(TAG, "Draft routine: owner opened Chrome; stopping")
                 draftStopReason = "chrome-opened"
                 job.cancel()

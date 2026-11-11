@@ -67,6 +67,8 @@ class SaveDraftRoutineTest {
         var bodyFilled = false
         var window = DraftWindow.NONE
         val windowsOpened = mutableListOf<String>()
+        var windowTabAppears = true
+        val ownWindowTabs = mutableListOf<String>()
 
         override suspend fun showChrome() {
             shown += Unit
@@ -74,8 +76,12 @@ class SaveDraftRoutineTest {
 
         override suspend fun openOwnWindow(url: String): DraftWindow {
             windowsOpened += url
-            if (window != DraftWindow.NONE) currentUrl = url
+            if (window != DraftWindow.NONE && windowTabAppears) currentUrl = url
             return window
+        }
+
+        override fun ownWindowTab(tabId: String) {
+            ownWindowTabs += tabId
         }
 
         override fun dialogsAnswered(): Int = dialogs
@@ -761,6 +767,104 @@ class SaveDraftRoutineTest {
 
         assertThat(browser.shown).hasSize(1)
         assertThat(browser.created).containsExactly(substack.draftListUrl)
+    }
+
+    @Test
+    fun `in its own window the owner's Chrome in front does not stop the run`() = runTest {
+        val browser = substackBrowser().apply { window = DraftWindow.VIRTUAL_DISPLAY }
+        val routine = routine(browser, substack, ownerHasChrome = { true })
+        val result = routine.run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(routine.drivesOwnWindow).isTrue()
+        assertThat(browser.ownWindowTabs).containsExactly(FakeBrowser.OURS)
+        assertThat(browser.tabsTouched).containsExactly(FakeBrowser.OURS)
+        assertThat(browser.created).isEmpty()
+    }
+
+    @Test
+    fun `a window whose tab never shows falls back under the guard`() = runTest {
+        val browser = substackBrowser().apply {
+            window = DraftWindow.VIRTUAL_DISPLAY
+            windowTabAppears = false
+        }
+        val routine = routine(browser, substack, ownerHasChrome = { true })
+        val result = routine.run()
+
+        assertThat(result.reason).isEqualTo("chrome-opened")
+        assertThat(result.wrote).isFalse()
+        assertThat(routine.drivesOwnWindow).isFalse()
+        assertThat(browser.created).isEmpty()
+        assertThat(browser.ownWindowTabs).isEmpty()
+    }
+
+    @Test
+    fun `a window that opened elsewhere keeps the owner guard`() = runTest {
+        val browser = substackBrowser().apply { window = DraftWindow.ELSEWHERE }
+        val routine = routine(browser, substack, ownerHasChrome = { true })
+        val result = routine.run()
+
+        assertThat(result.reason).isEqualTo("chrome-opened")
+        assertThat(result.wrote).isFalse()
+        assertThat(routine.drivesOwnWindow).isFalse()
+        assertThat(browser.ownWindowTabs).isEmpty()
+    }
+
+    // ── Closing the run's own window ──
+
+    @Test
+    fun `closing the window closes its tab, then only the tasks this run created`() = runTest {
+        val calls = mutableListOf<String>()
+        val removed = closeDraftWindow(
+            tabId = "t1",
+            created = setOf(7, 8),
+            closeTab = { calls += "close:$it" },
+            tasksOnDisplay = { calls += "list"; setOf(7, 42) },
+            removeTask = { calls += "remove:$it"; true },
+        )
+
+        assertThat(removed).isEqualTo(1)
+        assertThat(calls).containsExactly("close:t1", "list", "remove:7").inOrder()
+    }
+
+    @Test
+    fun `a failed tab close still removes the window, and unreadable tasks remove nothing`() = runTest {
+        val removedAfterFailedClose = closeDraftWindow(
+            tabId = "t1",
+            created = setOf(7),
+            closeTab = { throw IOException("gone") },
+            tasksOnDisplay = { setOf(7) },
+            removeTask = { true },
+        )
+        assertThat(removedAfterFailedClose).isEqualTo(1)
+
+        val asked = mutableListOf<Int>()
+        val removedUnreadable = closeDraftWindow(
+            tabId = null,
+            created = setOf(7),
+            closeTab = { },
+            tasksOnDisplay = { null },
+            removeTask = { asked += it; true },
+        )
+        assertThat(removedUnreadable).isEqualTo(0)
+        assertThat(asked).isEmpty()
+    }
+
+    @Test
+    fun `with no window of its own nothing is removed`() = runTest {
+        var listed = false
+        val closed = mutableListOf<String>()
+        val removed = closeDraftWindow(
+            tabId = "t1",
+            created = emptySet(),
+            closeTab = { closed += it },
+            tasksOnDisplay = { listed = true; setOf(42) },
+            removeTask = { true },
+        )
+
+        assertThat(removed).isEqualTo(0)
+        assertThat(listed).isFalse()
+        assertThat(closed).containsExactly("t1")
     }
 
     // ── Failure reasons ──

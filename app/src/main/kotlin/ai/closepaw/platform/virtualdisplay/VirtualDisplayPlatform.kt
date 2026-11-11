@@ -602,11 +602,29 @@ class VirtualDisplayPlatform(
     }
 
     /** Opens a URL in a new Chrome window task on this virtual display, if Chrome makes one. */
-    internal suspend fun openChromeWindow(url: String): VirtualDisplayAppController.ChromeWindowLaunch {
+    internal suspend fun openChromeWindow(url: String): VirtualDisplayAppController.ChromeWindow {
         return try {
             arbiter.withRunningLease { appController.openChromeWindow(url) }
         } catch (e: PlatformNotRunningException) {
-            VirtualDisplayAppController.ChromeWindowLaunch.FAILED
+            VirtualDisplayAppController.ChromeWindow(VirtualDisplayAppController.ChromeWindowLaunch.FAILED)
+        }
+    }
+
+    /** Chrome's root task ids on this display; null when not running or unreadable. */
+    internal suspend fun chromeTaskIds(): Set<Int>? {
+        return try {
+            arbiter.withRunningLease { appController.chromeTaskIds() }
+        } catch (e: PlatformNotRunningException) {
+            null
+        }
+    }
+
+    /** Removes one task by id. Callers pass only a task they created on this display. */
+    internal suspend fun removeTask(taskId: Int): Boolean {
+        return try {
+            arbiter.withRunningLease { appController.removeTask(taskId) }
+        } catch (e: PlatformNotRunningException) {
+            false
         }
     }
 
