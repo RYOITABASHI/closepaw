@@ -130,7 +130,7 @@ class ShizukuClient {
     }
 
     /** Root tasks on [displayId], front first; null when they cannot be read. */
-    fun rootTasksOnDisplay(displayId: Int): List<ShizukuActivityTaskTransport.RootTask>? {
+    internal fun rootTasksOnDisplay(displayId: Int): List<ShizukuActivityTaskTransport.RootTask>? {
         return activityTaskTransport.rootTasksOnDisplay(displayId)
     }
 
