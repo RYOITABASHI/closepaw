@@ -85,6 +85,10 @@
 -dontwarn okio.**
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
+# BouncyCastleProvider loads its SPI classes by name (org.bouncycastle.jcajce.provider.*$Mappings);
+# obfuscated, it registered an empty "BC" provider, the wireless-adb key and certificate
+# could not be made, and the save-draft fallback failed before talking to adbd.
+-keep class org.bouncycastle.** { *; }
 -dontwarn org.openjsse.**
 
 # ── Leap SDK (LiquidAI) ─────────────────────────────────────────────────
