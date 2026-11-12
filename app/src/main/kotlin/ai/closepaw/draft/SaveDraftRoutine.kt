@@ -790,7 +790,10 @@ class SaveDraftRoutine(
             logInfo("cover: control found=${control.anchorCount()}${control.str("why")?.let { " why=$it" }.orEmpty()}")
             val x = control["x"]?.jsonPrimitive?.doubleOrNull
             val y = control["y"]?.jsonPrimitive?.doubleOrNull
-            if (!control.flag("ok") || x == null || y == null) return false
+            if (!control.flag("ok") || x == null || y == null) {
+                if (control.anchorCount() == 0) logCoverDiag(tab)
+                return false
+            }
             stopIfOwnerHasChrome()
             browser.click(tab.id, x, y)
             logInfo("cover: control pressed")
@@ -837,6 +840,36 @@ class SaveDraftRoutine(
             } catch (e: Exception) {
                 logInfo("cover: chooser interception not ended: ${e.javaClass.simpleName}")
             }
+        }
+    }
+
+    /**
+     * When no cover control matched: what the page offers before the title, as page chrome only
+     * (see [DraftScript.COVER_DIAG]), so the next build can match note's real control.
+     */
+    private suspend fun logCoverDiag(tab: DraftTab) {
+        val diag = try {
+            browser.evaluate(tab.id, DraftScript.COVER_DIAG, buildJsonObject { put("max", COVER_DIAG_MAX) })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logInfo("cover: diag failed=${e.javaClass.simpleName}")
+            return
+        }
+        fun n(key: String) = diag[key]?.jsonPrimitive?.intOrNull ?: -1
+        logInfo(
+            "cover: diag titleFound=${diag.flag("titleFound")} fileInputs=${n("fileInputs")} " +
+                "shadowFileInputs=${n("shadowFileInputs")} frames=${n("frames")} " +
+                "frameFileInputs=${n("frameFileInputs")} unreadableFrames=${n("unreadableFrames")}",
+        )
+        val candidates = (diag["candidates"] as? JsonArray).orEmpty()
+        candidates.forEachIndexed { i, element ->
+            val c = element as? JsonObject ?: return@forEachIndexed
+            fun v(key: String) = c[key]?.jsonPrimitive?.contentOrNull.orEmpty()
+            logInfo(
+                "cover: diag[$i] tag=${v("tag")} role=${v("role")} aria=${v("aria")} title=${v("title")} " +
+                    "data=${v("data")} class=${v("cls")} text=${v("text")} box=${v("w")}x${v("h")} icon=${v("icon")}",
+            )
         }
     }
 
@@ -1151,6 +1184,9 @@ internal val COVER_CONTROL_NAMES = listOf("見出し画像", "画像を追加")
 /** The cover menu's upload item, and words that mark items it must never press. */
 internal const val COVER_MENU_ITEM = "アップロード"
 internal val COVER_MENU_AVOID = listOf("AI", "生成", "Canva", "素材", "ストック")
+
+/** At most this many elements are described when no cover control matched. */
+internal const val COVER_DIAG_MAX = 15
 
 /** How long a pressed cover control may take to ask for a file. */
 internal const val COVER_CONTROL_WAIT_MS = 6_000L

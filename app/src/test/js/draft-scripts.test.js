@@ -49,7 +49,7 @@ function page(options = {}) {
     href = EDITOR, buttons = [], withTextarea = true, withBody = true, fileInput = null, images = 0,
     resources = [], items = [], outside = [], bodyChildren = [], fetchImpl,
     hitAt = null, active = null, pageFocused = false, execResult = true, clipboard = null,
-    fileInputs = [], imgEls = null, dialogs = [], controls = [], menuItems = [],
+    fileInputs = [], imgEls = null, dialogs = [], controls = [], menuItems = [], diagEls = [], iframes = [], shadowHosts = [],
   } = options;
   const textarea = new El('textarea');
   let value = '';
@@ -90,6 +90,9 @@ function page(options = {}) {
       if (sel === 'input[type=file]') return fileInputs;
       if (sel === '[role=dialog]') return dialogs;
       if (sel === 'button, [role=button], label') return controls;
+      if (sel === 'button, [role=button], label, a, input, [tabindex], [onclick]') return diagEls;
+      if (sel === 'iframe') return iframes;
+      if (sel === '*') return shadowHosts;
       if (sel.startsWith('[role=menuitem]')) return menuItems;
       if (sel === 'img' && imgEls) return imgEls;
       if (sel === 'img') return (Array.isArray(images) ? images : new Array(images).fill('https://x/i.png')).map((src) => ({ src }));
@@ -149,7 +152,7 @@ const noRead = () => Promise.reject(new Error('blocked'));
 
 const tests = {
   'every script parses': () => {
-    assert.strictEqual(Object.keys(scripts).length, 25);
+    assert.strictEqual(Object.keys(scripts).length, 26);
     for (const [name, src] of Object.entries(scripts)) new vm.Script(`(${src})({})`, { filename: name });
   },
 
@@ -569,6 +572,35 @@ const tests = {
     p.sandbox.__other = new El('div');
     assert.deepStrictEqual(call('__other', image), { ok: false });
     assert.deepStrictEqual(call('__target', { ...image, editorUrl: 'https://x/' }), { ok: false, moved: true });
+  },
+
+  'cover diag describes chrome before the title and counts file inputs everywhere': () => {
+    const el = (tag, attrs, text, extra = {}) => {
+      const e = new El(tag, { childNodes: [{ nodeType: 3, textContent: text }, { nodeType: 1, textContent: 'child' }], ...extra });
+      e.attributes = Object.keys(attrs).map((name) => ({ name }));
+      e.getAttribute = (k) => (k in attrs ? attrs[k] : null);
+      e.getBoundingClientRect = () => ({ width: 32.4, height: 31.6 });
+      e.querySelector = (sel) => (sel === 'svg' && extra.svg ? {} : null);
+      e.compareDocumentPosition = () => (extra.after ? 2 : 4);
+      return e;
+    };
+    const icon = el('button', { 'aria-label': 'x'.repeat(40), 'data-testid': 'a', 'data-v-1': '', class: 'c1  c2' }, '  画像  ', { svg: true });
+    const afterTitle = el('button', {}, 'later', { after: true });
+    const inBox = el('div', { role: 'button' }, 'box');
+    const shadowHost = new El('div', { shadowRoot: { querySelectorAll: (sel) => (sel === 'input[type=file]' ? [1, 2] : []) } });
+    const sameOrigin = { contentDocument: { querySelectorAll: () => [1] } };
+    const crossOrigin = { get contentDocument() { throw new Error('blocked'); } };
+    const p = page({ diagEls: [icon, afterTitle], fileInputs: [], iframes: [sameOrigin, crossOrigin], shadowHosts: [shadowHost] });
+    p.textarea.parentElement = { querySelectorAll: () => [p.textarea, inBox, icon] };
+    const out = run('COVER_DIAG', p.sandbox, { max: 15 });
+    assert.deepStrictEqual(out.candidates, [
+      { tag: 'button', role: '', aria: 'x'.repeat(30), title: '', data: 'data-testid,data-v-1', cls: 'c1 c2', text: '画像', w: 32, h: 32, icon: 'svg' },
+      { tag: 'div', role: 'button', aria: '', title: '', data: '', cls: '', text: 'box', w: 32, h: 32, icon: 'none' },
+    ]);
+    assert.deepStrictEqual({ ...out, candidates: undefined }, {
+      titleFound: true, fileInputs: 0, shadowFileInputs: 2, frames: 2, frameFileInputs: 1, unreadableFrames: 1, candidates: undefined,
+    });
+    assert.strictEqual(run('COVER_DIAG', p.sandbox, { max: 1 }).candidates.length, 1);
   },
 
   'focus probe says whether the focus is in the body': () => {

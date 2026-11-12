@@ -337,6 +337,33 @@ class SaveDraftRoutineTest {
                     }
                 }
                 DraftScript.FILE_TO_INPUT -> buildJsonObject { put("ok", false) }
+                DraftScript.COVER_DIAG -> buildJsonObject {
+                    put("titleFound", true)
+                    put("fileInputs", 0)
+                    put("shadowFileInputs", 0)
+                    put("frames", 1)
+                    put("frameFileInputs", 0)
+                    put("unreadableFrames", 1)
+                    put(
+                        "candidates",
+                        buildJsonArray {
+                            add(
+                                buildJsonObject {
+                                    put("tag", "button")
+                                    put("role", "")
+                                    put("aria", "画像を設定")
+                                    put("title", "")
+                                    put("data", "data-testid")
+                                    put("cls", "eyecatch")
+                                    put("text", "")
+                                    put("w", 40)
+                                    put("h", 40)
+                                    put("icon", "svg")
+                                },
+                            )
+                        },
+                    )
+                }
                 DraftScript.COVER_STATE -> buildJsonObject {
                     put("count", coverCount)
                     put("dialog", cropDialog)
@@ -1289,6 +1316,29 @@ class SaveDraftRoutineTest {
         assertThat(browser.intercepts).containsExactly(true, false).inOrder()
         assertThat(browser.scripts).doesNotContain(DraftScript.FILE_TO_INPUT)
         assertThat(info).contains("cover: control found=0")
+        assertThat(info).contains(
+            "cover: diag titleFound=true fileInputs=0 shadowFileInputs=0 frames=1 frameFileInputs=0 unreadableFrames=1",
+        )
+        assertThat(info).contains(
+            "cover: diag[0] tag=button role= aria=画像を設定 title= data=data-testid class=eyecatch text= box=40x40 icon=svg",
+        )
+        info.forEach { line ->
+            assertThat(line).doesNotContain("A title")
+            assertThat(line).doesNotContain("Body text")
+        }
+    }
+
+    @Test
+    fun `a matched cover control does not run the diagnostic`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            coverInputOk = false
+            coverControl = true
+            chooserOnControl = true
+        }
+        routine(browser, note, listOf(image), html = coverHtml).run()
+
+        assertThat(browser.scripts).doesNotContain(DraftScript.COVER_DIAG)
     }
 
     @Test
