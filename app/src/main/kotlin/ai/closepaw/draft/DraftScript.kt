@@ -327,7 +327,9 @@ enum class DraftScript(val source: String) {
      * note only: the editor's own cover control, before the title and outside the body: the one
      * button, label or button-like element whose aria-label, title or text holds one of
      * `a.names`, or that holds an icon (svg or role=img) whose aria-label does (note labels the
-     * icon, not its button). Gives the point to press it, if the page shows it there.
+     * icon, not its button). Gives the point to press it, if the page shows it there; with
+     * `a.scroll`, after scrolling it into view and one frame. When covered, it names what covers
+     * the point (tag and class only) and still gives the point, for a hover.
      */
     COVER_CONTROL(
         """
@@ -353,12 +355,22 @@ enum class DraftScript(val source: String) {
             if (named.length > 0 && ownerBefore && !(body && body.contains(owner)) && found.indexOf(owner) < 0) found.push(owner);
           }
           if (found.length !== 1) return { ok: false, count: found.length };
-          var rect = found[0].getBoundingClientRect();
-          var x = rect.left + rect.width / 2;
-          var y = rect.top + rect.height / 2;
-          var hit = document.elementFromPoint(x, y);
-          if (!hit || !found[0].contains(hit)) return { ok: false, count: 1, why: 'covered' };
-          return { ok: true, count: 1, x: x, y: y };
+          var control = found[0];
+          var measure = function () {
+            var rect = control.getBoundingClientRect();
+            var x = rect.left + rect.width / 2;
+            var y = rect.top + rect.height / 2;
+            var hit = document.elementFromPoint(x, y);
+            if (hit && control.contains(hit)) return { ok: true, count: 1, x: x, y: y };
+            var by = hit ? [hit.tagName.toLowerCase(), String(hit.getAttribute('class') || '').slice(0, 40)].join(' ') : 'nothing';
+            return { ok: false, count: 1, why: 'covered', coveredBy: by, x: x, y: y };
+          };
+          if (!a.scroll) return measure();
+          window.scrollTo(0, 0);
+          control.scrollIntoView({ block: 'center' });
+          return new Promise(function (resolve) {
+            requestAnimationFrame(function () { resolve(measure()); });
+          });
         }
         """,
     ),

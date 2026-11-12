@@ -122,6 +122,8 @@ function page(options = {}) {
   };
   const sandbox = {
     document, location: { href }, getSelection: () => selection, Math,
+    window: { scrollTo(x, y) { this.scrolled = [x, y]; } },
+    requestAnimationFrame: (f) => { f(); },
     navigator: { clipboard },
     ClipboardItem: class { constructor(parts) { this.parts = parts; } },
     Blob: class { constructor(chunks, opt) { this.text = chunks.join(''); this.type = opt.type; } },
@@ -541,8 +543,12 @@ const tests = {
     assert.deepStrictEqual(run('COVER_CONTROL', p.sandbox, { names }), { ok: true, count: 1, x: 30, y: 40 });
     p = page({ controls: [cover, control({}, '画像を追加')], hitAt: () => cover });
     assert.deepStrictEqual(run('COVER_CONTROL', p.sandbox, { names }), { ok: false, count: 2 });
-    p = page({ controls: [cover], hitAt: () => new El('div') });
-    assert.strictEqual(run('COVER_CONTROL', p.sandbox, { names }).why, 'covered');
+    const overlay = new El('div');
+    overlay.getAttribute = (k) => (k === 'class' ? 'sticky top-0 header' : null);
+    p = page({ controls: [cover], hitAt: () => overlay });
+    assert.deepStrictEqual(run('COVER_CONTROL', p.sandbox, { names }), {
+      ok: false, count: 1, why: 'covered', coveredBy: 'div sticky top-0 header', x: 30, y: 40,
+    });
     assert.deepStrictEqual(run('COVER_CONTROL', page({ withTextarea: false }).sandbox, { names }), { ok: false, count: 0 });
   },
 
@@ -570,6 +576,20 @@ const tests = {
     lateSvg.closest = () => late;
     p = page({ labelledIcons: [lateSvg] });
     assert.deepStrictEqual(run('COVER_CONTROL', p.sandbox, { names }), { ok: false, count: 0 });
+  },
+
+  'cover control can be scrolled into view first, then measured a frame later': async () => {
+    const names = ['画像を追加'];
+    const button = new El('button');
+    button.getAttribute = (k) => (k === 'aria-label' ? '画像を追加' : null);
+    button.compareDocumentPosition = () => 4;
+    let top = -500;
+    button.scrollIntoView = () => { top = 100; };
+    button.getBoundingClientRect = () => ({ left: 0, top, width: 40, height: 40 });
+    const p = page({ controls: [button], hitAt: (x, y) => (y > 0 ? button : null) });
+    const out = await run('COVER_CONTROL', p.sandbox, { names, scroll: true });
+    assert.deepStrictEqual(out, { ok: true, count: 1, x: 20, y: 120 });
+    assert.deepStrictEqual(p.sandbox.window.scrolled, [0, 0]);
   },
 
   'cover menu item is the one upload item, never a generated or stock one': () => {

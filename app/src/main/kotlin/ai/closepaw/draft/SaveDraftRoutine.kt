@@ -78,6 +78,9 @@ interface DraftBrowser {
     suspend fun fileToChooser(tabId: String, backendNodeId: Long, args: JsonObject): JsonObject =
         buildJsonObject { put("ok", false) }
 
+    /** The pointer moves over a viewport point of [tabId] (a trusted hover). The default does nothing. */
+    suspend fun hover(tabId: String, x: Double, y: Double) {}
+
     /** One trusted key press in [tabId], from a closed set. The default does nothing. */
     suspend fun pressKey(tabId: String, key: DraftKey) {}
 
@@ -306,12 +309,19 @@ class SaveDraftRoutine(
         if (!titleSet.flag("ok")) return result(DraftOutcome.UNCERTAIN, "title-not-set")
         logInfo("title set")
 
+        // note's cover goes first, while the page is still at the top and the cover control in
+        // view. Its marker in the body, and the body fallback, are handled after the body.
+        val coverMarker = draftHasCoverMarker(request.html)
+        val asCover = coverMarker && site.platform == DraftPlatform.NOTE && request.images.isNotEmpty()
+        if (asCover) {
+            step = STEP_COVER
+            placeCover(tab, editorUrl, request.images[0])
+        }
+
         // Images first: the caret is at the end of an empty body, so they lead the article. An
         // image whose anchor paragraph is in the body (the header's included) waits for the body
         // and goes to its anchor instead.
         step = STEP_IMAGE
-        val coverMarker = draftHasCoverMarker(request.html)
-        val asCover = coverMarker && site.platform == DraftPlatform.NOTE && request.images.isNotEmpty()
         val anchored = draftAnchoredImages(request.html, request.images.size).toMutableSet()
         if (coverMarker && !asCover && request.images.isNotEmpty()) anchored += 0
         if (asCover) anchored -= 0
@@ -341,7 +351,6 @@ class SaveDraftRoutine(
             if (!asCover) {
                 removeMarker(tab, editorUrl, COVER_MARKER)
             } else {
-                placeCover(tab, editorUrl, request.images[0])
                 if (cover == COVER_PLACED) {
                     removeMarker(tab, editorUrl, COVER_MARKER)
                 } else {
@@ -783,11 +792,24 @@ class SaveDraftRoutine(
      * names, or to a cover input that has appeared meanwhile.
      */
     private suspend fun pressCoverControl(tab: DraftTab, editorUrl: String, image: DraftImage): Boolean {
-        val names = buildJsonObject { put("names", buildJsonArray { COVER_CONTROL_NAMES.forEach { add(JsonPrimitive(it)) } }) }
+        val names = buildJsonObject {
+            put("names", buildJsonArray { COVER_CONTROL_NAMES.forEach { add(JsonPrimitive(it)) } })
+            put("scroll", true)
+        }
         browser.interceptFileChooser(tab.id, true)
         try {
-            val control = browser.evaluate(tab.id, DraftScript.COVER_CONTROL, names)
-            logInfo("cover: control found=${control.anchorCount()}${control.str("why")?.let { " why=$it" }.orEmpty()}")
+            var control = browser.evaluate(tab.id, DraftScript.COVER_CONTROL, names)
+            logCoverControl(control)
+            if (control.str("why") == "covered") {
+                // A control shown only under the pointer: hover over it, then look again.
+                val hx = control["x"]?.jsonPrimitive?.doubleOrNull
+                val hy = control["y"]?.jsonPrimitive?.doubleOrNull
+                if (hx != null && hy != null) {
+                    browser.hover(tab.id, hx, hy)
+                    control = browser.evaluate(tab.id, DraftScript.COVER_CONTROL, names)
+                    logCoverControl(control, "after hover")
+                }
+            }
             val x = control["x"]?.jsonPrimitive?.doubleOrNull
             val y = control["y"]?.jsonPrimitive?.doubleOrNull
             if (!control.flag("ok") || x == null || y == null) {
@@ -841,6 +863,13 @@ class SaveDraftRoutine(
                 logInfo("cover: chooser interception not ended: ${e.javaClass.simpleName}")
             }
         }
+    }
+
+    private fun logCoverControl(control: JsonObject, phase: String = "") {
+        val why = control.str("why")?.let { " why=$it" }.orEmpty()
+        val by = control.str("coveredBy")?.let { " by=$it" }.orEmpty()
+        val after = if (phase.isEmpty()) "" else " ($phase)"
+        logInfo("cover: control found=${control.anchorCount()}$why$by$after")
     }
 
     /**

@@ -301,6 +301,19 @@ internal class ChromeDraftBrowser(
         } ?: throw IOException("key timed out")
     }
 
+    override suspend fun hover(tabId: String, x: Double, y: Double) {
+        withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
+            cdp { client ->
+                val event = buildJsonObject {
+                    put("type", "mouseMoved")
+                    put("x", x)
+                    put("y", y)
+                }
+                client.send("Input.dispatchMouseEvent", event, CdpOptions(targetId = tabId))
+            }
+        } ?: throw IOException("hover timed out")
+    }
+
     override suspend fun click(tabId: String, x: Double, y: Double) {
         withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
             cdp { client ->

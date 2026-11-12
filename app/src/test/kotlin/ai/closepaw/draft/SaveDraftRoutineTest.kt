@@ -113,6 +113,8 @@ class SaveDraftRoutineTest {
         var chooserPending: Long? = null
         var chooserFileWorks = true
         val intercepts = mutableListOf<Boolean>()
+        var coveredUntilHover = false
+        val hovers = mutableListOf<Pair<Double, Double>>()
         var focusTargetOk = true
         val fronted = mutableListOf<String>()
         val clicks = mutableListOf<Pair<Double, Double>>()
@@ -148,6 +150,11 @@ class SaveDraftRoutineTest {
                 }
                 else -> titleFocused = false
             }
+        }
+
+        override suspend fun hover(tabId: String, x: Double, y: Double) {
+            hovers += x to y
+            coveredUntilHover = false
         }
 
         override suspend fun interceptFileChooser(tabId: String, enabled: Boolean) {
@@ -321,11 +328,15 @@ class SaveDraftRoutineTest {
                     }
                 }
                 DraftScript.COVER_CONTROL -> buildJsonObject {
-                    put("ok", coverControl)
+                    put("ok", coverControl && !coveredUntilHover)
                     put("count", if (coverControl) 1 else 0)
                     if (coverControl) {
                         put("x", CONTROL_X)
                         put("y", 60.0)
+                        if (coveredUntilHover) {
+                            put("why", "covered")
+                            put("coveredBy", "div sticky header")
+                        }
                     }
                 }
                 DraftScript.COVER_MENU_ITEM -> buildJsonObject {
@@ -1206,7 +1217,7 @@ class SaveDraftRoutineTest {
     private val coverHtml = "<p>{{closepaw-cover-1}}</p><h2>Head</h2><p>Body text here</p>"
 
     @Test
-    fun `the cover marker makes the first image note's cover, after the body`() = runTest {
+    fun `the cover marker makes the first image note's cover, before the body`() = runTest {
         val browser = noteBrowser().apply {
             anchorsInEditor[COVER_MARKER] = 1
             cropDialogNeeded = true
@@ -1220,8 +1231,11 @@ class SaveDraftRoutineTest {
         assertThat(browser.anchorsInEditor[COVER_MARKER]).isEqualTo(0)
         assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE)
         assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE_HERE)
-        assertThat(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
-            .isLessThan(browser.scripts.indexOf(DraftScript.COVER_FILE))
+        // The cover while the page is at the top; its marker goes after the body.
+        assertThat(browser.scripts.indexOf(DraftScript.COVER_FILE))
+            .isLessThan(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
+        assertThat(browser.scripts.lastIndexOf(DraftScript.ANCHOR_SELECT))
+            .isGreaterThan(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
         assertThat(info).contains("cover: crop dialog pressed")
         assertThat(info).contains("cover: placed")
     }
@@ -1284,6 +1298,49 @@ class SaveDraftRoutineTest {
             "cover: chooser file ok=true",
             "cover: placed",
         ).inOrder()
+    }
+
+    @Test
+    fun `a covered cover control is hovered, looked at again, and pressed`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            coverInputOk = false
+            coverControl = true
+            coveredUntilHover = true
+            chooserOnControl = true
+        }
+        val result = routine(browser, note, listOf(image), html = coverHtml).run()
+
+        assertThat(result.cover).isEqualTo("placed")
+        assertThat(browser.hovers).containsExactly(FakeBrowser.CONTROL_X to 60.0)
+        assertThat(info).containsAtLeast(
+            "cover: control found=1 why=covered by=div sticky header",
+            "cover: control found=1 (after hover)",
+            "cover: control pressed",
+        ).inOrder()
+        // The body still gets the caret back after the cover.
+        assertThat(browser.scripts.indexOf(DraftScript.COVER_CONTROL))
+            .isLessThan(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
+    }
+
+    @Test
+    fun `a control still covered after the hover is not pressed`() = runTest {
+        val fake = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            coverInputOk = false
+            coverControl = true
+            coveredUntilHover = true
+        }
+        val stuck = object : DraftBrowser by fake {
+            override suspend fun hover(tabId: String, x: Double, y: Double) {
+                fake.hovers += x to y
+            }
+        }
+        val result = routine(stuck, note, listOf(image), html = coverHtml).run()
+
+        assertThat(result.cover).isEqualTo("failed-body")
+        assertThat(fake.hovers).hasSize(1)
+        assertThat(fake.clicks.map { it.first }).doesNotContain(FakeBrowser.CONTROL_X)
     }
 
     @Test
