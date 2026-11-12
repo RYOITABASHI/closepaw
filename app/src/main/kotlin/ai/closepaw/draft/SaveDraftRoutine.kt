@@ -40,6 +40,21 @@ interface DraftBrowser {
     /** The run's own tab, which the browser closes on every exit. The default does nothing. */
     fun runTab(tabId: String) {}
 
+    /**
+     * Puts [html] on the Android clipboard, with a plain-text alternative, when the page could not
+     * write it itself. False when that is not possible. The default does nothing.
+     */
+    suspend fun setClipboard(html: String): Boolean = false
+
+    /** Empties the clipboard once the run has used it. The default does nothing. */
+    suspend fun clearClipboard() {}
+
+    /**
+     * A trusted paste in [tabId]: the paste key, which the browser turns into its own paste
+     * command from the clipboard. The default does nothing.
+     */
+    suspend fun pasteKey(tabId: String) {}
+
     /** Makes [tabId] the shown tab of its window, which is on the run's display. */
     suspend fun bringToFront(tabId: String) {}
 
@@ -158,6 +173,9 @@ class SaveDraftRoutine(
     @Volatile private var dedupe = "not-checked"
     @Volatile private var imagesPlaced = 0
     @Volatile private var tabClosed = false
+
+    /** True when the body only went in through the last resort, which loses its structure. */
+    @Volatile private var flattened = false
 
     /** The step in progress, for the reason and the log when something throws. */
     @Volatile private var step = STEP_CHROME
@@ -355,35 +373,89 @@ class SaveDraftRoutine(
     }
 
     /**
-     * Pastes the body, after giving the editor real focus. When the body is still empty after the
-     * paste, and after any upload has finished:
-     * - if the page answered with a dialog meanwhile (note's "image uploading" alert), the paste is
-     *   repeated once;
-     * - if it is still empty, the same HTML goes in once through the browser's editing command.
-     * Every second attempt goes only into a body shown empty just before, so the article is never
-     * doubled.
+     * Puts the body in, each attempt only into a body shown empty just before, so the article is
+     * never doubled:
+     * 1. a trusted paste (the HTML on the clipboard, then the paste key);
+     * 2. if the body is still empty after any upload has finished (note refuses a paste while an
+     *    image uploads), the trusted paste once more;
+     * 3. as the last resort, the browser's insert command, which keeps the text but, in note,
+     *    not the structure: the run then reports `body-flattened`.
+     * The clipboard is emptied afterwards.
      */
     private suspend fun pasteBody(tab: DraftTab, editorUrl: String): Boolean {
         val dialogsBefore = browser.dialogsAnswered()
-        focusEditor(tab, editorUrl)
-        val pasted = write(tab, editorUrl, DraftScript.PASTE_HTML) { put("html", request.html) }
-        logPaste("paste", pasted, browser.dialogsAnswered() - dialogsBefore)
-        if (!pasted.flag("ok")) return false
-        if (bodyFilledSoon(tab, editorUrl)) return true
-        waitForUploads(tab)
-        if (!bodyEmpty(tab, editorUrl)) return true
-
-        if (browser.dialogsAnswered() > dialogsBefore) {
-            val again = write(tab, editorUrl, DraftScript.PASTE_HTML) { put("html", request.html) }
-            logPaste("paste-again", again, browser.dialogsAnswered() - dialogsBefore)
-            if (again.flag("ok") && bodyFilledSoon(tab, editorUrl)) return true
+        try {
+            if (trustedPaste(tab, editorUrl, "paste", dialogsBefore) && bodyFilledSoon(tab, editorUrl)) return true
+            waitForUploads(tab)
             if (!bodyEmpty(tab, editorUrl)) return true
+            if (trustedPaste(tab, editorUrl, "paste-again", dialogsBefore) && bodyFilledSoon(tab, editorUrl)) return true
+            if (!bodyEmpty(tab, editorUrl)) return true
+        } finally {
+            clearClipboard()
         }
 
         focusEditor(tab, editorUrl)
         val inserted = write(tab, editorUrl, DraftScript.INSERT_HTML) { put("html", request.html) }
-        logPaste("insert", inserted, browser.dialogsAnswered() - dialogsBefore)
+        // Flattened only if the insert really put text in.
+        flattened = inserted.flag("ok") && !bodyEmpty(tab, editorUrl)
+        logInfo(
+            "body method=insert ok=${inserted.flag("ok")} accepted=${inserted.flag("accepted")} " +
+                shapeLog(tab) + " dialogs=${browser.dialogsAnswered() - dialogsBefore}",
+        )
         return inserted.flag("ok") || inserted.flag("notEmpty")
+    }
+
+    /**
+     * Focus, the HTML onto the clipboard (the page's clipboard API, else the Android clipboard),
+     * then the paste key. False when nothing could be put on the clipboard, so no key was sent.
+     */
+    private suspend fun trustedPaste(tab: DraftTab, editorUrl: String, method: String, dialogsBefore: Int): Boolean {
+        focusEditor(tab, editorUrl)
+        stopIfOwnerHasChrome()
+        val written = browser.evaluate(tab.id, DraftScript.CLIPBOARD_WRITE, buildJsonObject {
+            put("editorUrl", editorUrl)
+            put("html", request.html)
+        })
+        stopIfMoved(written)
+        val clip = when {
+            written.flag("ok") -> "page"
+            browser.setClipboard(request.html) -> "android"
+            else -> null
+        }
+        val pageWhy = written.str("why")?.let { " pageWhy=$it" }.orEmpty()
+        if (clip == null) {
+            logInfo("body method=$method clip=none$pageWhy")
+            return false
+        }
+        stopIfOwnerHasChrome()
+        wrote = true
+        browser.pasteKey(tab.id)
+        logInfo(
+            "body method=$method clip=$clip$pageWhy " + shapeLog(tab) +
+                " dialogs=${browser.dialogsAnswered() - dialogsBefore}",
+        )
+        return true
+    }
+
+    /** `chars=N p=N h=N li=N`: numbers only. */
+    private suspend fun shapeLog(tab: DraftTab): String = try {
+        val shape = browser.evaluate(tab.id, DraftScript.BODY_SHAPE, NO_ARGS)
+        fun n(key: String) = shape[key]?.jsonPrimitive?.intOrNull ?: -1
+        "chars=${n("chars")} p=${n("p")} h=${n("h")} li=${n("li")}"
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        "shape=${e.javaClass.simpleName}"
+    }
+
+    private suspend fun clearClipboard() {
+        try {
+            browser.clearClipboard()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logInfo("clipboard not cleared: ${e.javaClass.simpleName}")
+        }
     }
 
     /** Gives a slow editor a moment to show what it took. */
@@ -392,17 +464,10 @@ class SaveDraftRoutine(
             true.takeUnless { bodyEmpty(tab, editorUrl) }
         } == true
 
-    private fun logPaste(method: String, answer: JsonObject, dialogs: Int) {
-        logInfo(
-            "body method=$method ok=${answer.flag("ok")} accepted=${answer.flag("accepted")} " +
-                "bodyChars=${answer["chars"]?.jsonPrimitive?.intOrNull ?: -1} dialogs=$dialogs",
-        )
-    }
-
     /**
-     * Gives the body real focus before text goes in: the run's own window shows the tab, a click
-     * lands in the body's last plain block when the page shows one, and a probe reports where the
-     * focus ended up. Best effort: a failure here is logged and the paste goes ahead.
+     * Gives the body real focus before text goes in: the tab is shown in its window (on the run's
+     * display), a click lands in the body's last plain block or, failing that, in the body itself
+     * ([DraftScript.FOCUS_TARGET]), and a probe reports where the focus ended up. Best effort: a failure here is logged and the paste goes ahead.
      */
     private suspend fun focusEditor(tab: DraftTab, editorUrl: String) {
         var front = false
@@ -425,7 +490,7 @@ class SaveDraftRoutine(
             }
             val probe = browser.evaluate(tab.id, DraftScript.FOCUS_PROBE, NO_ARGS)
             logInfo(
-                "focus front=$front clicked=$clicked target=${why ?: "ok"} " +
+                "focus front=$front clicked=$clicked target=${why ?: target.str("on") ?: "ok"} " +
                     "focused=${probe.flag("focused")} pageFocused=${probe.flag("pageFocused")}",
             )
         } catch (e: CancellationException) {
@@ -471,6 +536,11 @@ class SaveDraftRoutine(
                 saveEvidence = answer.str("evidence")
             }
             true.takeIf { titleOk && bodyOk && saved }
+        }
+        if (flattened) {
+            // The text may be stored, but not as the article: never report that as a success.
+            bodyOk = false
+            return result(DraftOutcome.UNCERTAIN, BODY_FLATTENED)
         }
         return when {
             confirmed == true -> result(DraftOutcome.SAVED, null)
@@ -539,6 +609,7 @@ class SaveDraftRoutine(
         put("key", key)
         put("title", request.title)
         put("samples", buildJsonArray { request.samples.forEach { add(JsonPrimitive(it)) } })
+        put("blocks", draftSourceBlocks(request.html))
         at?.let { put("at", it) }
     }
 
@@ -589,7 +660,16 @@ internal fun draftEvaluateParams(script: DraftScript, args: JsonObject): JsonObj
     put("expression", script.expression(args))
     put("returnByValue", true)
     put("awaitPromise", true)
+    // The clipboard API needs a user gesture; no other script gets one.
+    if (script == DraftScript.CLIPBOARD_WRITE) put("userGesture", true)
 }
+
+/** The reason for a body that went in without its structure. */
+internal const val BODY_FLATTENED = "body-flattened"
+
+/** Paragraphs, headings and list items in the source HTML, for the read-back's rough check. */
+internal fun draftSourceBlocks(html: String): Int =
+    Regex("<(p|h[1-6]|li)[\\s>]", RegexOption.IGNORE_CASE).findAll(html).count()
 
 class DraftScriptException(script: DraftScript) : Exception("draft script failed: ${script.name}")
 

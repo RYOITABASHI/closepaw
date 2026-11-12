@@ -69,7 +69,14 @@ class SaveDraftRoutineTest {
         var prepareRefusal: String? = null
         val prepared = mutableListOf<Unit>()
         val runTabs = mutableListOf<String>()
-        var pasteIgnored = false
+        var pasteKeyIgnored = false
+        var pageClipboardWorks = true
+        var androidClipboardWorks = true
+        var clip = false
+        var pasteKeys = 0
+        var androidClips = 0
+        var clipboardClears = 0
+        var flattenedBody = false
         var insertWorks = true
         var focusTargetOk = true
         val fronted = mutableListOf<String>()
@@ -95,6 +102,36 @@ class SaveDraftRoutineTest {
 
         override fun runTab(tabId: String) {
             runTabs += tabId
+        }
+
+        override suspend fun setClipboard(html: String): Boolean {
+            androidClips++
+            if (androidClipboardWorks) clip = true
+            return androidClipboardWorks
+        }
+
+        override suspend fun clearClipboard() {
+            clipboardClears++
+            clip = false
+        }
+
+        override suspend fun pasteKey(tabId: String) {
+            pasteKeys++
+            onWrite()
+            if (!clip) return
+            when {
+                pasteRefusals > 0 -> {
+                    // note's "uploading" alert, answered by the browser; the body stays empty.
+                    pasteRefusals--
+                    dialogs++
+                }
+                dialogWithPaste -> {
+                    dialogs++
+                    bodyFilled = true
+                }
+                pasteKeyIgnored -> {}
+                else -> bodyFilled = true
+            }
         }
 
         override fun dialogsAnswered(): Int = dialogs
@@ -166,26 +203,17 @@ class SaveDraftRoutineTest {
                     onWrite()
                     buildJsonObject { put("ok", true) }
                 }
-                DraftScript.PASTE_HTML -> {
-                    onWrite()
-                    when {
-                        pasteRefusals > 0 -> {
-                            // note's "uploading" alert, answered by the browser; the body stays empty.
-                            pasteRefusals--
-                            dialogs++
-                        }
-                        dialogWithPaste -> {
-                            dialogs++
-                            bodyFilled = true
-                        }
-                        pasteIgnored -> {}
-                        else -> bodyFilled = true
-                    }
-                    buildJsonObject {
-                        put("ok", true)
-                        put("accepted", bodyFilled)
-                        put("chars", if (bodyFilled) BODY_CHARS else 0)
-                    }
+                DraftScript.CLIPBOARD_WRITE -> buildJsonObject {
+                    if (pageClipboardWorks) clip = true
+                    put("ok", pageClipboardWorks)
+                    if (!pageClipboardWorks) put("why", "NotAllowedError")
+                }
+                DraftScript.BODY_SHAPE -> buildJsonObject {
+                    put("found", true)
+                    put("chars", if (bodyFilled) BODY_CHARS else 0)
+                    put("p", if (!bodyFilled) 0 else if (flattenedBody) 1 else 3)
+                    put("h", if (bodyFilled && !flattenedBody) 1 else 0)
+                    put("li", 0)
                 }
                 DraftScript.INSERT_HTML -> {
                     onWrite()
@@ -195,7 +223,10 @@ class SaveDraftRoutineTest {
                             put("notEmpty", true)
                         }
                     } else {
-                        if (insertWorks) bodyFilled = true
+                        if (insertWorks) {
+                            bodyFilled = true
+                            flattenedBody = true
+                        }
                         buildJsonObject {
                             put("ok", true)
                             put("accepted", insertWorks)
@@ -208,6 +239,7 @@ class SaveDraftRoutineTest {
                     if (focusTargetOk) {
                         put("x", 18.0)
                         put("y", 110.0)
+                        put("on", "block")
                     } else {
                         put("why", "no-block")
                     }
@@ -234,7 +266,7 @@ class SaveDraftRoutineTest {
                 }
                 DraftScript.READ_BACK -> buildJsonObject {
                     put("titleOk", readBackOk)
-                    put("bodyOk", readBackOk && bodyFilled)
+                    put("bodyOk", readBackOk && bodyFilled && !flattenedBody)
                 }
                 DraftScript.NOTE_SAVE_CLICK -> buildJsonObject {
                     put("ok", saveLabelMatches == 1)
@@ -255,7 +287,7 @@ class SaveDraftRoutineTest {
             const val OURS = "ours"
             const val BODY_CHARS = 14
             val WRITES = setOf(
-                DraftScript.SET_TITLE, DraftScript.PASTE_HTML, DraftScript.PASTE_IMAGE,
+                DraftScript.SET_TITLE, DraftScript.CLIPBOARD_WRITE, DraftScript.PASTE_IMAGE,
                 DraftScript.FILE_INPUT_IMAGE, DraftScript.NOTE_SAVE_CLICK,
             )
         }
@@ -325,7 +357,7 @@ class SaveDraftRoutineTest {
         assertThat(result.url).isEqualTo(noteEditor)
         assertThat(browser.closed).isEmpty()
         assertThat(browser.scripts.count { it == DraftScript.NOTE_SAVE_CLICK }).isEqualTo(1)
-        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(1)
+        assertThat(browser.pasteKeys).isEqualTo(1)
     }
 
     @Test
@@ -607,7 +639,7 @@ class SaveDraftRoutineTest {
         assertThat(result.reason).isEqualTo("timeout")
         assertThat(result.wrote).isTrue()
         assertThat(browser.scripts.count { it == DraftScript.SET_TITLE }).isEqualTo(1)
-        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(1)
+        assertThat(browser.pasteKeys).isEqualTo(1)
         assertThat(browser.navigated).hasSize(1)
         assertThat(browser.closed).isEmpty()
     }
@@ -669,7 +701,7 @@ class SaveDraftRoutineTest {
         assertThat(result.imagesPlaced).isEqualTo(1)
         assertThat(browser.scripts).doesNotContain(DraftScript.FILE_INPUT_IMAGE)
         assertThat(browser.scripts.indexOf(DraftScript.PASTE_IMAGE))
-            .isLessThan(browser.scripts.indexOf(DraftScript.PASTE_HTML))
+            .isLessThan(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
     }
 
     @Test
@@ -722,7 +754,7 @@ class SaveDraftRoutineTest {
         assertThat(browser.scripts.count { it == DraftScript.IMAGE_COUNT }).isAtLeast(6)
         assertThat(browser.scripts).doesNotContain(DraftScript.FILE_INPUT_IMAGE)
         assertThat(browser.scripts.lastIndexOf(DraftScript.IMAGE_COUNT))
-            .isLessThan(browser.scripts.indexOf(DraftScript.PASTE_HTML))
+            .isLessThan(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
     }
 
     @Test
@@ -755,7 +787,7 @@ class SaveDraftRoutineTest {
         val result = routine(browser, note).run()
 
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
-        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(2)
+        assertThat(browser.pasteKeys).isEqualTo(2)
     }
 
     @Test
@@ -767,7 +799,7 @@ class SaveDraftRoutineTest {
         val result = routine(browser, note).run()
 
         assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
-        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(2)
+        assertThat(browser.pasteKeys).isEqualTo(2)
         // After the second refused paste, the editing command gets one go at the empty body.
         assertThat(browser.scripts.count { it == DraftScript.INSERT_HTML }).isEqualTo(1)
     }
@@ -778,7 +810,7 @@ class SaveDraftRoutineTest {
         val result = routine(browser, note).run()
 
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
-        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(1)
+        assertThat(browser.pasteKeys).isEqualTo(1)
     }
 
     @Test
@@ -786,27 +818,31 @@ class SaveDraftRoutineTest {
         val browser = noteBrowser()
         routine(browser, note).run()
 
-        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(1)
+        assertThat(browser.pasteKeys).isEqualTo(1)
         assertThat(browser.scripts.count { it == DraftScript.EDITOR_PROBE }).isEqualTo(2)
         assertThat(browser.scripts).doesNotContain(DraftScript.INSERT_HTML)
     }
 
     @Test
-    fun `a paste the editor ignores goes in once through the editing command`() = runTest {
-        val browser = noteBrowser().apply { pasteIgnored = true }
+    fun `a body that only the insert command takes is reported flattened, never saved`() = runTest {
+        val browser = noteBrowser().apply { pasteKeyIgnored = true }
         val result = routine(browser, note).run()
 
-        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
-        assertThat(browser.scripts.count { it == DraftScript.PASTE_HTML }).isEqualTo(1)
+        assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
+        assertThat(result.reason).isEqualTo("body-flattened")
+        assertThat(result.bodyOk).isFalse()
+        // Two trusted pastes, each into an empty body, then the last resort once.
+        assertThat(browser.pasteKeys).isEqualTo(2)
         assertThat(browser.scripts.count { it == DraftScript.INSERT_HTML }).isEqualTo(1)
-        val probeBefore = browser.scripts.lastIndexOf(DraftScript.EDITOR_PROBE)
-        assertThat(probeBefore).isLessThan(browser.scripts.indexOf(DraftScript.INSERT_HTML))
+        assertThat(browser.scripts.lastIndexOf(DraftScript.CLIPBOARD_WRITE))
+            .isLessThan(browser.scripts.indexOf(DraftScript.INSERT_HTML))
+        assertThat(info).contains("body method=insert ok=true accepted=true chars=14 p=1 h=0 li=0 dialogs=0")
     }
 
     @Test
     fun `when nothing takes the body the run says so and inserts only once`() = runTest {
         val browser = noteBrowser().apply {
-            pasteIgnored = true
+            pasteKeyIgnored = true
             insertWorks = false
         }
         val result = routine(browser, note).run()
@@ -814,7 +850,7 @@ class SaveDraftRoutineTest {
         assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
         assertThat(result.reason).isEqualTo("read-back-mismatch")
         assertThat(browser.scripts.count { it == DraftScript.INSERT_HTML }).isEqualTo(1)
-        assertThat(info).contains("body method=insert ok=true accepted=false bodyChars=0 dialogs=0")
+        assertThat(info).contains("body method=insert ok=true accepted=false chars=0 p=0 h=0 li=0 dialogs=0")
     }
 
     // ── Focus before the body ──
@@ -827,12 +863,12 @@ class SaveDraftRoutineTest {
         val target = browser.scripts.indexOf(DraftScript.FOCUS_TARGET)
         val click = browser.scripts.indexOf(null)
         val probe = browser.scripts.indexOf(DraftScript.FOCUS_PROBE)
-        val paste = browser.scripts.indexOf(DraftScript.PASTE_HTML)
+        val paste = browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE)
         assertThat(listOf(target, click, probe, paste)).isInOrder()
         assertThat(browser.clicks).containsExactly(18.0 to 110.0)
         // Chrome is on the run's display, so the run's tab is shown there.
         assertThat(browser.fronted).containsExactly(FakeBrowser.OURS)
-        assertThat(info).contains("focus front=true clicked=true target=ok focused=true pageFocused=false")
+        assertThat(info).contains("focus front=true clicked=true target=block focused=true pageFocused=false")
     }
 
     @Test
@@ -867,12 +903,82 @@ class SaveDraftRoutineTest {
             "editor reached",
             "title set",
             "images placed=1/1",
-            "body method=paste ok=true accepted=true bodyChars=14 dialogs=0",
+            "body method=paste clip=page chars=14 p=3 h=1 li=0 dialogs=0",
         ).inOrder()
         info.forEach { line ->
             assertThat(line).doesNotContain("A title")
             assertThat(line).doesNotContain("Body text")
         }
+    }
+
+    // ── Trusted paste ──
+
+    @Test
+    fun `the body goes in by the page's clipboard and the paste key, and the clipboard is emptied`() = runTest {
+        val browser = noteBrowser()
+        val result = routine(browser, note).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.pasteKeys).isEqualTo(1)
+        assertThat(browser.androidClips).isEqualTo(0)
+        assertThat(browser.scripts).doesNotContain(DraftScript.INSERT_HTML)
+        assertThat(browser.clipboardClears).isEqualTo(1)
+        assertThat(browser.scripts.indexOf(DraftScript.FOCUS_TARGET))
+            .isLessThan(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
+    }
+
+    @Test
+    fun `a refused page clipboard falls back to the Android clipboard`() = runTest {
+        val browser = noteBrowser().apply { pageClipboardWorks = false }
+        val result = routine(browser, note).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.androidClips).isEqualTo(1)
+        assertThat(browser.pasteKeys).isEqualTo(1)
+        assertThat(info.any { it.startsWith("body method=paste clip=android pageWhy=NotAllowedError chars=14") }).isTrue()
+    }
+
+    @Test
+    fun `with no clipboard at all no key is pressed and the last resort is reported`() = runTest {
+        val browser = noteBrowser().apply {
+            pageClipboardWorks = false
+            androidClipboardWorks = false
+        }
+        val result = routine(browser, note).run()
+
+        assertThat(browser.pasteKeys).isEqualTo(0)
+        assertThat(info).contains("body method=paste clip=none pageWhy=NotAllowedError")
+        assertThat(info).contains("body method=paste-again clip=none pageWhy=NotAllowedError")
+        assertThat(result.reason).isEqualTo("body-flattened")
+    }
+
+    @Test
+    fun `the source's blocks are counted for the read-back`() {
+        assertThat(draftSourceBlocks("<h2>A</h2><p>b</p><ul><li>c</li><li class=\"x\">d</li></ul><pre>e</pre>"))
+            .isEqualTo(4)
+        assertThat(draftSourceBlocks("<P>x</P>")).isEqualTo(1)
+    }
+
+    @Test
+    fun `only the clipboard write gets a user gesture`() {
+        DraftScript.values().forEach { script ->
+            val params = draftEvaluateParams(script, JsonObject(emptyMap()))
+            assertThat(params.containsKey("userGesture")).isEqualTo(script == DraftScript.CLIPBOARD_WRITE)
+        }
+    }
+
+    @Test
+    fun `the read-back is told how many blocks to expect`() = runTest {
+        var blocks: String? = null
+        val inner = noteBrowser()
+        val browser = object : DraftBrowser by inner {
+            override suspend fun evaluate(tabId: String, script: DraftScript, args: JsonObject): JsonObject {
+                if (script == DraftScript.READ_BACK) blocks = args["blocks"]?.jsonPrimitive?.content
+                return inner.evaluate(tabId, script, args)
+            }
+        }
+        routine(browser, note).run()
+        assertThat(blocks).isEqualTo("1")
     }
 
     // ── Chrome kept off the owner's screen ──

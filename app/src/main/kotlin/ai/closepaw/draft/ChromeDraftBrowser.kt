@@ -1,6 +1,12 @@
 package ai.closepaw.draft
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.os.Build
+import android.os.PersistableBundle
+import android.text.Html
 import android.util.Log
 import ai.closepaw.browser.cdp.CdpOptions
 import ai.closepaw.browser.cdp.ChromeCdpClient
@@ -15,8 +21,12 @@ import ai.closepaw.trace.NoopTraceRecorder
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -45,6 +55,9 @@ internal class ChromeDraftBrowser(
     /** The run's own tab, closed on every exit; and the stage that moved the owner's Chrome. */
     @Volatile private var runTabId: String? = null
     @Volatile private var stage: DraftChromeStage? = null
+
+    /** True once this run may have put the article on the clipboard; only then is it emptied. */
+    @Volatile private var clipboardTouched = false
 
     /** False when the virtual display cannot be had. Never falls back to the main display. */
     suspend fun start(): Boolean {
@@ -78,6 +91,12 @@ internal class ChromeDraftBrowser(
         }
         if (done == null) Log.w(TAG, "draft chrome finish timed out")
         runTabId = null
+        // The article may still be on the clipboard after a run that was cut short.
+        try {
+            clearClipboard()
+        } catch (e: Exception) {
+            Log.w(TAG, "clipboard not cleared: ${e.javaClass.simpleName}")
+        }
         stage = null
         sessions.close()
         display?.stopKeepingTasks()
@@ -160,6 +179,7 @@ internal class ChromeDraftBrowser(
      * gives up as an [IOException], not a cancellation, so the routine counts it as a miss.
      */
     override suspend fun evaluate(tabId: String, script: DraftScript, args: JsonObject): JsonObject {
+        if (script == DraftScript.CLIPBOARD_WRITE) clipboardTouched = true
         val response = withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
             cdp { client ->
                 client.send("Runtime.evaluate", draftEvaluateParams(script, args), CdpOptions(targetId = tabId))
@@ -172,6 +192,64 @@ internal class ChromeDraftBrowser(
         withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
             cdp { client -> client.send("Page.bringToFront", JsonObject(emptyMap()), CdpOptions(targetId = tabId)) }
         } ?: throw IOException("bringToFront timed out")
+    }
+
+    /**
+     * The fallback when the page cannot write the clipboard: ClosePaw puts the HTML there itself.
+     * Marked sensitive, so the system's clipboard preview does not show the text.
+     */
+    override suspend fun setClipboard(html: String): Boolean = withContext(Dispatchers.Main) {
+        try {
+            val clipboard = service.getSystemService(ClipboardManager::class.java)
+                ?: return@withContext false
+            val plain = Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY).toString()
+            val clip = ClipData.newHtmlText("draft", plain, html)
+            if (Build.VERSION.SDK_INT >= 33) {
+                clip.description.extras = PersistableBundle().apply {
+                    putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+                }
+            }
+            clipboardTouched = true
+            clipboard.setPrimaryClip(clip)
+            Log.i(TAG, "draft clipboard set by ClosePaw")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "draft clipboard not set: ${e.javaClass.simpleName}")
+            false
+        }
+    }
+
+    /**
+     * Empties the clipboard, if this run used it. The owner's earlier clip is not read back to restore it: reading the
+     * clipboard from the background is refused, or announced on screen, on current Android.
+     */
+    override suspend fun clearClipboard() {
+        if (!clipboardTouched) return
+        clipboardTouched = false
+        withContext(Dispatchers.Main) {
+            val clipboard = service.getSystemService(ClipboardManager::class.java) ?: return@withContext
+            if (Build.VERSION.SDK_INT >= 28) clipboard.clearPrimaryClip()
+            Log.i(TAG, "draft clipboard cleared")
+        }
+    }
+
+    /** Ctrl+V with the browser's own paste command: a trusted paste from the clipboard. */
+    override suspend fun pasteKey(tabId: String) {
+        withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
+            cdp { client ->
+                for (type in listOf("rawKeyDown", "keyUp")) {
+                    val event = buildJsonObject {
+                        put("type", type)
+                        put("modifiers", CTRL)
+                        put("key", "v")
+                        put("code", "KeyV")
+                        put("windowsVirtualKeyCode", 86)
+                        if (type == "rawKeyDown") put("commands", buildJsonArray { add(JsonPrimitive("paste")) })
+                    }
+                    client.send("Input.dispatchKeyEvent", event, CdpOptions(targetId = tabId))
+                }
+            }
+        } ?: throw IOException("paste key timed out")
     }
 
     override suspend fun click(tabId: String, x: Double, y: Double) {
@@ -204,3 +282,6 @@ class DraftEvaluateTimeoutException(script: DraftScript) : IOException("draft sc
 private const val TAG = "ChromeDraftBrowser"
 private const val EVALUATE_TIMEOUT_MS = 10_000L
 private const val FINISH_TIMEOUT_MS = 20_000L
+
+/** CDP modifier bit for Ctrl. */
+private const val CTRL = 2

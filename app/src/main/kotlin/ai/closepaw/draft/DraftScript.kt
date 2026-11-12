@@ -91,27 +91,49 @@ enum class DraftScript(val source: String) {
     ),
 
     /**
-     * Synthetic paste of the validated HTML at the end of the body. `accepted` is true when the
-     * editor took the event (it cancels a paste it handles); `chars` is the body's length after.
+     * Puts the validated HTML, with a plain-text alternative, on the clipboard, for the trusted
+     * paste that follows (a key press the browser turns into its own paste command). The page's
+     * clipboard API needs a user gesture, which the evaluate call grants for this script only.
+     * The text never leaves the device: it goes from this page to the clipboard and back.
      */
-    PASTE_HTML(
+    CLIPBOARD_WRITE(
         """
         function (a) {
           $SAME_DRAFT
+          if (!navigator.clipboard || typeof ClipboardItem === 'undefined') return { ok: false, why: 'no-api' };
+          var plain = new DOMParser().parseFromString(a.html, 'text/html').body.textContent;
+          var item = new ClipboardItem({
+            'text/html': new Blob([a.html], { type: 'text/html' }),
+            'text/plain': new Blob([plain], { type: 'text/plain' }),
+          });
+          return navigator.clipboard.write([item]).then(
+            function () { return { ok: true }; },
+            function (e) { return { ok: false, why: String(e && e.name) }; });
+        }
+        """,
+    ),
+
+    /** The body's length and its blocks, as numbers only: did the structure survive? */
+    BODY_SHAPE(
+        """
+        function (a) {
           var body = $BODY_LOOKUP;
-          if (!body) return { ok: false };
-          $CARET_TO_END
-          var data = new DataTransfer();
-          data.setData('text/html', a.html);
-          var handled = !body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
-          return { ok: true, accepted: handled, chars: body.textContent.length };
+          if (!body) return { found: false };
+          return {
+            found: true,
+            chars: body.textContent.length,
+            p: body.querySelectorAll('p').length,
+            h: body.querySelectorAll('h1, h2, h3, h4, h5, h6').length,
+            li: body.querySelectorAll('li').length,
+          };
         }
         """,
     ),
 
     /**
-     * The second way in, for an editor that ignored the paste event: the browser's own editing
-     * command inserts the same validated HTML at the caret. Only into an empty body.
+     * The last resort, for an editor that took no paste: the browser's own editing command
+     * inserts the same validated HTML at the caret. Only into an empty body. note's editor keeps
+     * the text but drops the structure, so the routine reports a body put in this way.
      */
     INSERT_HTML(
         """
@@ -128,9 +150,11 @@ enum class DraftScript(val source: String) {
     ),
 
     /**
-     * Where to put the pointer to give the body real focus: inside the body's last block, which
-     * must be a plain paragraph or heading with nothing in it that reacts to a pointer, and must
-     * be what the page shows at that point. Otherwise no point is given.
+     * Where to put the pointer to give the body real focus. Preferably inside the body's last
+     * block, if it is a plain paragraph or heading with nothing in it that reacts to a pointer;
+     * otherwise near the bottom of the body itself (an empty body has no such block). The page
+     * must show the body there, and nothing at that point may be an image, figure, link, button,
+     * input or non-editable part. Otherwise no point is given.
      */
     FOCUS_TARGET(
         """
@@ -138,17 +162,24 @@ enum class DraftScript(val source: String) {
           $SAME_DRAFT
           var body = $BODY_LOOKUP;
           if (!body) return { ok: false, why: 'no-body' };
+          var unsafe = 'img, figure, a, button, input, [contenteditable=false]';
           var block = body.lastElementChild;
-          if (!block || !/^(P|H[1-6])$/.test(block.tagName)) return { ok: false, why: 'no-block' };
-          if (block.querySelector('img, figure, a, button, input, [contenteditable=false]')) return { ok: false, why: 'busy-block' };
-          block.scrollIntoView({ block: 'center' });
-          var rect = block.getBoundingClientRect();
+          var on = 'block';
+          var box = block;
+          if (!block || !/^(P|H[1-6])$/.test(block.tagName) || block.querySelector(unsafe)) {
+            on = 'body';
+            box = body;
+          }
+          box.scrollIntoView({ block: 'center' });
+          var rect = box.getBoundingClientRect();
           if (rect.width < 4 || rect.height < 4) return { ok: false, why: 'no-size' };
           var x = rect.left + Math.min(8, rect.width / 2);
-          var y = rect.top + rect.height / 2;
+          var y = on === 'block' ? rect.top + rect.height / 2 : rect.bottom - Math.min(6, rect.height / 2);
           var hit = document.elementFromPoint(x, y);
-          if (!hit || !block.contains(hit)) return { ok: false, why: 'covered' };
-          return { ok: true, x: x, y: y };
+          if (!hit || !box.contains(hit)) return { ok: false, why: 'covered' };
+          var near = hit.closest ? hit.closest(unsafe) : null;
+          if (near && body.contains(near)) return { ok: false, why: 'busy-point' };
+          return { ok: true, x: x, y: y, on: on };
         }
         """,
     ),
@@ -229,7 +260,10 @@ enum class DraftScript(val source: String) {
         """,
     ),
 
-    /** Do the title and every sample appear in the live editor of this draft? */
+    /**
+     * Do the title and every sample appear in the live editor of this draft, and did roughly the
+     * structure arrive: at least half as many paragraphs, headings and list items as the source?
+     */
     READ_BACK(
         """
         function (a) {
@@ -238,9 +272,12 @@ enum class DraftScript(val source: String) {
           var title = document.querySelector('textarea');
           var body = $BODY_LOOKUP;
           var text = body ? norm(body.textContent) : '';
+          var blocks = body ? body.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li').length : 0;
+          var want = a.blocks || 0;
           return {
             titleOk: !!title && title.value === a.title,
-            bodyOk: a.samples.every(function (s) { return text.indexOf(s) >= 0; }),
+            bodyOk: a.samples.every(function (s) { return text.indexOf(s) >= 0; }) && (want <= 1 || blocks * 2 >= want),
+            blocks: blocks,
           };
         }
         """,
