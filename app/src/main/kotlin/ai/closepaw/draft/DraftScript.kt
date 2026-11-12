@@ -23,6 +23,9 @@ internal const val NOTE_SAVE_LABEL = "下書き保存"
 /** The words of note's saved toast. An editor can hold them too, so only text outside counts. */
 private const val NOTE_SAVED_WORDS = "保存しました"
 
+/** Start of the text of an in-body image anchor paragraph, e.g. `{{closepaw-image-2}}`. */
+private const val ANCHOR_PREFIX = "{{closepaw-image-"
+
 /** note's words while an image is still on its way to the server. */
 private const val UPLOADING_WORDS = "アップロード中"
 
@@ -261,8 +264,82 @@ enum class DraftScript(val source: String) {
     ),
 
     /**
+     * In-body image anchors: selects the text of the paragraph whose whole trimmed text is
+     * `a.marker`, so a Backspace then empties it. Only when there is exactly one such paragraph,
+     * or, with `a.any` (to remove markers), at least one: then the first.
+     */
+    ANCHOR_SELECT(
+        """
+        function (a) {
+          $SAME_DRAFT
+          var body = $BODY_LOOKUP;
+          if (!body) return { ok: false, count: 0 };
+          var found = [];
+          var blocks = body.querySelectorAll('p');
+          for (var i = 0; i < blocks.length; i++) {
+            if (blocks[i].textContent.trim() === a.marker) found.push(blocks[i]);
+          }
+          if (found.length === 0 || (found.length > 1 && !a.any)) return { ok: false, count: found.length };
+          body.focus();
+          var range = document.createRange();
+          range.selectNodeContents(found[0]);
+          var selection = getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return { ok: true, count: found.length };
+        }
+        """,
+    ),
+
+    /**
+     * After a Backspace: how many marker paragraphs are left, and is the caret in an empty block
+     * (no text, no image) whose previous block is a plain paragraph or heading?
+     */
+    ANCHOR_CHECK(
+        """
+        function (a) {
+          var body = $BODY_LOOKUP;
+          if (!body) return { href: location.href, count: 0, caretEmpty: false, prevPlain: false };
+          var count = 0;
+          var blocks = body.querySelectorAll('p');
+          for (var i = 0; i < blocks.length; i++) {
+            if (blocks[i].textContent.trim() === a.marker) count++;
+          }
+          var node = getSelection().anchorNode;
+          var el = node && node.nodeType === 1 ? node : node && node.parentElement;
+          var block = el && body.contains(el) ? el.closest('p, h1, h2, h3, h4, h5, h6, li') : null;
+          var caretEmpty = !!block && block.textContent.trim() === '' && !block.querySelector('img');
+          var prev = block ? block.previousElementSibling : null;
+          return {
+            href: location.href,
+            count: count,
+            caretEmpty: caretEmpty,
+            prevPlain: !!prev && /^(P|H[1-6])$/.test(prev.tagName),
+          };
+        }
+        """,
+    ),
+
+    /** An image as a File on a synthetic paste, at the caret, which must be in the body. */
+    PASTE_IMAGE_HERE(
+        """
+        function (a) {
+          $SAME_DRAFT
+          var body = $BODY_LOOKUP;
+          if (!body) return { ok: false };
+          var node = getSelection().anchorNode;
+          if (!node || !body.contains(node)) return { ok: false };
+          $IMAGE_FILE
+          body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+          return { ok: true };
+        }
+        """,
+    ),
+
+    /**
      * Do the title and every sample appear in the live editor of this draft, and did roughly the
      * structure arrive: at least half as many paragraphs, headings and list items as the source?
+     * No image anchor text may be left in it.
      */
     READ_BACK(
         """
@@ -274,10 +351,12 @@ enum class DraftScript(val source: String) {
           var text = body ? norm(body.textContent) : '';
           var blocks = body ? body.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li').length : 0;
           var want = a.blocks || 0;
+          var markersLeft = text.indexOf('$ANCHOR_PREFIX') >= 0;
           return {
             titleOk: !!title && title.value === a.title,
-            bodyOk: a.samples.every(function (s) { return text.indexOf(s) >= 0; }) && (want <= 1 || blocks * 2 >= want),
+            bodyOk: a.samples.every(function (s) { return text.indexOf(s) >= 0; }) && (want <= 1 || blocks * 2 >= want) && !markersLeft,
             blocks: blocks,
+            markersLeft: markersLeft,
           };
         }
         """,

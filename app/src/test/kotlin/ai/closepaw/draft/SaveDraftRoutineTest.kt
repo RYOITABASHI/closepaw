@@ -26,8 +26,8 @@ class SaveDraftRoutineTest {
     private val noteEditor = "https://editor.note.com/notes/nabc/edit/"
     private val image = DraftImage("a.jpg", "image/jpeg", "AAAA")
 
-    private fun request(site: DraftSite, images: List<DraftImage> = emptyList()) =
-        SaveDraftRequest(site, "A title", "<p>Body text here</p>", listOf("Body text here"), images)
+    private fun request(site: DraftSite, images: List<DraftImage> = emptyList(), html: String = "<p>Body text here</p>") =
+        SaveDraftRequest(site, "A title", html, listOf("Body text here"), images)
 
     private class Row(val hrefs: List<String>, val match: Boolean)
 
@@ -78,6 +78,12 @@ class SaveDraftRoutineTest {
         var clipboardClears = 0
         var flattenedBody = false
         var insertWorks = true
+        val anchorsInEditor = mutableMapOf<String, Int>()
+        var selectedMarker: String? = null
+        var caretEmpty = false
+        var backspaceWorks = true
+        var imageHereWorks = true
+        var backspaces = 0
         var focusTargetOk = true
         val fronted = mutableListOf<String>()
         val clicks = mutableListOf<Pair<Double, Double>>()
@@ -108,6 +114,19 @@ class SaveDraftRoutineTest {
             androidClips++
             if (androidClipboardWorks) clip = true
             return androidClipboardWorks
+        }
+
+        override suspend fun pressBackspace(tabId: String) {
+            backspaces++
+            if (!backspaceWorks) return
+            val marker = selectedMarker
+            if (marker != null) {
+                anchorsInEditor[marker] = (anchorsInEditor[marker] ?: 1) - 1
+                selectedMarker = null
+                caretEmpty = true
+            } else if (caretEmpty) {
+                caretEmpty = false
+            }
         }
 
         override suspend fun clearClipboard() {
@@ -208,6 +227,29 @@ class SaveDraftRoutineTest {
                     put("ok", pageClipboardWorks)
                     if (!pageClipboardWorks) put("why", "NotAllowedError")
                 }
+                DraftScript.ANCHOR_SELECT -> buildJsonObject {
+                    val marker = args["marker"]!!.jsonPrimitive.content
+                    val count = anchorsInEditor[marker] ?: 0
+                    val any = args["any"]?.jsonPrimitive?.content == "true"
+                    val ok = count == 1 || (count > 1 && any)
+                    if (ok) selectedMarker = marker
+                    put("ok", ok)
+                    put("count", count)
+                }
+                DraftScript.ANCHOR_CHECK -> buildJsonObject {
+                    val marker = args["marker"]!!.jsonPrimitive.content
+                    put("href", currentUrl)
+                    put("count", anchorsInEditor[marker] ?: 0)
+                    put("caretEmpty", caretEmpty)
+                    put("prevPlain", true)
+                }
+                DraftScript.PASTE_IMAGE_HERE -> {
+                    if (imageHereWorks && caretEmpty) {
+                        pageImages++
+                        caretEmpty = false
+                    }
+                    buildJsonObject { put("ok", true) }
+                }
                 DraftScript.BODY_SHAPE -> buildJsonObject {
                     put("found", true)
                     put("chars", if (bodyFilled) BODY_CHARS else 0)
@@ -266,7 +308,9 @@ class SaveDraftRoutineTest {
                 }
                 DraftScript.READ_BACK -> buildJsonObject {
                     put("titleOk", readBackOk)
-                    put("bodyOk", readBackOk && bodyFilled && !flattenedBody)
+                    val markersLeft = anchorsInEditor.values.sum() > 0
+                    put("bodyOk", readBackOk && bodyFilled && !flattenedBody && !markersLeft)
+                    put("markersLeft", markersLeft)
                 }
                 DraftScript.NOTE_SAVE_CLICK -> buildJsonObject {
                     put("ok", saveLabelMatches == 1)
@@ -301,9 +345,10 @@ class SaveDraftRoutineTest {
         site: DraftSite,
         images: List<DraftImage> = emptyList(),
         ownerHasChrome: () -> Boolean = { false },
+        html: String = "<p>Body text here</p>",
     ) = SaveDraftRoutine(
         browser,
-        request(site, images),
+        request(site, images, html),
         ownerHasChrome,
         now = { testScheduler.currentTime },
         newMarker = { "closepaw-test" },
@@ -909,6 +954,122 @@ class SaveDraftRoutineTest {
             assertThat(line).doesNotContain("A title")
             assertThat(line).doesNotContain("Body text")
         }
+    }
+
+    // ── In-body image anchors ──
+
+    private val second = DraftImage("b.jpg", "image/jpeg", "BBBB")
+    private val anchoredHtml = "<p>Body text here</p><p>{{closepaw-image-2}}</p><p>More</p>"
+    private val marker2 = "{{closepaw-image-2}}"
+
+    @Test
+    fun `anchors are found only in their own paragraph, and never for the header`() {
+        val html = "<p>{{closepaw-image-1}}</p><p class=\"x\"> {{closepaw-image-2}} </p>" +
+            "<p>see {{closepaw-image-3}}</p><P>{{closepaw-image-4}}</P><p>{{closepaw-image-9}}</p>"
+        assertThat(draftAnchoredImages(html, 4)).containsExactly(1, 3)
+        assertThat(draftAnchoredImages("<p>x</p>", 3)).isEmpty()
+        assertThat(draftAnchorMarker(2)).isEqualTo("{{closepaw-image-2}}")
+    }
+
+    @Test
+    fun `an anchored image goes where its anchor is, after the body`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            anchorsInEditor[marker2] = 1
+        }
+        val result = routine(browser, note, listOf(image, second), html = anchoredHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.imagesExpected).isEqualTo(2)
+        assertThat(result.imagesPlaced).isEqualTo(2)
+        assertThat(result.anchors).containsExactly("2:placed")
+        assertThat(result.toSummary()).contains("\"anchors\":[\"2:placed\"]")
+        // Only the header goes before the body.
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_IMAGE }).isEqualTo(1)
+        val order = listOf(
+            browser.scripts.indexOf(DraftScript.PASTE_IMAGE),
+            browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE),
+            browser.scripts.indexOf(DraftScript.ANCHOR_SELECT),
+            browser.scripts.indexOf(DraftScript.PASTE_IMAGE_HERE),
+        )
+        assertThat(order).isInOrder()
+        assertThat(browser.backspaces).isEqualTo(1)
+        assertThat(browser.anchorsInEditor[marker2]).isEqualTo(0)
+        assertThat(info).contains("anchors 2:placed images placed=2/2")
+    }
+
+    @Test
+    fun `a missing anchor leaves the image out and the body as it is`() = runTest {
+        val browser = noteBrowser().apply { imageRouteWorks = DraftScript.PASTE_IMAGE }
+        val result = routine(browser, note, listOf(image, second), html = anchoredHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.imagesPlaced).isEqualTo(1)
+        assertThat(result.anchors).containsExactly("2:missing")
+        assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE_HERE)
+        assertThat(browser.backspaces).isEqualTo(0)
+    }
+
+    @Test
+    fun `an anchor found twice is missing, and both marker paragraphs are removed`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            anchorsInEditor[marker2] = 2
+        }
+        val result = routine(browser, note, listOf(image, second), html = anchoredHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.anchors).containsExactly("2:missing")
+        assertThat(browser.anchorsInEditor[marker2]).isEqualTo(0)
+        assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE_HERE)
+    }
+
+    @Test
+    fun `a failed upload leaves the image out, and the marker is gone`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            anchorsInEditor[marker2] = 1
+            imageHereWorks = false
+        }
+        val result = routine(browser, note, listOf(image, second), html = anchoredHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.imagesPlaced).isEqualTo(1)
+        assertThat(result.anchors).containsExactly("2:failed")
+        assertThat(browser.anchorsInEditor[marker2]).isEqualTo(0)
+        // The text, then the empty paragraph it left.
+        assertThat(browser.backspaces).isEqualTo(2)
+        assertThat(browser.caretEmpty).isFalse()
+    }
+
+    @Test
+    fun `a marker that will not go away fails the read-back`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            anchorsInEditor[marker2] = 1
+            backspaceWorks = false
+        }
+        val result = routine(browser, note, listOf(image, second), html = anchoredHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
+        assertThat(result.reason).isEqualTo("read-back-mismatch")
+        assertThat(result.bodyOk).isFalse()
+        assertThat(result.anchors).containsExactly("2:failed")
+        assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE_HERE)
+    }
+
+    @Test
+    fun `without anchors every image leads the article, as before`() = runTest {
+        val browser = noteBrowser().apply { imageRouteWorks = DraftScript.PASTE_IMAGE }
+        val result = routine(browser, note, listOf(image, second)).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.imagesPlaced).isEqualTo(2)
+        assertThat(result.anchors).isEmpty()
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_IMAGE }).isEqualTo(2)
+        assertThat(browser.scripts.lastIndexOf(DraftScript.PASTE_IMAGE))
+            .isLessThan(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
+        assertThat(browser.scripts).doesNotContain(DraftScript.ANCHOR_SELECT)
     }
 
     // ── Trusted paste ──

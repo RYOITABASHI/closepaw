@@ -30,6 +30,7 @@ class El {
   closest() { return this.outerLink || null; }
   querySelectorAll(sel) {
     if (sel === 'a[href]') return this.links || [];
+    if (sel === 'p' && this.paras) return this.paras;
     const shape = this.shape || { p: 0, h: 0, li: 0 };
     if (sel === 'p') return new Array(shape.p);
     if (sel === 'li') return new Array(shape.li);
@@ -69,6 +70,7 @@ function page(options = {}) {
     hasFocus: () => pageFocused,
     elementFromPoint: (x, y) => (hitAt ? hitAt(x, y) : null),
     execCommand: (...args) => { execCalls.push(args); return execResult; },
+    createRange: () => ({ selectNodeContents(n) { this.contents = n; } }),
     querySelector(sel) {
       if (sel === 'textarea') return withTextarea ? textarea : null;
       if (sel === 'input[type=file]') return fileInput;
@@ -91,7 +93,13 @@ function page(options = {}) {
   class FakeDOMParser {
     parseFromString(html) { return { body: { textContent: html.replace(/<[^>]*>/g, '') } }; }
   }
-  const selection = { selectAllChildren(n) { this.node = n; }, collapseToEnd() { this.end = true; } };
+  const selection = {
+    selectAllChildren(n) { this.node = n; },
+    collapseToEnd() { this.end = true; },
+    removeAllRanges() { this.ranges = []; },
+    addRange(r) { this.ranges.push(r); },
+    anchorNode: options.caret || null,
+  };
   const sandbox = {
     document, location: { href }, getSelection: () => selection, Math,
     navigator: { clipboard },
@@ -112,7 +120,7 @@ const run = (name, sandbox, args = {}) => {
 };
 const same = { editorUrl: EDITOR };
 const image = { ...same, name: 'a.jpg', mime: 'image/jpeg', base64: Buffer.from([255, 0, 10]).toString('base64') };
-const WRITERS = ['SET_TITLE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
+const WRITERS = ['SET_TITLE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'ANCHOR_SELECT', 'PASTE_IMAGE_HERE', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
 const toast = (text = '下書きを保存しました') => new El('div', { textContent: text });
 const apiEntry = (over = {}) => ({
   startTime: 6, initiatorType: 'fetch', responseStatus: 200,
@@ -126,7 +134,7 @@ const noRead = () => Promise.reject(new Error('blocked'));
 
 const tests = {
   'every script parses': () => {
-    assert.strictEqual(Object.keys(scripts).length, 15);
+    assert.strictEqual(Object.keys(scripts).length, 18);
     for (const [name, src] of Object.entries(scripts)) new vm.Script(`(${src})({})`, { filename: name });
   },
 
@@ -230,7 +238,67 @@ const tests = {
     assert.strictEqual(run('READ_BACK', p.sandbox, { ...args, blocks: 8 }).bodyOk, false);
     assert.strictEqual(run('READ_BACK', p.sandbox, { ...args, blocks: 1 }).bodyOk, true);
     p.body.shape = { p: 3, h: 1, li: 0 };
-    assert.deepStrictEqual(run('READ_BACK', p.sandbox, { ...args, blocks: 8 }), { titleOk: true, bodyOk: true, blocks: 4 });
+    assert.deepStrictEqual(run('READ_BACK', p.sandbox, { ...args, blocks: 8 }), { titleOk: true, bodyOk: true, blocks: 4, markersLeft: false });
+  },
+
+  'anchor select takes exactly one marker paragraph, or the first one when removing': () => {
+    const para = (text) => new El('p', { textContent: text });
+    const marker = '{{closepaw-image-2}}';
+    const one = para(' ' + marker + ' ');
+    let p = page({ bodyChildren: [para('a'), one] });
+    p.body.paras = [para('a'), one, para(marker + ' and more')];
+    assert.deepStrictEqual(run('ANCHOR_SELECT', p.sandbox, { ...same, marker }), { ok: true, count: 1 });
+    assert.strictEqual(p.selection.ranges[0].contents, one);
+
+    const two = [para(marker), para(marker)];
+    p = page();
+    p.body.paras = two;
+    assert.deepStrictEqual(run('ANCHOR_SELECT', p.sandbox, { ...same, marker }), { ok: false, count: 2 });
+    assert.deepStrictEqual(run('ANCHOR_SELECT', p.sandbox, { ...same, marker, any: true }), { ok: true, count: 2 });
+    assert.strictEqual(p.selection.ranges[0].contents, two[0]);
+
+    p = page();
+    p.body.paras = [para('x')];
+    assert.deepStrictEqual(run('ANCHOR_SELECT', p.sandbox, { ...same, marker }), { ok: false, count: 0 });
+  },
+
+  'anchor check reports markers left and an empty caret block': () => {
+    const marker = '{{closepaw-image-2}}';
+    const prev = new El('p', { textContent: 'before' });
+    const empty = new El('p', { textContent: '', previousElementSibling: prev, nodeType: 1 });
+    empty.closest = () => empty;
+    empty.querySelector = () => null;
+    let p = page({ bodyChildren: [prev, empty], caret: empty });
+    p.body.paras = [prev, empty];
+    assert.deepStrictEqual(run('ANCHOR_CHECK', p.sandbox, { marker }), { href: EDITOR, count: 0, caretEmpty: true, prevPlain: true });
+
+    const left = new El('p', { textContent: marker, nodeType: 1 });
+    left.closest = () => left;
+    left.querySelector = () => null;
+    p = page({ bodyChildren: [left], caret: left });
+    p.body.paras = [left];
+    assert.deepStrictEqual(run('ANCHOR_CHECK', p.sandbox, { marker }), { href: EDITOR, count: 1, caretEmpty: false, prevPlain: false });
+  },
+
+  'an image here goes in at the caret, which must be in the body': () => {
+    const spot = new El('p', { nodeType: 1 });
+    let p = page({ bodyChildren: [spot], caret: spot });
+    let event;
+    p.body.addEventListener('paste', (e) => { event = e; });
+    assert.strictEqual(run('PASTE_IMAGE_HERE', p.sandbox, image).ok, true);
+    assert.deepStrictEqual([...event.clipboardData.files[0].parts[0]], [255, 0, 10]);
+    assert.strictEqual(p.selection.end, undefined);
+    p = page({ caret: new El('p') });
+    assert.strictEqual(run('PASTE_IMAGE_HERE', p.sandbox, image).ok, false);
+  },
+
+  'read-back fails while an anchor marker is left': () => {
+    const p = page();
+    p.textarea.value = 'T';
+    p.body.textContent = 'text {{closepaw-image-3}} more';
+    const out = run('READ_BACK', p.sandbox, { ...same, title: 'T', samples: ['text'] });
+    assert.strictEqual(out.bodyOk, false);
+    assert.strictEqual(out.markersLeft, true);
   },
 
   'insert html uses the editing command, and only into an empty body': () => {
@@ -324,7 +392,7 @@ const tests = {
     const p = page();
     p.textarea.value = 'T';
     p.body.textContent = 'one   two\nthree';
-    assert.deepStrictEqual(run('READ_BACK', p.sandbox, { ...same, title: 'T', samples: ['one two three'] }), { titleOk: true, bodyOk: true, blocks: 0 });
+    assert.deepStrictEqual(run('READ_BACK', p.sandbox, { ...same, title: 'T', samples: ['one two three'] }), { titleOk: true, bodyOk: true, blocks: 0, markersLeft: false });
     assert.strictEqual(run('READ_BACK', p.sandbox, { ...same, title: 'T', samples: ['absent'] }).bodyOk, false);
   },
 

@@ -55,6 +55,9 @@ interface DraftBrowser {
      */
     suspend fun pasteKey(tabId: String) {}
 
+    /** One trusted Backspace in [tabId]. The default does nothing. */
+    suspend fun pressBackspace(tabId: String) {}
+
     /** Makes [tabId] the shown tab of its window, which is on the run's display. */
     suspend fun bringToFront(tabId: String) {}
 
@@ -102,6 +105,8 @@ data class SaveDraftResult(
     val imagesExpected: Int,
     val imagesPlaced: Int,
     val tabClosed: Boolean,
+    /** One entry per in-body anchor: `"<n>:placed"`, `"<n>:missing"` or `"<n>:failed"`. */
+    val anchors: List<String> = emptyList(),
 ) {
     /** The callback summary. Holds no article text. */
     fun toSummary(): String = buildJsonObject {
@@ -119,6 +124,7 @@ data class SaveDraftResult(
         put("images_expected", imagesExpected)
         put("images_placed", imagesPlaced)
         put("tab_closed", tabClosed)
+        put("anchors", buildJsonArray { anchors.forEach { add(JsonPrimitive(it)) } })
     }.toString()
 }
 
@@ -174,6 +180,9 @@ class SaveDraftRoutine(
     @Volatile private var imagesPlaced = 0
     @Volatile private var tabClosed = false
 
+    /** Outcomes of in-body image anchors, in image order. */
+    private val anchors = java.util.Collections.synchronizedList(mutableListOf<String>())
+
     /** True when the body only went in through the last resort, which loses its structure. */
     @Volatile private var flattened = false
 
@@ -219,6 +228,7 @@ class SaveDraftRoutine(
         imagesExpected = request.images.size,
         imagesPlaced = imagesPlaced,
         tabClosed = tabClosed,
+        anchors = anchors.toList(),
     )
 
     private suspend fun steps(): SaveDraftResult {
@@ -264,9 +274,13 @@ class SaveDraftRoutine(
         if (!titleSet.flag("ok")) return result(DraftOutcome.UNCERTAIN, "title-not-set")
         logInfo("title set")
 
-        // Images first: the caret is at the end of an empty body, so they lead the article.
+        // Images first: the caret is at the end of an empty body, so they lead the article. An
+        // image whose anchor paragraph is in the body waits for the body instead.
         step = STEP_IMAGE
-        request.images.forEach { placeImage(tab, editorUrl, it) }
+        val anchored = draftAnchoredImages(request.html, request.images.size)
+        request.images.forEachIndexed { index, image ->
+            if (index !in anchored) placeImage(tab, editorUrl, image)
+        }
         // A paste while an image is still uploading gets note's "uploading" alert and no body.
         if (request.images.isNotEmpty()) {
             waitForUploads(tab)
@@ -275,6 +289,12 @@ class SaveDraftRoutine(
 
         step = STEP_PASTE
         if (!pasteBody(tab, editorUrl)) return result(DraftOutcome.UNCERTAIN, "body-not-pasted")
+
+        if (anchored.isNotEmpty()) {
+            step = STEP_ANCHOR
+            anchored.sorted().forEach { index -> placeAnchored(tab, editorUrl, index, request.images[index]) }
+            logInfo("anchors ${anchors.joinToString(",")} images placed=$imagesPlaced/${request.images.size}")
+        }
 
         val confirmation = saveAndConfirm(tab, editorUrl)
         if (confirmation.outcome != DraftOutcome.SAVED) return confirmation
@@ -458,6 +478,83 @@ class SaveDraftRoutine(
         }
     }
 
+    /**
+     * Puts images[[index]] where its anchor paragraph (`{{closepaw-image-<index+1>}}`) is: the
+     * paragraph's text is selected and deleted with a trusted Backspace, and the image is pasted
+     * into the now empty paragraph, then awaited like the header. If there is not exactly one
+     * anchor, or the text does not go, or the upload does not land, the anchor text is removed
+     * and the image is left out: no anchor text may stay in a saved draft.
+     */
+    private suspend fun placeAnchored(tab: DraftTab, editorUrl: String, index: Int, image: DraftImage) {
+        val number = index + 1
+        val marker = draftAnchorMarker(number)
+        val selected = write(tab, editorUrl, DraftScript.ANCHOR_SELECT) { put("marker", marker) }
+        if (!selected.flag("ok")) {
+            removeMarker(tab, editorUrl, marker)
+            anchors += "$number:missing"
+            return
+        }
+        stopIfOwnerHasChrome()
+        browser.pressBackspace(tab.id)
+        val emptied = anchorCheck(tab, editorUrl, marker)
+        if (emptied.anchorCount() != 0 || !emptied.flag("caretEmpty")) {
+            removeMarker(tab, editorUrl, marker)
+            anchors += "$number:failed"
+            return
+        }
+
+        val before = imageState(tab)["count"]?.jsonPrimitive?.intOrNull ?: 0
+        val answer = write(tab, editorUrl, DraftScript.PASTE_IMAGE_HERE) {
+            put("name", image.name)
+            put("mime", image.mime)
+            put("base64", image.base64)
+        }
+        val landed = answer.flag("ok") &&
+            pollUntil(timing.imageWaitMs) { true.takeIf { draftImageLanded(before, imageState(tab)) } } == true
+        if (landed) {
+            imagesPlaced++
+            anchors += "$number:placed"
+            return
+        }
+        // The anchor text is already gone; drop the empty paragraph it leaves when that is safe.
+        dropEmptyParagraph(tab, editorUrl, marker)
+        anchors += "$number:failed"
+    }
+
+    /** Removes every paragraph that holds only [marker]: select its text, Backspace. */
+    private suspend fun removeMarker(tab: DraftTab, editorUrl: String, marker: String) {
+        repeat(MAX_MARKER_REMOVALS) {
+            val selected = write(tab, editorUrl, DraftScript.ANCHOR_SELECT) {
+                put("marker", marker)
+                put("any", true)
+            }
+            if (!selected.flag("ok")) return
+            stopIfOwnerHasChrome()
+            browser.pressBackspace(tab.id)
+            dropEmptyParagraph(tab, editorUrl, marker)
+        }
+    }
+
+    /**
+     * A second Backspace removes the empty paragraph the caret is in, but only when the block
+     * before it is a plain paragraph or heading, so the Backspace cannot select an image.
+     */
+    private suspend fun dropEmptyParagraph(tab: DraftTab, editorUrl: String, marker: String) {
+        val check = anchorCheck(tab, editorUrl, marker)
+        if (check.flag("caretEmpty") && check.flag("prevPlain")) {
+            stopIfOwnerHasChrome()
+            browser.pressBackspace(tab.id)
+        }
+    }
+
+    private suspend fun anchorCheck(tab: DraftTab, editorUrl: String, marker: String): JsonObject {
+        val check = browser.evaluate(tab.id, DraftScript.ANCHOR_CHECK, buildJsonObject { put("marker", marker) })
+        if (check.str("href") != editorUrl) throw Halt("editor-moved")
+        return check
+    }
+
+    private fun JsonObject.anchorCount(): Int = this["count"]?.jsonPrimitive?.intOrNull ?: -1
+
     /** Gives a slow editor a moment to show what it took. */
     private suspend fun bodyFilledSoon(tab: DraftTab, editorUrl: String): Boolean =
         pollUntil(minOf(timing.imageWaitMs, PASTE_SETTLE_MS)) {
@@ -608,7 +705,8 @@ class SaveDraftRoutine(
         put("editorUrl", editorUrl)
         put("key", key)
         put("title", request.title)
-        put("samples", buildJsonArray { request.samples.forEach { add(JsonPrimitive(it)) } })
+        // Anchor text is gone by now, so a sample that holds it cannot be found.
+        put("samples", buildJsonArray { request.samples.filterNot { ANCHOR_TEXT in it }.forEach { add(JsonPrimitive(it)) } })
         put("blocks", draftSourceBlocks(request.html))
         at?.let { put("at", it) }
     }
@@ -620,6 +718,7 @@ class SaveDraftRoutine(
     private companion object {
         const val TAG = "SaveDraftRoutine"
         const val PASTE_SETTLE_MS = 3_000L
+        const val MAX_MARKER_REMOVALS = 5
         val NO_ARGS = JsonObject(emptyMap())
         val RANDOM = SecureRandom()
 
@@ -638,6 +737,25 @@ internal const val STEP_IMAGE = "image"
 internal const val STEP_PASTE = "paste"
 internal const val STEP_SAVE = "save"
 internal const val STEP_READBACK = "readback"
+internal const val STEP_ANCHOR = "anchor"
+
+/** Start of every in-body image anchor's text. */
+internal const val ANCHOR_TEXT = "{{closepaw-image-"
+
+/** The anchor text for image number [number] (1-based; the header is 1). */
+internal fun draftAnchorMarker(number: Int): String = "$ANCHOR_TEXT$number}}"
+
+/**
+ * Indexes (from 1; images[0] is always the header) of images whose anchor paragraph, a `<p>`
+ * holding only `{{closepaw-image-<index+1>}}`, is in the body HTML.
+ */
+internal fun draftAnchoredImages(html: String, imageCount: Int): Set<Int> {
+    val numbers = Regex("<p\\b[^>]*>\\s*\\{\\{closepaw-image-(\\d{1,3})}}\\s*</p>", RegexOption.IGNORE_CASE)
+        .findAll(html)
+        .mapNotNull { it.groupValues[1].toIntOrNull() }
+        .toSet()
+    return (1 until imageCount).filter { (it + 1) in numbers }.toSet()
+}
 
 /** `error-<class>@<step>`: the class's simple name, never its message, which may hold page text. */
 internal fun draftErrorReason(e: Throwable, step: String): String = "error-${e.javaClass.simpleName}@$step"
