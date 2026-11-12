@@ -51,6 +51,10 @@ class SaveDraftRoutineTest {
         var listLoads = true
         var rows: List<Row> = emptyList()
         var editorHasContent = false
+        var typing = false
+        var typingLands = true
+        var titleValue = ""
+        val typed = mutableListOf<String>()
         var readBackOk = true
         var savedAnswers = true
         var saveLabelMatches = 1
@@ -218,6 +222,13 @@ class SaveDraftRoutineTest {
             clip = false
         }
 
+        override val typesText: Boolean get() = typing
+
+        override suspend fun insertText(tabId: String, text: String) {
+            typed += text
+            if (typingLands) titleValue = text
+        }
+
         override suspend fun pasteKey(tabId: String) {
             pasteKeys++
             onWrite()
@@ -314,7 +325,17 @@ class SaveDraftRoutineTest {
                 DraftScript.SET_TITLE -> {
                     onWrite()
                     titleClobbered = false
+                    titleValue = args["title"]?.jsonPrimitive?.content.orEmpty()
                     buildJsonObject { put("ok", true) }
+                }
+                DraftScript.CLEAR_TITLE -> {
+                    onWrite()
+                    titleValue = ""
+                    buildJsonObject { put("ok", true) }
+                }
+                DraftScript.TITLE_VALUE -> buildJsonObject {
+                    put("ok", true)
+                    put("same", titleValue == args["title"]?.jsonPrimitive?.content)
                 }
                 DraftScript.FOCUS_BODY -> buildJsonObject {
                     if (focusBodyWorks) {
@@ -540,7 +561,7 @@ class SaveDraftRoutineTest {
             const val MENU_X = 70.0
             const val CHOOSER_NODE = 77L
             val WRITES = setOf(
-                DraftScript.SET_TITLE, DraftScript.CLIPBOARD_WRITE, DraftScript.PASTE_IMAGE,
+                DraftScript.SET_TITLE, DraftScript.CLEAR_TITLE, DraftScript.CLIPBOARD_WRITE, DraftScript.PASTE_IMAGE,
                 DraftScript.FILE_INPUT_IMAGE, DraftScript.NOTE_SAVE_CLICK,
             )
         }
@@ -582,6 +603,41 @@ class SaveDraftRoutineTest {
         assertThat(result.tabClosed).isTrue()
         assertThat(browser.scripts).doesNotContain(DraftScript.NOTE_SAVE_CLICK)
         assertThat(browser.navigated).containsExactly(substack.newDraftUrl)
+    }
+
+    @Test
+    fun `a browser that can type types the title after emptying the field`() = runTest {
+        val browser = substackBrowser().apply { typing = true }
+        val result = routine(browser, substack).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.typed).containsExactly("A title")
+        assertThat(browser.scripts).contains(DraftScript.CLEAR_TITLE)
+        assertThat(info).contains("title set method=typed")
+        assertThat(browser.scripts.count { it == DraftScript.SET_TITLE }).isEqualTo(1)
+    }
+
+    @Test
+    fun `typing that does not land puts the set title back`() = runTest {
+        val browser = substackBrowser().apply {
+            typing = true
+            typingLands = false
+        }
+        val result = routine(browser, substack).run()
+
+        assertThat(info).contains("title set method=set-after-typing")
+        assertThat(browser.scripts.count { it == DraftScript.SET_TITLE }).isEqualTo(2)
+        assertThat(browser.titleValue).isEqualTo("A title")
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+    }
+
+    @Test
+    fun `a browser that cannot type only sets the title`() = runTest {
+        val browser = substackBrowser()
+        routine(browser, substack).run()
+
+        assertThat(info).contains("title set method=set")
+        assertThat(browser.scripts).doesNotContain(DraftScript.CLEAR_TITLE)
     }
 
     @Test

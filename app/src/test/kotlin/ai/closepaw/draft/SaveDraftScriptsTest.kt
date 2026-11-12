@@ -126,7 +126,8 @@ class SaveDraftScriptsTest {
     @Test
     fun `every script that changes the page checks the draft URL first`() {
         val guarded = listOf(
-            DraftScript.SET_TITLE, DraftScript.CLIPBOARD_WRITE, DraftScript.INSERT_HTML, DraftScript.FOCUS_TARGET,
+            DraftScript.SET_TITLE, DraftScript.CLEAR_TITLE, DraftScript.TITLE_VALUE,
+            DraftScript.CLIPBOARD_WRITE, DraftScript.INSERT_HTML, DraftScript.FOCUS_TARGET,
             DraftScript.ANCHOR_SELECT, DraftScript.PASTE_IMAGE_HERE, DraftScript.CARET_AFTER_IMAGES,
             DraftScript.FOCUS_BODY, DraftScript.COVER_FILE, DraftScript.FILE_TO_INPUT,
             DraftScript.PASTE_IMAGE, DraftScript.FILE_INPUT_IMAGE,

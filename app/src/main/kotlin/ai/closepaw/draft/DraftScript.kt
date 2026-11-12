@@ -94,6 +94,37 @@ enum class DraftScript(val source: String) {
     ),
 
     /**
+     * Empties the title field and leaves it focused, so a trusted text insertion that follows
+     * types the title as the owner would. Substack stores a title only from real input.
+     */
+    CLEAR_TITLE(
+        """
+        function (a) {
+          $SAME_DRAFT
+          var title = document.querySelector('textarea');
+          if (!title) return { ok: false };
+          var setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+          title.focus();
+          setter.call(title, '');
+          title.dispatchEvent(new Event('input', { bubbles: true }));
+          title.setSelectionRange(0, 0);
+          return { ok: title.value === '' && document.activeElement === title };
+        }
+        """,
+    ),
+
+    /** Whether the title field holds exactly `a.title`. Reads only. */
+    TITLE_VALUE(
+        """
+        function (a) {
+          $SAME_DRAFT
+          var title = document.querySelector('textarea');
+          return { ok: true, same: !!title && title.value === a.title };
+        }
+        """,
+    ),
+
+    /**
      * Puts the validated HTML, with a plain-text alternative, on the clipboard, for the trusted
      * paste that follows (a key press the browser turns into its own paste command). The page's
      * clipboard API needs a user gesture, which the evaluate call grants for this script only.

@@ -84,6 +84,15 @@ interface DraftBrowser {
     /** One trusted key press in [tabId], from a closed set. The default does nothing. */
     suspend fun pressKey(tabId: String, key: DraftKey) {}
 
+    /** True when [insertText] really types into the page. The default cannot. */
+    val typesText: Boolean get() = false
+
+    /**
+     * [text] typed at the focused element of [tabId] as trusted input, the way an IME commits
+     * text. The default does nothing.
+     */
+    suspend fun insertText(tabId: String, text: String) {}
+
     /** Makes [tabId] the shown tab of its window, which is on the run's display. */
     suspend fun bringToFront(tabId: String) {}
 
@@ -307,7 +316,7 @@ class SaveDraftRoutine(
         step = STEP_TITLE
         val titleSet = write(tab, editorUrl, DraftScript.SET_TITLE) { put("title", request.title) }
         if (!titleSet.flag("ok")) return result(DraftOutcome.UNCERTAIN, "title-not-set")
-        logInfo("title set")
+        logInfo("title set method=${typeTitle(tab, editorUrl)}")
 
         // note's cover goes first, while the page is still at the top and the cover control in
         // view. Its marker in the body, and the body fallback, are handled after the body.
@@ -618,7 +627,32 @@ class SaveDraftRoutine(
         if (shape["titleSame"]?.jsonPrimitive?.booleanOrNull != false) return
         titleOverwritten = true
         val restored = write(tab, editorUrl, DraftScript.SET_TITLE) { put("title", request.title) }.flag("ok")
-        logInfo("title overwritten by method=$method; restored=$restored")
+        val typed = if (restored) typeTitle(tab, editorUrl) else "none"
+        logInfo("title overwritten by method=$method; restored=$restored typed=$typed")
+    }
+
+    /**
+     * Substack keeps the title it was typed, not one set on the field: a set title shows on the
+     * page but is saved empty. So, where the browser can type, the field is emptied and the title
+     * typed as trusted input. If the field does not end up holding the title, the set value is
+     * put back, and the run's read-back and saved-probe say whether it was kept. Returns how the
+     * title went in: `typed`, `set` (cannot type), or `set-after-typing` (typing did not land).
+     */
+    private suspend fun typeTitle(tab: DraftTab, editorUrl: String): String {
+        if (!browser.typesText) return "set"
+        val cleared = write(tab, editorUrl, DraftScript.CLEAR_TITLE) {}
+        if (cleared.flag("ok")) {
+            stopIfOwnerHasChrome()
+            browser.insertText(tab.id, request.title)
+            val check = browser.evaluate(tab.id, DraftScript.TITLE_VALUE, buildJsonObject {
+                put("editorUrl", editorUrl)
+                put("title", request.title)
+            })
+            stopIfMoved(check)
+            if (check.flag("same")) return "typed"
+        }
+        write(tab, editorUrl, DraftScript.SET_TITLE) { put("title", request.title) }
+        return "set-after-typing"
     }
 
     /**

@@ -281,6 +281,17 @@ internal class ChromeDraftBrowser(
         } ?: throw IOException("paste key timed out")
     }
 
+    override val typesText: Boolean get() = true
+
+    /** Trusted text at the focus, like an IME commit: the page sees real input events. */
+    override suspend fun insertText(tabId: String, text: String) {
+        withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
+            cdp { client ->
+                client.send("Input.insertText", buildJsonObject { put("text", text) }, CdpOptions(targetId = tabId))
+            }
+        } ?: throw IOException("insert text timed out")
+    }
+
     /**
      * One trusted key from [DraftKey]: Backspace deletes selected anchor text, Enter makes a
      * paragraph after a selected image.
