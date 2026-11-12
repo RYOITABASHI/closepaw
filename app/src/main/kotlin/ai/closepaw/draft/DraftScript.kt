@@ -351,14 +351,15 @@ enum class DraftScript(val source: String) {
     ),
 
     /**
-     * After a Backspace: how many marker paragraphs are left, and is the caret in an empty block
-     * (no text, no image) whose previous block is a plain paragraph or heading?
+     * After a Backspace: how many marker paragraphs are left, is the caret in an empty block (no
+     * text, no image), is it at the end of its block (the emptied paragraph may have been merged
+     * into the one before), and is the previous block a plain paragraph or heading?
      */
     ANCHOR_CHECK(
         """
         function (a) {
           var body = $BODY_LOOKUP;
-          if (!body) return { href: location.href, count: 0, caretEmpty: false, prevPlain: false };
+          if (!body) return { href: location.href, count: 0, caretEmpty: false, caretAtEnd: false, prevPlain: false };
           var count = 0;
           var blocks = body.querySelectorAll('p');
           for (var i = 0; i < blocks.length; i++) {
@@ -369,10 +370,20 @@ enum class DraftScript(val source: String) {
           var block = el && body.contains(el) ? el.closest('p, h1, h2, h3, h4, h5, h6, li') : null;
           var caretEmpty = !!block && block.textContent.trim() === '' && !block.querySelector('img');
           var prev = block ? block.previousElementSibling : null;
+          var atEnd = false;
+          var selection = getSelection();
+          if (block && selection.rangeCount > 0) {
+            var caret = selection.getRangeAt(0);
+            var rest = document.createRange();
+            rest.selectNodeContents(block);
+            rest.setStart(caret.endContainer, caret.endOffset);
+            atEnd = rest.toString().trim() === '';
+          }
           return {
             href: location.href,
             count: count,
             caretEmpty: caretEmpty,
+            caretAtEnd: atEnd,
             prevPlain: !!prev && /^(P|H[1-6])$/.test(prev.tagName),
           };
         }

@@ -1,6 +1,6 @@
 function (a) {
           var body = document.querySelector('.ProseMirror[contenteditable=true]') || document.querySelector('[contenteditable=true]');
-          if (!body) return { href: location.href, count: 0, caretEmpty: false, prevPlain: false };
+          if (!body) return { href: location.href, count: 0, caretEmpty: false, caretAtEnd: false, prevPlain: false };
           var count = 0;
           var blocks = body.querySelectorAll('p');
           for (var i = 0; i < blocks.length; i++) {
@@ -11,10 +11,20 @@ function (a) {
           var block = el && body.contains(el) ? el.closest('p, h1, h2, h3, h4, h5, h6, li') : null;
           var caretEmpty = !!block && block.textContent.trim() === '' && !block.querySelector('img');
           var prev = block ? block.previousElementSibling : null;
+          var atEnd = false;
+          var selection = getSelection();
+          if (block && selection.rangeCount > 0) {
+            var caret = selection.getRangeAt(0);
+            var rest = document.createRange();
+            rest.selectNodeContents(block);
+            rest.setStart(caret.endContainer, caret.endOffset);
+            atEnd = rest.toString().trim() === '';
+          }
           return {
             href: location.href,
             count: count,
             caretEmpty: caretEmpty,
+            caretAtEnd: atEnd,
             prevPlain: !!prev && /^(P|H[1-6])$/.test(prev.tagName),
           };
         }

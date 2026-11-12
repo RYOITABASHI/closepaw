@@ -281,7 +281,8 @@ class SaveDraftRoutine(
         logInfo("title set")
 
         // Images first: the caret is at the end of an empty body, so they lead the article. An
-        // image whose anchor paragraph is in the body waits for the body instead.
+        // image whose anchor paragraph is in the body (the header's included) waits for the body
+        // and goes to its anchor instead.
         step = STEP_IMAGE
         val anchored = draftAnchoredImages(request.html, request.images.size)
         request.images.forEachIndexed { index, image ->
@@ -585,6 +586,7 @@ class SaveDraftRoutine(
         val number = index + 1
         val marker = draftAnchorMarker(number)
         val selected = write(tab, editorUrl, DraftScript.ANCHOR_SELECT) { put("marker", marker) }
+        logInfo("anchor $number: found=${selected.anchorCount()}")
         if (!selected.flag("ok")) {
             removeMarker(tab, editorUrl, marker)
             anchors += "$number:missing"
@@ -593,8 +595,29 @@ class SaveDraftRoutine(
         stopIfOwnerHasChrome()
         browser.pressKey(tab.id, DraftKey.BACKSPACE)
         val emptied = anchorCheck(tab, editorUrl, marker)
-        if (emptied.anchorCount() != 0 || !emptied.flag("caretEmpty")) {
+        logInfo(
+            "anchor $number: backspace left=${emptied.anchorCount()} caretEmpty=${emptied.flag("caretEmpty")} " +
+                "atEnd=${emptied.flag("caretAtEnd")}",
+        )
+        if (emptied.anchorCount() != 0) {
             removeMarker(tab, editorUrl, marker)
+            anchors += "$number:failed"
+            return
+        }
+        if (!emptied.flag("caretEmpty")) {
+            // The emptied paragraph was merged into the block before it. At the end of that block,
+            // one Enter makes a fresh empty paragraph; anywhere else it would split text.
+            if (!emptied.flag("caretAtEnd")) {
+                anchors += "$number:failed"
+                return
+            }
+            stopIfOwnerHasChrome()
+            browser.pressKey(tab.id, DraftKey.ENTER)
+            logInfo("anchor $number: enter")
+        }
+        val caret = browser.evaluate(tab.id, DraftScript.FOCUS_PROBE, NO_ARGS)
+        logInfo("anchor $number: caret emptyP=${caret.flag("caretEmptyP")} inFigure=${caret.flag("inFigure")}")
+        if (!caret.flag("caretEmptyP") || caret.flag("inFigure")) {
             anchors += "$number:failed"
             return
         }
@@ -607,6 +630,7 @@ class SaveDraftRoutine(
         }
         val landed = answer.flag("ok") &&
             pollUntil(timing.imageWaitMs) { true.takeIf { draftImageLanded(before, imageState(tab)) } } == true
+        logInfo("anchor $number: image ${if (landed) "placed" else "not placed"}")
         if (landed) {
             imagesPlaced++
             anchors += "$number:placed"
@@ -842,8 +866,9 @@ internal const val ANCHOR_TEXT = "{{closepaw-image-"
 internal fun draftAnchorMarker(number: Int): String = "$ANCHOR_TEXT$number}}"
 
 /**
- * Indexes (from 1; images[0] is always the header) of images whose anchor paragraph, a `<p>`
- * holding only `{{closepaw-image-<index+1>}}`, is in the body HTML.
+ * Indexes of images whose anchor paragraph, a `<p>` holding only `{{closepaw-image-<index+1>}}`,
+ * is in the body HTML. The header (images[0], anchor 1) may have one too: then the body goes into
+ * the empty editor first and every image is placed at its anchor afterwards.
  */
 internal fun draftAnchoredImages(html: String, imageCount: Int): Set<Int> {
     // Android's ICU regex rejects an unescaped `}` (desktop Java accepts it; build 36 failed on device).
@@ -851,7 +876,7 @@ internal fun draftAnchoredImages(html: String, imageCount: Int): Set<Int> {
         .findAll(html)
         .mapNotNull { it.groupValues[1].toIntOrNull() }
         .toSet()
-    return (1 until imageCount).filter { (it + 1) in numbers }.toSet()
+    return (0 until imageCount).filter { (it + 1) in numbers }.toSet()
 }
 
 /** `error-<class>@<step>`: the class's simple name, never its message, which may hold page text. */

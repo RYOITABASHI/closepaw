@@ -92,6 +92,9 @@ class SaveDraftRoutineTest {
         var enterMakesParagraph = true
         var figureSelected = false
         var pasteFlattens = false
+        var mergeOnBackspace = false
+        var mergeAtEnd = true
+        var mergedCaret = false
         var focusTargetOk = true
         val fronted = mutableListOf<String>()
         val clicks = mutableListOf<Pair<Double, Double>>()
@@ -127,6 +130,10 @@ class SaveDraftRoutineTest {
         override suspend fun pressKey(tabId: String, key: DraftKey) {
             if (key == DraftKey.ENTER) {
                 enters++
+                if (mergedCaret) {
+                    mergedCaret = false
+                    caretEmpty = true
+                }
                 if (enterMakesParagraph && figureSelected) trailingParagraph = true
                 figureSelected = false
                 return
@@ -137,7 +144,7 @@ class SaveDraftRoutineTest {
             if (marker != null) {
                 anchorsInEditor[marker] = (anchorsInEditor[marker] ?: 1) - 1
                 selectedMarker = null
-                caretEmpty = true
+                if (mergeOnBackspace) mergedCaret = true else caretEmpty = true
             } else if (caretEmpty) {
                 caretEmpty = false
             }
@@ -259,6 +266,7 @@ class SaveDraftRoutineTest {
                     put("href", currentUrl)
                     put("count", anchorsInEditor[marker] ?: 0)
                     put("caretEmpty", caretEmpty)
+                    put("caretAtEnd", if (mergedCaret) mergeAtEnd else true)
                     put("prevPlain", true)
                 }
                 DraftScript.PASTE_IMAGE_HERE -> {
@@ -309,7 +317,7 @@ class SaveDraftRoutineTest {
                     put("focused", clicks.isNotEmpty())
                     put("pageFocused", false)
                     put("inFigure", caretInFigure)
-                    put("caretEmptyP", caretInEmptyP)
+                    put("caretEmptyP", caretInEmptyP || caretEmpty)
                 }
                 DraftScript.CARET_AFTER_IMAGES -> buildJsonObject {
                     if (args["mode"]?.jsonPrimitive?.content == "select-figure") {
@@ -1082,12 +1090,71 @@ class SaveDraftRoutineTest {
     private val marker2 = "{{closepaw-image-2}}"
 
     @Test
-    fun `anchors are found only in their own paragraph, and never for the header`() {
+    fun `anchors are found only in their own paragraph, the header's included`() {
         val html = "<p>{{closepaw-image-1}}</p><p class=\"x\"> {{closepaw-image-2}} </p>" +
             "<p>see {{closepaw-image-3}}</p><P>{{closepaw-image-4}}</P><p>{{closepaw-image-9}}</p>"
-        assertThat(draftAnchoredImages(html, 4)).containsExactly(1, 3)
+        assertThat(draftAnchoredImages(html, 4)).containsExactly(0, 1, 3)
         assertThat(draftAnchoredImages("<p>x</p>", 3)).isEmpty()
         assertThat(draftAnchorMarker(2)).isEqualTo("{{closepaw-image-2}}")
+    }
+
+    private val marker1 = "{{closepaw-image-1}}"
+    private val headerAnchored = "<p>{{closepaw-image-1}}</p><h2>Head</h2><p>Body text here</p><p>{{closepaw-image-2}}</p>"
+
+    @Test
+    fun `an anchored header goes after the body, which goes into the empty editor first`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[marker1] = 1
+            anchorsInEditor[marker2] = 1
+        }
+        val result = routine(browser, note, listOf(image, second), html = headerAnchored).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.anchors).containsExactly("1:placed", "2:placed").inOrder()
+        assertThat(result.imagesPlaced).isEqualTo(2)
+        // Nothing before the body: no leading image, no caret moved after images.
+        assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE)
+        assertThat(browser.scripts).doesNotContain(DraftScript.CARET_AFTER_IMAGES)
+        assertThat(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
+            .isLessThan(browser.scripts.indexOf(DraftScript.ANCHOR_SELECT))
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_IMAGE_HERE }).isEqualTo(2)
+        assertThat(info).containsAtLeast(
+            "anchor 1: found=1",
+            "anchor 1: backspace left=0 caretEmpty=true atEnd=true",
+            "anchor 1: caret emptyP=true inFigure=false",
+            "anchor 1: image placed",
+            "anchor 2: found=1",
+        ).inOrder()
+    }
+
+    @Test
+    fun `an emptied anchor merged into the block before gets a fresh paragraph by Enter`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            anchorsInEditor[marker2] = 1
+            mergeOnBackspace = true
+        }
+        val result = routine(browser, note, listOf(image, second), html = anchoredHtml).run()
+
+        assertThat(result.anchors).containsExactly("2:placed")
+        assertThat(browser.enters).isEqualTo(1)
+        assertThat(info).contains("anchor 2: enter")
+    }
+
+    @Test
+    fun `a merge that leaves text after the caret gets no Enter and no image`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            anchorsInEditor[marker2] = 1
+            mergeOnBackspace = true
+            mergeAtEnd = false
+        }
+        val result = routine(browser, note, listOf(image, second), html = anchoredHtml).run()
+
+        assertThat(result.anchors).containsExactly("2:failed")
+        assertThat(browser.enters).isEqualTo(0)
+        assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE_HERE)
+        assertThat(browser.anchorsInEditor[marker2]).isEqualTo(0)
     }
 
     @Test

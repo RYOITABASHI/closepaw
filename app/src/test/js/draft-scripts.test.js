@@ -75,6 +75,8 @@ function page(options = {}) {
       collapse(start) { this.collapsed = start; },
       setStartBefore(n) { this.before = n; },
       setEndAfter(n) { this.after = n; },
+      setStart(n, o) { this.start = n; },
+      toString() { return options.rest || ''; },
     }),
     querySelector(sel) {
       if (sel === 'textarea') return withTextarea ? textarea : null;
@@ -104,6 +106,8 @@ function page(options = {}) {
     removeAllRanges() { this.ranges = []; },
     addRange(r) { this.ranges.push(r); },
     anchorNode: options.caret || null,
+    rangeCount: options.caret ? 1 : 0,
+    getRangeAt: () => ({ endContainer: options.caret, endOffset: 0 }),
   };
   const sandbox = {
     document, location: { href }, getSelection: () => selection, Math,
@@ -275,14 +279,30 @@ const tests = {
     empty.querySelector = () => null;
     let p = page({ bodyChildren: [prev, empty], caret: empty });
     p.body.paras = [prev, empty];
-    assert.deepStrictEqual(run('ANCHOR_CHECK', p.sandbox, { marker }), { href: EDITOR, count: 0, caretEmpty: true, prevPlain: true });
+    assert.deepStrictEqual(run('ANCHOR_CHECK', p.sandbox, { marker }), {
+      href: EDITOR, count: 0, caretEmpty: true, caretAtEnd: true, prevPlain: true,
+    });
 
     const left = new El('p', { textContent: marker, nodeType: 1 });
     left.closest = () => left;
     left.querySelector = () => null;
     p = page({ bodyChildren: [left], caret: left });
     p.body.paras = [left];
-    assert.deepStrictEqual(run('ANCHOR_CHECK', p.sandbox, { marker }), { href: EDITOR, count: 1, caretEmpty: false, prevPlain: false });
+    assert.deepStrictEqual(run('ANCHOR_CHECK', p.sandbox, { marker }), {
+      href: EDITOR, count: 1, caretEmpty: false, caretAtEnd: true, prevPlain: false,
+    });
+
+    // Merged into a heading: not empty; at its end only when no text follows the caret.
+    const merged = new El('h2', { textContent: 'Heading', nodeType: 1 });
+    merged.closest = () => merged;
+    merged.querySelector = () => null;
+    p = page({ bodyChildren: [merged], caret: merged });
+    let out = run('ANCHOR_CHECK', p.sandbox, { marker });
+    assert.strictEqual(out.caretEmpty, false);
+    assert.strictEqual(out.caretAtEnd, true);
+    p = page({ bodyChildren: [merged], caret: merged, rest: 'ing' });
+    out = run('ANCHOR_CHECK', p.sandbox, { marker });
+    assert.strictEqual(out.caretAtEnd, false);
   },
 
   'an image here goes in at the caret, which must be in the body': () => {
