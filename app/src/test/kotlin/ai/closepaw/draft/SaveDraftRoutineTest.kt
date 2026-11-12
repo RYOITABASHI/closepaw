@@ -1200,7 +1200,7 @@ class SaveDraftRoutineTest {
     }
 
     @Test
-    fun `a cover that will not upload leaves the draft without one, and no marker`() = runTest {
+    fun `a cover that cannot be set goes into the body at its marker`() = runTest {
         val browser = noteBrowser().apply {
             anchorsInEditor[COVER_MARKER] = 1
             coverInputOk = false
@@ -1208,10 +1208,31 @@ class SaveDraftRoutineTest {
         val result = routine(browser, note, listOf(image), html = coverHtml).run()
 
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.cover).isEqualTo("failed-body")
+        assertThat(result.imagesPlaced).isEqualTo(1)
+        assertThat(result.anchors).isEmpty()
+        assertThat(result.toSummary()).contains("\"cover\":\"failed-body\"")
+        assertThat(browser.anchorsInEditor[COVER_MARKER]).isEqualTo(0)
+        assertThat(browser.scripts.count { it == DraftScript.PASTE_IMAGE_HERE }).isEqualTo(1)
+        // The cover is tried first, the body only after.
+        assertThat(browser.scripts.indexOf(DraftScript.COVER_FILE))
+            .isLessThan(browser.scripts.indexOf(DraftScript.ANCHOR_SELECT))
+        assertThat(info).contains("cover: failed-body")
+    }
+
+    @Test
+    fun `when neither the cover nor the body takes it, the marker still goes`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            coverInputOk = false
+            imageHereWorks = false
+        }
+        val result = routine(browser, note, listOf(image), html = coverHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
         assertThat(result.cover).isEqualTo("failed")
         assertThat(result.imagesPlaced).isEqualTo(0)
         assertThat(browser.anchorsInEditor[COVER_MARKER]).isEqualTo(0)
-        assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE_HERE)
     }
 
     @Test
@@ -1257,21 +1278,21 @@ class SaveDraftRoutineTest {
     }
 
     @Test
-    fun `no cover control means no cover, and the chooser is released`() = runTest {
+    fun `no cover control means the body fallback, and the chooser is released`() = runTest {
         val browser = noteBrowser().apply {
             anchorsInEditor[COVER_MARKER] = 1
             coverInputOk = false
         }
         val result = routine(browser, note, listOf(image), html = coverHtml).run()
 
-        assertThat(result.cover).isEqualTo("failed")
+        assertThat(result.cover).isEqualTo("failed-body")
         assertThat(browser.intercepts).containsExactly(true, false).inOrder()
         assertThat(browser.scripts).doesNotContain(DraftScript.FILE_TO_INPUT)
         assertThat(info).contains("cover: control found=0")
     }
 
     @Test
-    fun `a pressed control that never asks for a file is a failed cover`() = runTest {
+    fun `a pressed control that never asks for a file falls back to the body`() = runTest {
         val browser = noteBrowser().apply {
             anchorsInEditor[COVER_MARKER] = 1
             coverInputOk = false
@@ -1279,7 +1300,7 @@ class SaveDraftRoutineTest {
         }
         val result = routine(browser, note, listOf(image), html = coverHtml).run()
 
-        assertThat(result.cover).isEqualTo("failed")
+        assertThat(result.cover).isEqualTo("failed-body")
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
         assertThat(browser.intercepts.last()).isFalse()
     }

@@ -338,8 +338,19 @@ class SaveDraftRoutine(
         }
         if (coverMarker && (asCover || request.images.isEmpty())) {
             step = STEP_COVER
-            removeMarker(tab, editorUrl, COVER_MARKER)
-            if (asCover) placeCover(tab, editorUrl, request.images[0])
+            if (!asCover) {
+                removeMarker(tab, editorUrl, COVER_MARKER)
+            } else {
+                placeCover(tab, editorUrl, request.images[0])
+                if (cover == COVER_PLACED) {
+                    removeMarker(tab, editorUrl, COVER_MARKER)
+                } else {
+                    // The header must show: put it where the cover marker is, in the body.
+                    val inBody = placeAnchored(tab, editorUrl, 0, request.images[0], COVER_MARKER, record = false)
+                    cover = if (inBody == "placed") COVER_FAILED_BODY else COVER_FAILED
+                    logInfo("cover: $cover")
+                }
+            }
         }
 
         val confirmation = saveAndConfirm(tab, editorUrl)
@@ -653,14 +664,25 @@ class SaveDraftRoutine(
      * anchor, or the text does not go, or the upload does not land, the anchor text is removed
      * and the image is left out: no anchor text may stay in a saved draft.
      */
-    private suspend fun placeAnchored(tab: DraftTab, editorUrl: String, index: Int, image: DraftImage, marker: String) {
+    private suspend fun placeAnchored(
+        tab: DraftTab,
+        editorUrl: String,
+        index: Int,
+        image: DraftImage,
+        marker: String,
+        record: Boolean = true,
+    ): String {
         val number = index + 1
+        // The outcome; listed under "anchors" unless the caller reports it another way.
+        fun done(outcome: String): String {
+            if (record) anchors += "$number:$outcome"
+            return outcome
+        }
         val selected = write(tab, editorUrl, DraftScript.ANCHOR_SELECT) { put("marker", marker) }
         logInfo("anchor $number: found=${selected.anchorCount()}")
         if (!selected.flag("ok")) {
             removeMarker(tab, editorUrl, marker)
-            anchors += "$number:missing"
-            return
+            return done("missing")
         }
         stopIfOwnerHasChrome()
         browser.pressKey(tab.id, DraftKey.BACKSPACE)
@@ -671,15 +693,13 @@ class SaveDraftRoutine(
         )
         if (emptied.anchorCount() != 0) {
             removeMarker(tab, editorUrl, marker)
-            anchors += "$number:failed"
-            return
+            return done("failed")
         }
         if (!emptied.flag("caretEmpty")) {
             // The emptied paragraph was merged into the block before it. At the end of that block,
             // one Enter makes a fresh empty paragraph; anywhere else it would split text.
             if (!emptied.flag("caretAtEnd")) {
-                anchors += "$number:failed"
-                return
+                return done("failed")
             }
             stopIfOwnerHasChrome()
             browser.pressKey(tab.id, DraftKey.ENTER)
@@ -688,8 +708,7 @@ class SaveDraftRoutine(
         val caret = browser.evaluate(tab.id, DraftScript.FOCUS_PROBE, NO_ARGS)
         logInfo("anchor $number: caret emptyP=${caret.flag("caretEmptyP")} inFigure=${caret.flag("inFigure")}")
         if (!caret.flag("caretEmptyP") || caret.flag("inFigure")) {
-            anchors += "$number:failed"
-            return
+            return done("failed")
         }
 
         val before = imageState(tab)["count"]?.jsonPrimitive?.intOrNull ?: 0
@@ -703,12 +722,11 @@ class SaveDraftRoutine(
         logInfo("anchor $number: image ${if (landed) "placed" else "not placed"}")
         if (landed) {
             imagesPlaced++
-            anchors += "$number:placed"
-            return
+            return done("placed")
         }
         // The anchor text is already gone; drop the empty paragraph it leaves when that is safe.
         dropEmptyParagraph(tab, editorUrl, marker)
-        anchors += "$number:failed"
+        return done("failed")
     }
 
     /** Removes every paragraph that holds only [marker]: select its text, Backspace. */
@@ -1120,6 +1138,9 @@ internal const val TITLE_OVERWRITTEN = "title-overwritten"
 internal const val COVER_ABSENT = "absent"
 internal const val COVER_PLACED = "placed"
 internal const val COVER_FAILED = "failed"
+
+/** The cover could not be set; images[0] went into the body at the cover marker instead. */
+internal const val COVER_FAILED_BODY = "failed-body"
 
 /** Marks the body's cover paragraph: images[0] becomes note's cover image (見出し画像). */
 internal const val COVER_MARKER = "{{closepaw-cover-1}}"
