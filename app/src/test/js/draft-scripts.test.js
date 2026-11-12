@@ -144,7 +144,7 @@ const run = (name, sandbox, args = {}) => {
 };
 const same = { editorUrl: EDITOR };
 const image = { ...same, name: 'a.jpg', mime: 'image/jpeg', base64: Buffer.from([255, 0, 10]).toString('base64') };
-const WRITERS = ['SET_TITLE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'ANCHOR_SELECT', 'PASTE_IMAGE_HERE', 'CARET_AFTER_IMAGES', 'FOCUS_BODY', 'COVER_FILE', 'FILE_TO_INPUT', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
+const WRITERS = ['SET_TITLE', 'CLEAR_TITLE', 'TITLE_VALUE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'ANCHOR_SELECT', 'PASTE_IMAGE_HERE', 'CARET_AFTER_IMAGES', 'FOCUS_BODY', 'COVER_FILE', 'FILE_TO_INPUT', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
 const toast = (text = '下書きを保存しました') => new El('div', { textContent: text });
 const apiEntry = (over = {}) => ({
   startTime: 6, initiatorType: 'fetch', responseStatus: 200,
@@ -158,7 +158,7 @@ const noRead = () => Promise.reject(new Error('blocked'));
 
 const tests = {
   'every script parses': () => {
-    assert.strictEqual(Object.keys(scripts).length, 27);
+    assert.strictEqual(Object.keys(scripts).length, 29);
     for (const [name, src] of Object.entries(scripts)) new vm.Script(`(${src})({})`, { filename: name });
   },
 
@@ -698,6 +698,29 @@ const tests = {
     assert.strictEqual(run('SET_TITLE', p.sandbox, { ...same, title: 'T "q" 日本語' }).ok, true);
     assert.strictEqual(p.textarea.value, 'T "q" 日本語');
     assert.strictEqual(inputs, 1);
+  },
+
+  'the title is emptied and left focused for typing': () => {
+    const p = page();
+    p.textarea.value = 'old';
+    p.textarea.setSelectionRange = () => {};
+    p.sandbox.document.activeElement = p.textarea;
+    let inputs = 0;
+    p.textarea.addEventListener('input', () => inputs++);
+    assert.strictEqual(run('CLEAR_TITLE', p.sandbox, same).ok, true);
+    assert.strictEqual(p.textarea.value, '');
+    assert.strictEqual(inputs, 1);
+    p.sandbox.document.activeElement = null;
+    p.textarea.value = 'x';
+    assert.strictEqual(run('CLEAR_TITLE', p.sandbox, same).ok, false);
+  },
+
+  'the title check reads the field only': () => {
+    const p = page();
+    p.textarea.value = 'T';
+    assert.deepStrictEqual(run('TITLE_VALUE', p.sandbox, { ...same, title: 'T' }), { ok: true, same: true });
+    assert.strictEqual(run('TITLE_VALUE', p.sandbox, { ...same, title: 'U' }).same, false);
+    assert.strictEqual(p.textarea.value, 'T');
   },
 
   'image routes deliver the bytes': () => {
