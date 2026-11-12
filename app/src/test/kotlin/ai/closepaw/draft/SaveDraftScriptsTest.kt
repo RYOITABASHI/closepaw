@@ -156,6 +156,7 @@ class SaveDraftScriptsTest {
             "Page.navigate", "Runtime.evaluate", "Target.createTarget", "Target.closeTarget",
             "Page.bringToFront", "Input.dispatchMouseEvent", "Input.dispatchKeyEvent",
             "Page.setInterceptFileChooserDialog", "DOM.resolveNode", "Runtime.callFunctionOn",
+            "Input.insertText",
         )
     }
 

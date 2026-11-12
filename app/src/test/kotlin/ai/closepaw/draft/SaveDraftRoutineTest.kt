@@ -561,7 +561,7 @@ class SaveDraftRoutineTest {
             const val MENU_X = 70.0
             const val CHOOSER_NODE = 77L
             val WRITES = setOf(
-                DraftScript.SET_TITLE, DraftScript.CLEAR_TITLE, DraftScript.CLIPBOARD_WRITE, DraftScript.PASTE_IMAGE,
+                DraftScript.SET_TITLE, DraftScript.CLIPBOARD_WRITE, DraftScript.PASTE_IMAGE,
                 DraftScript.FILE_INPUT_IMAGE, DraftScript.NOTE_SAVE_CLICK,
             )
         }
@@ -1211,7 +1211,7 @@ class SaveDraftRoutineTest {
         assertThat(info).containsAtLeast(
             "tab ready",
             "editor reached",
-            "title set",
+            "title set method=set",
             "images placed=1/1",
             "body method=paste clip=page chars=14 p=3 h=1 li=0 dialogs=0",
         ).inOrder()
@@ -1264,7 +1264,7 @@ class SaveDraftRoutineTest {
         assertThat(result.titleOk).isTrue()
         assertThat(browser.titleClobbered).isFalse()
         assertThat(browser.scripts.count { it == DraftScript.SET_TITLE }).isEqualTo(2)
-        assertThat(info).contains("title overwritten by method=paste; restored=true")
+        assertThat(info).contains("title overwritten by method=paste; restored=true typed=set")
     }
 
     @Test
