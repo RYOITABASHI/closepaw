@@ -28,7 +28,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
@@ -233,6 +235,33 @@ internal class ChromeDraftBrowser(
         }
     }
 
+    override suspend fun interceptFileChooser(tabId: String, enabled: Boolean) {
+        withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
+            cdp { client ->
+                client.send("Page.setInterceptFileChooserDialog", buildJsonObject { put("enabled", enabled) }, CdpOptions(targetId = tabId))
+                // Requests from before this run's press are not this run's.
+                if (enabled) client.drainEvents()
+            }
+        } ?: throw IOException("file chooser interception timed out")
+    }
+
+    override suspend fun takeFileChooser(tabId: String): Long? = cdp { client ->
+        client.drainEvents().lastOrNull { it.method == FILE_CHOOSER_OPENED }
+            ?.params?.get("backendNodeId")?.jsonPrimitive?.longOrNull
+    }
+
+    override suspend fun fileToChooser(tabId: String, backendNodeId: Long, args: JsonObject): JsonObject {
+        val response = withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
+            cdp { client ->
+                val node = client.send("DOM.resolveNode", buildJsonObject { put("backendNodeId", backendNodeId) }, CdpOptions(targetId = tabId))
+                val objectId = node.jsonObject["object"]?.jsonObject?.get("objectId")?.jsonPrimitive?.contentOrNull
+                    ?: throw IOException("file input not resolved")
+                client.send("Runtime.callFunctionOn", draftCallParams(DraftScript.FILE_TO_INPUT, objectId, args), CdpOptions(targetId = tabId))
+            }
+        } ?: throw DraftEvaluateTimeoutException(DraftScript.FILE_TO_INPUT)
+        return draftEvaluateResult(DraftScript.FILE_TO_INPUT, response)
+    }
+
     /** Ctrl+V with the browser's own paste command: a trusted paste from the clipboard. */
     override suspend fun pasteKey(tabId: String) {
         withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
@@ -302,6 +331,8 @@ class DraftEvaluateTimeoutException(script: DraftScript) : IOException("draft sc
 private const val TAG = "ChromeDraftBrowser"
 private const val EVALUATE_TIMEOUT_MS = 10_000L
 private const val FINISH_TIMEOUT_MS = 20_000L
+
+private const val FILE_CHOOSER_OPENED = "Page.fileChooserOpened"
 
 /** CDP modifier bit for Ctrl. */
 private const val CTRL = 2

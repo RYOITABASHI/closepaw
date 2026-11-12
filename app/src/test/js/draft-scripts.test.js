@@ -49,7 +49,7 @@ function page(options = {}) {
     href = EDITOR, buttons = [], withTextarea = true, withBody = true, fileInput = null, images = 0,
     resources = [], items = [], outside = [], bodyChildren = [], fetchImpl,
     hitAt = null, active = null, pageFocused = false, execResult = true, clipboard = null,
-    fileInputs = [], imgEls = null, dialogs = [],
+    fileInputs = [], imgEls = null, dialogs = [], controls = [], menuItems = [],
   } = options;
   const textarea = new El('textarea');
   let value = '';
@@ -89,6 +89,8 @@ function page(options = {}) {
       if (sel === 'button') return buttons;
       if (sel === 'input[type=file]') return fileInputs;
       if (sel === '[role=dialog]') return dialogs;
+      if (sel === 'button, [role=button], label') return controls;
+      if (sel.startsWith('[role=menuitem]')) return menuItems;
       if (sel === 'img' && imgEls) return imgEls;
       if (sel === 'img') return (Array.isArray(images) ? images : new Array(images).fill('https://x/i.png')).map((src) => ({ src }));
       if (sel.startsWith('li,')) return items;
@@ -133,7 +135,7 @@ const run = (name, sandbox, args = {}) => {
 };
 const same = { editorUrl: EDITOR };
 const image = { ...same, name: 'a.jpg', mime: 'image/jpeg', base64: Buffer.from([255, 0, 10]).toString('base64') };
-const WRITERS = ['SET_TITLE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'ANCHOR_SELECT', 'PASTE_IMAGE_HERE', 'CARET_AFTER_IMAGES', 'FOCUS_BODY', 'COVER_FILE', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
+const WRITERS = ['SET_TITLE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'ANCHOR_SELECT', 'PASTE_IMAGE_HERE', 'CARET_AFTER_IMAGES', 'FOCUS_BODY', 'COVER_FILE', 'FILE_TO_INPUT', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
 const toast = (text = '下書きを保存しました') => new El('div', { textContent: text });
 const apiEntry = (over = {}) => ({
   startTime: 6, initiatorType: 'fetch', responseStatus: 200,
@@ -147,7 +149,7 @@ const noRead = () => Promise.reject(new Error('blocked'));
 
 const tests = {
   'every script parses': () => {
-    assert.strictEqual(Object.keys(scripts).length, 22);
+    assert.strictEqual(Object.keys(scripts).length, 25);
     for (const [name, src] of Object.entries(scripts)) new vm.Script(`(${src})({})`, { filename: name });
   },
 
@@ -518,6 +520,55 @@ const tests = {
     assert.strictEqual(run('COVER_STATE', p.sandbox, { labels: ['保存'] }).pressable, false);
     p = page({ imgEls: [], dialogs: [dialog], hitAt: () => button });
     assert.strictEqual(run('COVER_STATE', p.sandbox, { labels: ['適用'] }).pressable, false);
+  },
+
+  'cover control is the one named control before the title, outside the body': () => {
+    const names = ['見出し画像', '画像を追加'];
+    const control = (attrs, text, beforeTitle = true) => {
+      const el = new El('button', { textContent: text });
+      el.getAttribute = (k) => attrs[k] || null;
+      el.compareDocumentPosition = () => (beforeTitle ? 4 : 2);
+      el.getBoundingClientRect = () => ({ left: 10, top: 20, width: 40, height: 40 });
+      return el;
+    };
+    const cover = control({ 'aria-label': '見出し画像を設定' }, '');
+    let p = page({ controls: [control({}, 'メニュー'), cover, control({ title: '画像を追加' }, '', false)], hitAt: () => cover });
+    assert.deepStrictEqual(run('COVER_CONTROL', p.sandbox, { names }), { ok: true, count: 1, x: 30, y: 40 });
+    p = page({ controls: [cover, control({}, '画像を追加')], hitAt: () => cover });
+    assert.deepStrictEqual(run('COVER_CONTROL', p.sandbox, { names }), { ok: false, count: 2 });
+    p = page({ controls: [cover], hitAt: () => new El('div') });
+    assert.strictEqual(run('COVER_CONTROL', p.sandbox, { names }).why, 'covered');
+    assert.deepStrictEqual(run('COVER_CONTROL', page({ withTextarea: false }).sandbox, { names }), { ok: false, count: 0 });
+  },
+
+  'cover menu item is the one upload item, never a generated or stock one': () => {
+    const item = (text) => {
+      const el = new El('li', { textContent: text });
+      el.getBoundingClientRect = () => ({ left: 0, top: 100, width: 200, height: 40 });
+      return el;
+    };
+    const upload = item(' 画像をアップロード ');
+    const args = { item: 'アップロード', avoid: ['AI', '生成', 'Canva', '素材', 'ストック'] };
+    let p = page({ menuItems: [item('AIで画像を生成'), upload, item('Canvaでアップロード')], hitAt: () => upload });
+    assert.deepStrictEqual(run('COVER_MENU_ITEM', p.sandbox, args), { ok: true, count: 1, x: 100, y: 120 });
+    p = page({ menuItems: [item('Canvaでアップロード')] });
+    assert.deepStrictEqual(run('COVER_MENU_ITEM', p.sandbox, args), { ok: false, count: 0 });
+  },
+
+  'file to input sets the bytes on the reported file input only': () => {
+    const input = new El('input', { type: 'file' });
+    let changes = 0;
+    input.addEventListener('change', () => changes++);
+    const p = page();
+    p.sandbox.__target = input;
+    const call = (target, args) => JSON.parse(JSON.stringify(vm.runInNewContext(
+      `(${scripts.FILE_TO_INPUT}).call(${target}, ${JSON.stringify(args)})`, p.sandbox)));
+    assert.deepStrictEqual(call('__target', image), { ok: true });
+    assert.strictEqual(input.files[0].name, 'a.jpg');
+    assert.strictEqual(changes, 1);
+    p.sandbox.__other = new El('div');
+    assert.deepStrictEqual(call('__other', image), { ok: false });
+    assert.deepStrictEqual(call('__target', { ...image, editorUrl: 'https://x/' }), { ok: false, moved: true });
   },
 
   'focus probe says whether the focus is in the body': () => {

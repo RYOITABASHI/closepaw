@@ -324,6 +324,79 @@ enum class DraftScript(val source: String) {
     ),
 
     /**
+     * note only: the editor's own cover control, before the title and outside the body: the one
+     * button, label or button-like element whose aria-label, title or text holds one of
+     * `a.names`. Gives the point to press it, if the page shows it there.
+     */
+    COVER_CONTROL(
+        """
+        function (a) {
+          var title = document.querySelector('textarea');
+          if (!title) return { ok: false, count: 0 };
+          var body = $BODY_LOOKUP;
+          var candidates = document.querySelectorAll('button, [role=button], label');
+          var found = [];
+          for (var i = 0; i < candidates.length; i++) {
+            var el = candidates[i];
+            var beforeTitle = (el.compareDocumentPosition(title) & 4) !== 0;
+            var name = [el.getAttribute('aria-label'), el.getAttribute('title'), el.textContent].join(' ');
+            var hits = a.names.filter(function (n) { return name.indexOf(n) >= 0; });
+            if (beforeTitle && !(body && body.contains(el)) && hits.length > 0) found.push(el);
+          }
+          if (found.length !== 1) return { ok: false, count: found.length };
+          var rect = found[0].getBoundingClientRect();
+          var x = rect.left + rect.width / 2;
+          var y = rect.top + rect.height / 2;
+          var hit = document.elementFromPoint(x, y);
+          if (!hit || !found[0].contains(hit)) return { ok: false, count: 1, why: 'covered' };
+          return { ok: true, count: 1, x: x, y: y };
+        }
+        """,
+    ),
+
+    /**
+     * note only: in an open menu or dialog, the one item whose text holds `a.item` and none of
+     * `a.avoid` (generated or stock images), with the point to press it.
+     */
+    COVER_MENU_ITEM(
+        """
+        function (a) {
+          var items = document.querySelectorAll('[role=menuitem], [role=menu] button, [role=menu] li, [role=dialog] button, [role=listbox] li');
+          var found = [];
+          for (var i = 0; i < items.length; i++) {
+            var text = items[i].textContent.trim();
+            var avoided = a.avoid.filter(function (w) { return text.indexOf(w) >= 0; });
+            if (text.indexOf(a.item) >= 0 && avoided.length === 0) found.push(items[i]);
+          }
+          if (found.length !== 1) return { ok: false, count: found.length };
+          var rect = found[0].getBoundingClientRect();
+          var x = rect.left + rect.width / 2;
+          var y = rect.top + rect.height / 2;
+          var hit = document.elementFromPoint(x, y);
+          if (!hit || !found[0].contains(hit)) return { ok: false, count: 1, why: 'covered' };
+          return { ok: true, count: 1, x: x, y: y };
+        }
+        """,
+    ),
+
+    /**
+     * Called on the file input Chrome reported when the page asked for a file (the chooser is
+     * intercepted, so none opens): the image bytes from memory become its file.
+     */
+    FILE_TO_INPUT(
+        """
+        function (a) {
+          $SAME_DRAFT
+          if (!this || this.tagName !== 'INPUT' || this.type !== 'file') return { ok: false };
+          $IMAGE_FILE
+          this.files = data.files;
+          this.dispatchEvent(new Event('change', { bubbles: true }));
+          return { ok: true };
+        }
+        """,
+    ),
+
+    /**
      * After the leading images: puts the caret in the first empty paragraph after the body's
      * last image block (or anywhere in a body without one). With `a.mode` 'select-figure' it
      * selects that image block as a whole instead, so an Enter makes a paragraph after it.

@@ -106,6 +106,13 @@ class SaveDraftRoutineTest {
         var cropDialogNeeded = false
         var cropDialog = false
         var coverCount = 0
+        var coverControl = false
+        var chooserOnControl = false
+        var menuOnControl = false
+        var menuShown = false
+        var chooserPending: Long? = null
+        var chooserFileWorks = true
+        val intercepts = mutableListOf<Boolean>()
         var focusTargetOk = true
         val fronted = mutableListOf<String>()
         val clicks = mutableListOf<Pair<Double, Double>>()
@@ -126,12 +133,35 @@ class SaveDraftRoutineTest {
         override suspend fun click(tabId: String, x: Double, y: Double) {
             scripts += null
             clicks += x to y
-            if (cropDialog) {
-                cropDialog = false
-                coverCount++
-            } else {
-                titleFocused = false
+            when {
+                cropDialog -> {
+                    cropDialog = false
+                    coverCount++
+                }
+                x == CONTROL_X -> {
+                    if (chooserOnControl) chooserPending = CHOOSER_NODE
+                    if (menuOnControl) menuShown = true
+                }
+                x == MENU_X && menuShown -> {
+                    menuShown = false
+                    chooserPending = CHOOSER_NODE
+                }
+                else -> titleFocused = false
             }
+        }
+
+        override suspend fun interceptFileChooser(tabId: String, enabled: Boolean) {
+            intercepts += enabled
+        }
+
+        override suspend fun takeFileChooser(tabId: String): Long? = chooserPending.also { chooserPending = null }
+
+        override suspend fun fileToChooser(tabId: String, backendNodeId: Long, args: JsonObject): JsonObject {
+            scripts += DraftScript.FILE_TO_INPUT
+            if (chooserFileWorks && backendNodeId == CHOOSER_NODE) {
+                if (cropDialogNeeded) cropDialog = true else coverCount++
+            }
+            return buildJsonObject { put("ok", chooserFileWorks) }
         }
 
         override fun runTab(tabId: String) {
@@ -290,6 +320,23 @@ class SaveDraftRoutineTest {
                         if (cropDialogNeeded) cropDialog = true else coverCount++
                     }
                 }
+                DraftScript.COVER_CONTROL -> buildJsonObject {
+                    put("ok", coverControl)
+                    put("count", if (coverControl) 1 else 0)
+                    if (coverControl) {
+                        put("x", CONTROL_X)
+                        put("y", 60.0)
+                    }
+                }
+                DraftScript.COVER_MENU_ITEM -> buildJsonObject {
+                    put("ok", menuShown)
+                    put("count", if (menuShown) 1 else 0)
+                    if (menuShown) {
+                        put("x", MENU_X)
+                        put("y", 80.0)
+                    }
+                }
+                DraftScript.FILE_TO_INPUT -> buildJsonObject { put("ok", false) }
                 DraftScript.COVER_STATE -> buildJsonObject {
                     put("count", coverCount)
                     put("dialog", cropDialog)
@@ -439,6 +486,9 @@ class SaveDraftRoutineTest {
         companion object {
             const val OURS = "ours"
             const val BODY_CHARS = 14
+            const val CONTROL_X = 50.0
+            const val MENU_X = 70.0
+            const val CHOOSER_NODE = 77L
             val WRITES = setOf(
                 DraftScript.SET_TITLE, DraftScript.CLIPBOARD_WRITE, DraftScript.PASTE_IMAGE,
                 DraftScript.FILE_INPUT_IMAGE, DraftScript.NOTE_SAVE_CLICK,
@@ -1162,6 +1212,84 @@ class SaveDraftRoutineTest {
         assertThat(result.imagesPlaced).isEqualTo(0)
         assertThat(browser.anchorsInEditor[COVER_MARKER]).isEqualTo(0)
         assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE_HERE)
+    }
+
+    @Test
+    fun `note's cover control is pressed and the chooser's input gets the file`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            coverInputOk = false
+            coverControl = true
+            chooserOnControl = true
+        }
+        val result = routine(browser, note, listOf(image), html = coverHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.cover).isEqualTo("placed")
+        assertThat(result.imagesPlaced).isEqualTo(1)
+        assertThat(browser.intercepts).containsExactly(true, false).inOrder()
+        assertThat(browser.clicks.map { it.first }).contains(FakeBrowser.CONTROL_X)
+        assertThat(info).containsAtLeast(
+            "cover: input ok=false inputs=2 candidates=0",
+            "cover: control found=1",
+            "cover: control pressed",
+            "cover: chooser file ok=true",
+            "cover: placed",
+        ).inOrder()
+    }
+
+    @Test
+    fun `a cover menu's upload item is pressed before the chooser`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            coverInputOk = false
+            coverControl = true
+            menuOnControl = true
+            cropDialogNeeded = true
+        }
+        val result = routine(browser, note, listOf(image), html = coverHtml).run()
+
+        assertThat(result.cover).isEqualTo("placed")
+        assertThat(browser.clicks.map { it.first })
+            .containsAtLeast(FakeBrowser.CONTROL_X, FakeBrowser.MENU_X, 140.0).inOrder()
+        assertThat(info).contains("cover: menu item pressed")
+        assertThat(info).contains("cover: crop dialog pressed")
+    }
+
+    @Test
+    fun `no cover control means no cover, and the chooser is released`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            coverInputOk = false
+        }
+        val result = routine(browser, note, listOf(image), html = coverHtml).run()
+
+        assertThat(result.cover).isEqualTo("failed")
+        assertThat(browser.intercepts).containsExactly(true, false).inOrder()
+        assertThat(browser.scripts).doesNotContain(DraftScript.FILE_TO_INPUT)
+        assertThat(info).contains("cover: control found=0")
+    }
+
+    @Test
+    fun `a pressed control that never asks for a file is a failed cover`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            coverInputOk = false
+            coverControl = true
+        }
+        val result = routine(browser, note, listOf(image), html = coverHtml).run()
+
+        assertThat(result.cover).isEqualTo("failed")
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.intercepts.last()).isFalse()
+    }
+
+    @Test
+    fun `the call on a node runs the fixed script with the image as JSON`() {
+        val params = draftCallParams(DraftScript.FILE_TO_INPUT, "obj-1", buildJsonObject { put("name", "a.jpg") })
+        assertThat(params["functionDeclaration"]!!.jsonPrimitive.content).isEqualTo(DraftScript.FILE_TO_INPUT.source.trim())
+        assertThat(params["objectId"]!!.jsonPrimitive.content).isEqualTo("obj-1")
+        assertThat(params.toString()).contains("\"arguments\":[{\"value\":{\"name\":\"a.jpg\"}}]")
     }
 
     @Test

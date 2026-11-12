@@ -128,7 +128,7 @@ class SaveDraftScriptsTest {
         val guarded = listOf(
             DraftScript.SET_TITLE, DraftScript.CLIPBOARD_WRITE, DraftScript.INSERT_HTML, DraftScript.FOCUS_TARGET,
             DraftScript.ANCHOR_SELECT, DraftScript.PASTE_IMAGE_HERE, DraftScript.CARET_AFTER_IMAGES,
-            DraftScript.FOCUS_BODY, DraftScript.COVER_FILE,
+            DraftScript.FOCUS_BODY, DraftScript.COVER_FILE, DraftScript.FILE_TO_INPUT,
             DraftScript.PASTE_IMAGE, DraftScript.FILE_INPUT_IMAGE,
             DraftScript.NOTE_SAVE_CLICK, DraftScript.READ_BACK, DraftScript.NOTE_SAVED_PROBE,
             DraftScript.SUBSTACK_SAVED_PROBE,
@@ -154,6 +154,7 @@ class SaveDraftScriptsTest {
         assertThat(sent).containsExactly(
             "Page.navigate", "Runtime.evaluate", "Target.createTarget", "Target.closeTarget",
             "Page.bringToFront", "Input.dispatchMouseEvent", "Input.dispatchKeyEvent",
+            "Page.setInterceptFileChooserDialog", "DOM.resolveNode", "Runtime.callFunctionOn",
         )
     }
 

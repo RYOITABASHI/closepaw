@@ -62,6 +62,22 @@ interface DraftBrowser {
      */
     suspend fun pasteKey(tabId: String) {}
 
+    /**
+     * Turns interception of [tabId]'s file chooser on or off: while on, a page's request for a file
+     * opens no chooser and is reported instead ([takeFileChooser]). The default does nothing.
+     */
+    suspend fun interceptFileChooser(tabId: String, enabled: Boolean) {}
+
+    /** The file input of a chooser request seen since the last call, or null. */
+    suspend fun takeFileChooser(tabId: String): Long? = null
+
+    /**
+     * Runs [DraftScript.FILE_TO_INPUT] on the reported input, with [args] (the image). The default
+     * answers that nothing happened.
+     */
+    suspend fun fileToChooser(tabId: String, backendNodeId: Long, args: JsonObject): JsonObject =
+        buildJsonObject { put("ok", false) }
+
     /** One trusted key press in [tabId], from a closed set. The default does nothing. */
     suspend fun pressKey(tabId: String, key: DraftKey) {}
 
@@ -732,20 +748,93 @@ class SaveDraftRoutine(
      * shows above the title. A failure leaves the draft without a cover; the image never goes
      * into the body.
      */
-    private suspend fun placeCover(tab: DraftTab, editorUrl: String, image: DraftImage) {
-        val labels = buildJsonObject { put("labels", buildJsonArray { COVER_CROP_LABELS.forEach { add(JsonPrimitive(it)) } }) }
-        val before = browser.evaluate(tab.id, DraftScript.COVER_STATE, labels)["count"]?.jsonPrimitive?.intOrNull ?: 0
-        val handed = write(tab, editorUrl, DraftScript.COVER_FILE) {
-            put("name", image.name)
-            put("mime", image.mime)
-            put("base64", image.base64)
-        }
+    /** The cover input, if the page already has it. */
+    private suspend fun handCoverInput(tab: DraftTab, editorUrl: String, image: DraftImage): Boolean {
+        val handed = write(tab, editorUrl, DraftScript.COVER_FILE) { imageFields(image) }
         logInfo(
             "cover: input ok=${handed.flag("ok")} inputs=${handed["total"]?.jsonPrimitive?.intOrNull ?: -1} " +
                 "candidates=${handed["candidates"]?.jsonPrimitive?.intOrNull ?: -1}",
         )
-        if (!handed.flag("ok")) {
+        return handed.flag("ok")
+    }
+
+    /**
+     * note makes the cover input only when its cover control is pressed. With the file chooser
+     * intercepted (none opens), the control is pressed; if a menu opens, its upload item is
+     * pressed (never a generated or stock image). The file goes to the input the chooser request
+     * names, or to a cover input that has appeared meanwhile.
+     */
+    private suspend fun pressCoverControl(tab: DraftTab, editorUrl: String, image: DraftImage): Boolean {
+        val names = buildJsonObject { put("names", buildJsonArray { COVER_CONTROL_NAMES.forEach { add(JsonPrimitive(it)) } }) }
+        browser.interceptFileChooser(tab.id, true)
+        try {
+            val control = browser.evaluate(tab.id, DraftScript.COVER_CONTROL, names)
+            logInfo("cover: control found=${control.anchorCount()}${control.str("why")?.let { " why=$it" }.orEmpty()}")
+            val x = control["x"]?.jsonPrimitive?.doubleOrNull
+            val y = control["y"]?.jsonPrimitive?.doubleOrNull
+            if (!control.flag("ok") || x == null || y == null) return false
+            stopIfOwnerHasChrome()
+            browser.click(tab.id, x, y)
+            logInfo("cover: control pressed")
+
+            val menu = buildJsonObject {
+                put("item", COVER_MENU_ITEM)
+                put("avoid", buildJsonArray { COVER_MENU_AVOID.forEach { add(JsonPrimitive(it)) } })
+            }
+            var menuPressed = false
+            return pollUntil(COVER_CONTROL_WAIT_MS) {
+                browser.takeFileChooser(tab.id)?.let { node ->
+                    wrote = true
+                    val set = browser.fileToChooser(tab.id, node, buildJsonObject {
+                        put("editorUrl", editorUrl)
+                        imageFields(image)
+                    })
+                    stopIfMoved(set)
+                    logInfo("cover: chooser file ok=${set.flag("ok")}")
+                    return@pollUntil set.flag("ok")
+                }
+                val appeared = write(tab, editorUrl, DraftScript.COVER_FILE) { imageFields(image) }
+                if (appeared.flag("ok")) {
+                    logInfo("cover: input appeared after the control")
+                    return@pollUntil true
+                }
+                if (!menuPressed) {
+                    val item = browser.evaluate(tab.id, DraftScript.COVER_MENU_ITEM, menu)
+                    val ix = item["x"]?.jsonPrimitive?.doubleOrNull
+                    val iy = item["y"]?.jsonPrimitive?.doubleOrNull
+                    if (item.flag("ok") && ix != null && iy != null) {
+                        stopIfOwnerHasChrome()
+                        browser.click(tab.id, ix, iy)
+                        menuPressed = true
+                        logInfo("cover: menu item pressed")
+                    }
+                }
+                null
+            } == true
+        } finally {
+            try {
+                browser.interceptFileChooser(tab.id, false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logInfo("cover: chooser interception not ended: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.imageFields(image: DraftImage) {
+        put("name", image.name)
+        put("mime", image.mime)
+        put("base64", image.base64)
+    }
+
+    private suspend fun placeCover(tab: DraftTab, editorUrl: String, image: DraftImage) {
+        val labels = buildJsonObject { put("labels", buildJsonArray { COVER_CROP_LABELS.forEach { add(JsonPrimitive(it)) } }) }
+        val before = browser.evaluate(tab.id, DraftScript.COVER_STATE, labels)["count"]?.jsonPrimitive?.intOrNull ?: 0
+        val handed = handCoverInput(tab, editorUrl, image) || pressCoverControl(tab, editorUrl, image)
+        if (!handed) {
             cover = COVER_FAILED
+            logInfo("cover: $cover")
             return
         }
         var pressed = false
@@ -1010,6 +1099,15 @@ internal fun draftEvaluateParams(script: DraftScript, args: JsonObject): JsonObj
     if (script == DraftScript.CLIPBOARD_WRITE) put("userGesture", true)
 }
 
+/** `Runtime.callFunctionOn` for a fixed script on a node object: JSON in, JSON out. */
+internal fun draftCallParams(script: DraftScript, objectId: String, args: JsonObject): JsonObject = buildJsonObject {
+    put("functionDeclaration", script.source.trim())
+    put("objectId", objectId)
+    put("arguments", buildJsonArray { add(buildJsonObject { put("value", args) }) })
+    put("returnByValue", true)
+    put("awaitPromise", true)
+}
+
 /** The reason for a body that went in without its structure. */
 internal const val BODY_FLATTENED = "body-flattened"
 
@@ -1025,6 +1123,16 @@ internal const val COVER_FAILED = "failed"
 
 /** Marks the body's cover paragraph: images[0] becomes note's cover image (見出し画像). */
 internal const val COVER_MARKER = "{{closepaw-cover-1}}"
+
+/** Words that name note's cover control (aria-label, title or text). */
+internal val COVER_CONTROL_NAMES = listOf("見出し画像", "画像を追加")
+
+/** The cover menu's upload item, and words that mark items it must never press. */
+internal const val COVER_MENU_ITEM = "アップロード"
+internal val COVER_MENU_AVOID = listOf("AI", "生成", "Canva", "素材", "ストック")
+
+/** How long a pressed cover control may take to ask for a file. */
+internal const val COVER_CONTROL_WAIT_MS = 6_000L
 
 /** Labels of the button that accepts a crop dialog's default crop. Exact, after trimming. */
 internal val COVER_CROP_LABELS = listOf("保存", "適用", "完了", "決定", "OK")
