@@ -50,6 +50,7 @@ function page(options = {}) {
     resources = [], items = [], outside = [], bodyChildren = [], fetchImpl,
     hitAt = null, active = null, pageFocused = false, execResult = true, clipboard = null,
     fileInputs = [], imgEls = null, dialogs = [], controls = [], menuItems = [], diagEls = [], iframes = [], shadowHosts = [],
+    labelledIcons = [],
   } = options;
   const textarea = new El('textarea');
   let value = '';
@@ -92,6 +93,7 @@ function page(options = {}) {
       if (sel === 'button, [role=button], label') return controls;
       if (sel === 'button, [role=button], label, a, input, [tabindex], [onclick]') return diagEls;
       if (sel === 'iframe') return iframes;
+      if (sel === 'svg[aria-label], [role=img][aria-label]') return labelledIcons;
       if (sel === '*') return shadowHosts;
       if (sel.startsWith('[role=menuitem]')) return menuItems;
       if (sel === 'img' && imgEls) return imgEls;
@@ -542,6 +544,32 @@ const tests = {
     p = page({ controls: [cover], hitAt: () => new El('div') });
     assert.strictEqual(run('COVER_CONTROL', p.sandbox, { names }).why, 'covered');
     assert.deepStrictEqual(run('COVER_CONTROL', page({ withTextarea: false }).sandbox, { names }), { ok: false, count: 0 });
+  },
+
+  'cover control is found through its labelled icon': () => {
+    const names = ['見出し画像', '画像を追加'];
+    const button = new El('button');
+    button.getAttribute = () => null;
+    button.compareDocumentPosition = () => 4;
+    button.getBoundingClientRect = () => ({ left: 0, top: 0, width: 40, height: 40 });
+    const svg = new El('svg');
+    svg.getAttribute = (k) => (k === 'aria-label' ? '画像を追加' : null);
+    svg.closest = () => button;
+    button.children = [svg];
+    const other = new El('svg');
+    other.getAttribute = (k) => (k === 'aria-label' ? 'その他' : null);
+    other.closest = () => Object.assign(new El('button'), { compareDocumentPosition: () => 4 });
+    let p = page({ controls: [button], labelledIcons: [other, svg], hitAt: () => svg });
+    assert.deepStrictEqual(run('COVER_CONTROL', p.sandbox, { names }), { ok: true, count: 1, x: 20, y: 20 });
+
+    // An icon whose button comes after the title does not count.
+    const late = new El('button');
+    late.compareDocumentPosition = () => 2;
+    const lateSvg = new El('svg');
+    lateSvg.getAttribute = () => '画像を追加';
+    lateSvg.closest = () => late;
+    p = page({ labelledIcons: [lateSvg] });
+    assert.deepStrictEqual(run('COVER_CONTROL', p.sandbox, { names }), { ok: false, count: 0 });
   },
 
   'cover menu item is the one upload item, never a generated or stock one': () => {

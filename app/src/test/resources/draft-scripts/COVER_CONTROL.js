@@ -11,6 +11,14 @@ function (a) {
             var hits = a.names.filter(function (n) { return name.indexOf(n) >= 0; });
             if (beforeTitle && !(body && body.contains(el)) && hits.length > 0) found.push(el);
           }
+          var icons = document.querySelectorAll('svg[aria-label], [role=img][aria-label]');
+          for (var j = 0; j < icons.length; j++) {
+            var label = icons[j].getAttribute('aria-label') || '';
+            var named = a.names.filter(function (n) { return label.indexOf(n) >= 0; });
+            var owner = icons[j].closest('button, [role=button]') || icons[j];
+            var ownerBefore = (owner.compareDocumentPosition(title) & 4) !== 0;
+            if (named.length > 0 && ownerBefore && !(body && body.contains(owner)) && found.indexOf(owner) < 0) found.push(owner);
+          }
           if (found.length !== 1) return { ok: false, count: found.length };
           var rect = found[0].getBoundingClientRect();
           var x = rect.left + rect.width / 2;
