@@ -312,6 +312,7 @@ class SaveDraftRoutine(
             return result(DraftOutcome.FAILED, "editor-not-empty")
         }
         logInfo("editor reached")
+        if (browser.typesText) logTitleFields(tab)
 
         step = STEP_TITLE
         val titleSet = write(tab, editorUrl, DraftScript.SET_TITLE) { put("title", request.title) }
@@ -629,6 +630,26 @@ class SaveDraftRoutine(
         val restored = write(tab, editorUrl, DraftScript.SET_TITLE) { put("title", request.title) }.flag("ok")
         val typed = if (restored) typeTitle(tab, editorUrl) else "none"
         logInfo("title overwritten by method=$method; restored=$restored typed=$typed")
+    }
+
+    /** `title fields: n=2 [p=Title|a=|shown|0|*] ...`: labels, lengths, the pick. Never text. */
+    private suspend fun logTitleFields(tab: DraftTab) {
+        val line = try {
+            val diag = browser.evaluate(tab.id, DraftScript.TITLE_DIAG, NO_ARGS)
+            val fields = diag["fields"] as? kotlinx.serialization.json.JsonArray ?: return
+            fields.joinToString(" ", prefix = "title fields: n=${fields.size} ") { f ->
+                val o = f.jsonObject
+                fun s(k: String) = o[k]?.jsonPrimitive?.contentOrNull.orEmpty().replace(Regex("[\\s|\\[\\]]+"), "_")
+                val shown = if (o["shown"]?.jsonPrimitive?.booleanOrNull == true) "shown" else "hidden"
+                val pick = if (o["chosen"]?.jsonPrimitive?.booleanOrNull == true) "*" else "-"
+                "[p=${s("placeholder")}|a=${s("aria")}|$shown|${o["chars"]?.jsonPrimitive?.intOrNull ?: -1}|$pick]"
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            "title fields: ${e.javaClass.simpleName}"
+        }
+        logInfo(line)
     }
 
     /**

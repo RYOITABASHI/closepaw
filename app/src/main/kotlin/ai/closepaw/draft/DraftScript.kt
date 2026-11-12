@@ -5,6 +5,14 @@ import kotlinx.serialization.json.JsonObject
 private const val BODY_LOOKUP =
     "document.querySelector('.ProseMirror[contenteditable=true]') || document.querySelector('[contenteditable=true]')"
 
+/**
+ * The title field: a shown textarea labelled as the title (not the subtitle), else the first
+ * shown one, else the first. Substack has more than one textarea, and the first in the
+ * document is not always the visible title.
+ */
+private const val TITLE_LOOKUP =
+    "(function () { var all = Array.prototype.slice.call(document.querySelectorAll('textarea')); var label = function (t) { return ((t.getAttribute('placeholder') || '') + ' ' + (t.getAttribute('aria-label') || '')).toLowerCase(); }; var shown = all.filter(function (t) { var r = t.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); var named = shown.filter(function (t) { var l = label(t); return /title|タイトル/.test(l) && !/sub|サブ/.test(l); }); return named[0] || shown[0] || all[0] || null; })()"
+
 /** First line of every script that changes the page: do nothing unless this is the same draft. */
 private const val SAME_DRAFT =
     "if (location.href !== a.editorUrl) return { ok: false, moved: true };"
@@ -64,7 +72,7 @@ enum class DraftScript(val source: String) {
     EDITOR_PROBE(
         """
         function (a) {
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           var body = $BODY_LOOKUP;
           return {
             href: location.href,
@@ -82,7 +90,7 @@ enum class DraftScript(val source: String) {
         """
         function (a) {
           $SAME_DRAFT
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           if (!title) return { ok: false };
           var setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
           title.focus();
@@ -101,7 +109,7 @@ enum class DraftScript(val source: String) {
         """
         function (a) {
           $SAME_DRAFT
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           if (!title) return { ok: false };
           var setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
           title.focus();
@@ -113,12 +121,35 @@ enum class DraftScript(val source: String) {
         """,
     ),
 
+    /**
+     * The page's textareas for the log: labels cut to 40 characters, whether shown, length
+     * only, and which one the title lookup picks. Never their text. Reads only.
+     */
+    TITLE_DIAG(
+        """
+        function (a) {
+          var all = Array.prototype.slice.call(document.querySelectorAll('textarea'));
+          var chosen = $TITLE_LOOKUP;
+          return { ok: true, fields: all.map(function (t) {
+            var r = t.getBoundingClientRect();
+            return {
+              placeholder: String(t.getAttribute('placeholder') || '').slice(0, 40),
+              aria: String(t.getAttribute('aria-label') || '').slice(0, 40),
+              shown: r.width > 0 && r.height > 0,
+              chars: String(t.value || '').length,
+              chosen: t === chosen,
+            };
+          }) };
+        }
+        """,
+    ),
+
     /** Whether the title field holds exactly `a.title`. Reads only. */
     TITLE_VALUE(
         """
         function (a) {
           $SAME_DRAFT
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           return { ok: true, same: !!title && title.value === a.title };
         }
         """,
@@ -164,7 +195,7 @@ enum class DraftScript(val source: String) {
             li: body.querySelectorAll('li').length,
           };
           if (typeof a.title === 'string') {
-            var title = document.querySelector('textarea');
+            var title = $TITLE_LOOKUP;
             shape.titleSame = !!title && title.value === a.title;
           }
           return shape;
@@ -289,7 +320,7 @@ enum class DraftScript(val source: String) {
         """
         function (a) {
           $SAME_DRAFT
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           if (!title) return { ok: false, why: 'no-title' };
           var body = $BODY_LOOKUP;
           var inputs = document.querySelectorAll('input[type=file]');
@@ -316,7 +347,7 @@ enum class DraftScript(val source: String) {
     COVER_STATE(
         """
         function (a) {
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           var body = $BODY_LOOKUP;
           var count = 0;
           if (title) {
@@ -365,7 +396,7 @@ enum class DraftScript(val source: String) {
     COVER_CONTROL(
         """
         function (a) {
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           if (!title) return { ok: false, count: 0 };
           var body = $BODY_LOOKUP;
           var candidates = document.querySelectorAll('button, [role=button], label');
@@ -414,7 +445,7 @@ enum class DraftScript(val source: String) {
     COVER_MENU_ITEM(
         """
         function (a) {
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           var body = $BODY_LOOKUP;
           var items = document.querySelectorAll('[role=menuitem], [role=option], button, [role=button], li, label');
           var matches = [];
@@ -451,7 +482,7 @@ enum class DraftScript(val source: String) {
     COVER_DIAG(
         """
         function (a) {
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           var body = $BODY_LOOKUP;
           var cut = function (v, n) {
             var t = String(v || '').replace(/\s+/g, ' ').trim();
@@ -538,7 +569,7 @@ enum class DraftScript(val source: String) {
     COVER_VISIBLE(
         """
         function (a) {
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           var body = $BODY_LOOKUP;
           var cut = function (v, n) {
             var t = String(v || '').replace(/\s+/g, ' ').trim();
@@ -804,7 +835,7 @@ enum class DraftScript(val source: String) {
         function (a) {
           $SAME_DRAFT
           var norm = function (s) { return s.replace(/\s+/g, ' ').trim(); };
-          var title = document.querySelector('textarea');
+          var title = $TITLE_LOOKUP;
           var body = $BODY_LOOKUP;
           var text = body ? norm(body.textContent) : '';
           var blocks = body ? body.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li').length : 0;

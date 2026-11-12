@@ -23,6 +23,8 @@ class El {
     Object.assign(this, props);
   }
   focus() {}
+  getAttribute(n) { return (this.attrs || {})[n] ?? null; }
+  getBoundingClientRect() { return this.rect || { width: 100, height: 20 }; }
   addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
   dispatchEvent(e) { (this.listeners[e.type] || []).forEach((f) => f(e)); return !e.defaultPrevented; }
   click() { this.clicks = (this.clicks || 0) + 1; }
@@ -50,7 +52,7 @@ function page(options = {}) {
     resources = [], items = [], outside = [], bodyChildren = [], fetchImpl,
     hitAt = null, active = null, pageFocused = false, execResult = true, clipboard = null,
     fileInputs = [], imgEls = null, dialogs = [], controls = [], menuItems = [], diagEls = [], iframes = [], shadowHosts = [],
-    labelledIcons = [], visibleEls = [],
+    labelledIcons = [], visibleEls = [], extraTextareas = [],
   } = options;
   const textarea = new El('textarea');
   let value = '';
@@ -87,6 +89,7 @@ function page(options = {}) {
       throw new Error('selector ' + sel);
     },
     querySelectorAll(sel) {
+      if (sel === 'textarea') return withTextarea ? [...extraTextareas, textarea] : [];
       if (sel === 'button') return buttons;
       if (sel === 'input[type=file]') return fileInputs;
       if (sel === '[role=dialog]') return dialogs;
@@ -158,7 +161,7 @@ const noRead = () => Promise.reject(new Error('blocked'));
 
 const tests = {
   'every script parses': () => {
-    assert.strictEqual(Object.keys(scripts).length, 29);
+    assert.strictEqual(Object.keys(scripts).length, 30);
     for (const [name, src] of Object.entries(scripts)) new vm.Script(`(${src})({})`, { filename: name });
   },
 
@@ -713,6 +716,36 @@ const tests = {
     p.sandbox.document.activeElement = null;
     p.textarea.value = 'x';
     assert.strictEqual(run('CLEAR_TITLE', p.sandbox, same).ok, false);
+  },
+
+  'the title is the shown textarea labelled as the title, not the first one': () => {
+    const hidden = new El('textarea', { attrs: { placeholder: 'Search' }, rect: { width: 0, height: 0 }, value: '' });
+    const subtitle = new El('textarea', { attrs: { placeholder: 'Add a subtitle…' }, value: '' });
+    const p = page({ extraTextareas: [hidden, subtitle] });
+    p.textarea.attrs = { placeholder: 'Title' };
+    assert.strictEqual(run('SET_TITLE', p.sandbox, { ...same, title: 'T' }).ok, true);
+    assert.strictEqual(p.textarea.value, 'T');
+    assert.strictEqual(subtitle.value, '');
+    assert.strictEqual(hidden.value, '');
+  },
+
+  'with no label the first shown textarea is the title': () => {
+    const hidden = new El('textarea', { rect: { width: 0, height: 0 }, value: '' });
+    const p = page({ extraTextareas: [hidden] });
+    assert.strictEqual(run('SET_TITLE', p.sandbox, { ...same, title: 'T' }).ok, true);
+    assert.strictEqual(p.textarea.value, 'T');
+    assert.strictEqual(hidden.value, '');
+  },
+
+  'the title diagnostic gives labels and lengths, never text': () => {
+    const sub = new El('textarea', { attrs: { placeholder: 'Add a subtitle…' }, value: 'secret words' });
+    const p = page({ extraTextareas: [sub] });
+    p.textarea.attrs = { placeholder: 'Title' };
+    p.textarea.value = 'Hidden title';
+    const out = run('TITLE_DIAG', p.sandbox, {});
+    assert.deepStrictEqual(out.fields.map((x) => [x.placeholder, x.shown, x.chars, x.chosen]),
+      [['Add a subtitle…', true, 12, false], ['Title', true, 12, true]]);
+    assert.ok(!JSON.stringify(out).includes('secret') && !JSON.stringify(out).includes('Hidden'));
   },
 
   'the title check reads the field only': () => {
