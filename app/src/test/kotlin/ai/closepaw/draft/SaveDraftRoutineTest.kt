@@ -95,6 +95,17 @@ class SaveDraftRoutineTest {
         var mergeOnBackspace = false
         var mergeAtEnd = true
         var mergedCaret = false
+        var titleFocused = false
+        var bodyFocused = false
+        var focusBodyWorks = true
+        var pasteGoesToTitle = 0
+        var titleClobbered = false
+        var insertKeepsStructure = false
+        var deletes = 0
+        var coverInputOk = true
+        var cropDialogNeeded = false
+        var cropDialog = false
+        var coverCount = 0
         var focusTargetOk = true
         val fronted = mutableListOf<String>()
         val clicks = mutableListOf<Pair<Double, Double>>()
@@ -115,6 +126,12 @@ class SaveDraftRoutineTest {
         override suspend fun click(tabId: String, x: Double, y: Double) {
             scripts += null
             clicks += x to y
+            if (cropDialog) {
+                cropDialog = false
+                coverCount++
+            } else {
+                titleFocused = false
+            }
         }
 
         override fun runTab(tabId: String) {
@@ -128,6 +145,11 @@ class SaveDraftRoutineTest {
         }
 
         override suspend fun pressKey(tabId: String, key: DraftKey) {
+            if (key == DraftKey.DELETE) {
+                deletes++
+                caretEmpty = false
+                return
+            }
             if (key == DraftKey.ENTER) {
                 enters++
                 if (mergedCaret) {
@@ -159,6 +181,11 @@ class SaveDraftRoutineTest {
             pasteKeys++
             onWrite()
             if (!clip) return
+            if (pasteGoesToTitle > 0) {
+                pasteGoesToTitle--
+                titleClobbered = true
+                return
+            }
             when {
                 pasteRefusals > 0 -> {
                     // note's "uploading" alert, answered by the browser; the body stays empty.
@@ -245,7 +272,32 @@ class SaveDraftRoutineTest {
                 }
                 DraftScript.SET_TITLE -> {
                     onWrite()
+                    titleClobbered = false
                     buildJsonObject { put("ok", true) }
+                }
+                DraftScript.FOCUS_BODY -> buildJsonObject {
+                    if (focusBodyWorks) {
+                        bodyFocused = true
+                        titleFocused = false
+                    }
+                    put("ok", focusBodyWorks)
+                }
+                DraftScript.COVER_FILE -> buildJsonObject {
+                    put("ok", coverInputOk)
+                    put("total", 2)
+                    put("candidates", if (coverInputOk) 1 else 0)
+                    if (coverInputOk) {
+                        if (cropDialogNeeded) cropDialog = true else coverCount++
+                    }
+                }
+                DraftScript.COVER_STATE -> buildJsonObject {
+                    put("count", coverCount)
+                    put("dialog", cropDialog)
+                    put("pressable", cropDialog)
+                    if (cropDialog) {
+                        put("x", 140.0)
+                        put("y", 220.0)
+                    }
                 }
                 DraftScript.CLIPBOARD_WRITE -> buildJsonObject {
                     if (pageClipboardWorks) clip = true
@@ -268,6 +320,7 @@ class SaveDraftRoutineTest {
                     put("caretEmpty", caretEmpty)
                     put("caretAtEnd", if (mergedCaret) mergeAtEnd else true)
                     put("prevPlain", true)
+                    put("afterPlain", true)
                 }
                 DraftScript.PASTE_IMAGE_HERE -> {
                     if (imageHereWorks && caretEmpty) {
@@ -282,6 +335,7 @@ class SaveDraftRoutineTest {
                     put("p", if (!bodyFilled) 0 else if (flattenedBody) 1 else 3)
                     put("h", if (bodyFilled && !flattenedBody) 1 else 0)
                     put("li", 0)
+                    if (args.containsKey("title")) put("titleSame", !titleClobbered)
                 }
                 DraftScript.INSERT_HTML -> {
                     onWrite()
@@ -293,7 +347,7 @@ class SaveDraftRoutineTest {
                     } else {
                         if (insertWorks) {
                             bodyFilled = true
-                            flattenedBody = true
+                            flattenedBody = !insertKeepsStructure
                         }
                         buildJsonObject {
                             put("ok", true)
@@ -314,8 +368,18 @@ class SaveDraftRoutineTest {
                 }
                 DraftScript.FOCUS_PROBE -> buildJsonObject {
                     put("href", currentUrl)
-                    put("focused", clicks.isNotEmpty())
+                    val inBody = (clicks.isNotEmpty() || bodyFocused) && !titleFocused
+                    put("focused", inBody)
                     put("pageFocused", false)
+                    put(
+                        "where",
+                        when {
+                            caretInFigure -> "figure"
+                            titleFocused -> "title"
+                            inBody -> "body"
+                            else -> "none"
+                        },
+                    )
                     put("inFigure", caretInFigure)
                     put("caretEmptyP", caretInEmptyP || caretEmpty)
                 }
@@ -352,7 +416,7 @@ class SaveDraftRoutineTest {
                     buildJsonObject { put("ok", true) }
                 }
                 DraftScript.READ_BACK -> buildJsonObject {
-                    put("titleOk", readBackOk)
+                    put("titleOk", readBackOk && !titleClobbered)
                     val markersLeft = anchorsInEditor.values.sum() > 0
                     put("bodyOk", readBackOk && bodyFilled && !flattenedBody && !markersLeft)
                     put("markersLeft", markersLeft)
@@ -916,7 +980,7 @@ class SaveDraftRoutineTest {
     @Test
     fun `a body that only the insert command takes is reported flattened, never saved`() = runTest {
         val browser = noteBrowser().apply { pasteKeyIgnored = true }
-        val result = routine(browser, note).run()
+        val result = routine(browser, note, html = threeBlocks).run()
 
         assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
         assertThat(result.reason).isEqualTo("body-flattened")
@@ -1001,6 +1065,123 @@ class SaveDraftRoutineTest {
         }
     }
 
+    // ── The body, and only the body ──
+
+    @Test
+    fun `an empty body that cannot be clicked gets the caret by focus and a range`() = runTest {
+        val browser = noteBrowser().apply {
+            titleFocused = true
+            focusTargetOk = false
+        }
+        val result = routine(browser, note, html = threeBlocks).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(info).contains("caret where=title -> body focusBody=true focused=true")
+        assertThat(browser.scripts.indexOf(DraftScript.FOCUS_BODY))
+            .isLessThan(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
+    }
+
+    @Test
+    fun `a caret that cannot reach the body writes nothing`() = runTest {
+        val browser = noteBrowser().apply {
+            titleFocused = true
+            focusTargetOk = false
+            focusBodyWorks = false
+        }
+        val result = routine(browser, note, html = threeBlocks).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
+        assertThat(result.reason).isEqualTo("focus-not-body")
+        assertThat(browser.pasteKeys).isEqualTo(0)
+        assertThat(browser.scripts).doesNotContain(DraftScript.CLIPBOARD_WRITE)
+        assertThat(browser.scripts).doesNotContain(DraftScript.INSERT_HTML)
+        assertThat(info).contains("body method=paste refused=focus-not-body")
+    }
+
+    @Test
+    fun `a paste that lands in the title is undone and reported`() = runTest {
+        val browser = noteBrowser().apply { pasteGoesToTitle = 1 }
+        val result = routine(browser, note, html = threeBlocks).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
+        assertThat(result.reason).isEqualTo("title-overwritten")
+        assertThat(result.titleOk).isTrue()
+        assertThat(browser.titleClobbered).isFalse()
+        assertThat(browser.scripts.count { it == DraftScript.SET_TITLE }).isEqualTo(2)
+        assertThat(info).contains("title overwritten by method=paste; restored=true")
+    }
+
+    @Test
+    fun `an insert that keeps the structure in the body is a good body`() = runTest {
+        val browser = noteBrowser().apply {
+            pasteKeyIgnored = true
+            insertKeepsStructure = true
+        }
+        val result = routine(browser, note, html = threeBlocks).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.bodyOk).isTrue()
+        assertThat(browser.scripts.count { it == DraftScript.INSERT_HTML }).isEqualTo(1)
+    }
+
+    // ── note's cover image ──
+
+    private val coverHtml = "<p>{{closepaw-cover-1}}</p><h2>Head</h2><p>Body text here</p>"
+
+    @Test
+    fun `the cover marker makes the first image note's cover, after the body`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            cropDialogNeeded = true
+        }
+        val result = routine(browser, note, listOf(image), html = coverHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.cover).isEqualTo("placed")
+        assertThat(result.imagesPlaced).isEqualTo(1)
+        assertThat(result.toSummary()).contains("\"cover\":\"placed\"")
+        assertThat(browser.anchorsInEditor[COVER_MARKER]).isEqualTo(0)
+        assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE)
+        assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE_HERE)
+        assertThat(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
+            .isLessThan(browser.scripts.indexOf(DraftScript.COVER_FILE))
+        assertThat(info).contains("cover: crop dialog pressed")
+        assertThat(info).contains("cover: placed")
+    }
+
+    @Test
+    fun `a cover that will not upload leaves the draft without one, and no marker`() = runTest {
+        val browser = noteBrowser().apply {
+            anchorsInEditor[COVER_MARKER] = 1
+            coverInputOk = false
+        }
+        val result = routine(browser, note, listOf(image), html = coverHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.cover).isEqualTo("failed")
+        assertThat(result.imagesPlaced).isEqualTo(0)
+        assertThat(browser.anchorsInEditor[COVER_MARKER]).isEqualTo(0)
+        assertThat(browser.scripts).doesNotContain(DraftScript.PASTE_IMAGE_HERE)
+    }
+
+    @Test
+    fun `elsewhere the cover marker anchors the first image`() = runTest {
+        val browser = substackBrowser().apply { anchorsInEditor[COVER_MARKER] = 1 }
+        val result = routine(browser, substack, listOf(image), html = coverHtml).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(result.cover).isEqualTo("absent")
+        assertThat(result.anchors).containsExactly("1:placed")
+        assertThat(browser.scripts).doesNotContain(DraftScript.COVER_FILE)
+    }
+
+    @Test
+    fun `the cover marker is found only as its own paragraph`() {
+        assertThat(draftHasCoverMarker(coverHtml)).isTrue()
+        assertThat(draftHasCoverMarker("<p>see {{closepaw-cover-1}}</p>")).isFalse()
+        assertThat(draftHasCoverMarker("<p>Body</p>")).isFalse()
+    }
+
     // ── The caret after leading images ──
 
     private val threeBlocks = "<h2>Head</h2><p>Body text here</p><p>More</p>"
@@ -1050,7 +1231,7 @@ class SaveDraftRoutineTest {
         assertThat(browser.pasteKeys).isEqualTo(0)
         assertThat(browser.scripts).doesNotContain(DraftScript.CLIPBOARD_WRITE)
         assertThat(browser.scripts).doesNotContain(DraftScript.INSERT_HTML)
-        assertThat(info).contains("body method=paste refused=focus-in-figure caret=figure")
+        assertThat(info).contains("body method=paste refused=focus-in-figure")
         assertThat(result.toSummary()).contains(noteEditor)
     }
 
@@ -1291,7 +1472,7 @@ class SaveDraftRoutineTest {
             pageClipboardWorks = false
             androidClipboardWorks = false
         }
-        val result = routine(browser, note).run()
+        val result = routine(browser, note, html = threeBlocks).run()
 
         assertThat(browser.pasteKeys).isEqualTo(0)
         assertThat(info).contains("body method=paste clip=none pageWhy=NotAllowedError")

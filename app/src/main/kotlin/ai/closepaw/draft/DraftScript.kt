@@ -24,7 +24,7 @@ internal const val NOTE_SAVE_LABEL = "下書き保存"
 private const val NOTE_SAVED_WORDS = "保存しました"
 
 /** Start of the text of an in-body image anchor paragraph, e.g. `{{closepaw-image-2}}`. */
-private const val ANCHOR_PREFIX = "{{closepaw-image-"
+private const val ANCHOR_PREFIX = "{{closepaw-"
 
 /** note's words while an image is still on its way to the server. */
 private const val UPLOADING_WORDS = "アップロード中"
@@ -116,19 +116,27 @@ enum class DraftScript(val source: String) {
         """,
     ),
 
-    /** The body's length and its blocks, as numbers only: did the structure survive? */
+    /**
+     * The body's length and its blocks, as numbers only: did the structure survive? With
+     * `a.title`, also whether the title field still holds exactly that title.
+     */
     BODY_SHAPE(
         """
         function (a) {
           var body = $BODY_LOOKUP;
           if (!body) return { found: false };
-          return {
+          var shape = {
             found: true,
             chars: body.textContent.length,
             p: body.querySelectorAll('p').length,
             h: body.querySelectorAll('h1, h2, h3, h4, h5, h6').length,
             li: body.querySelectorAll('li').length,
           };
+          if (typeof a.title === 'string') {
+            var title = document.querySelector('textarea');
+            shape.titleSame = !!title && title.value === a.title;
+          }
+          return shape;
         }
         """,
     ),
@@ -188,8 +196,9 @@ enum class DraftScript(val source: String) {
     ),
 
     /**
-     * Is the focus inside the body, does the page have focus at all, is the caret inside an
-     * image's figure or caption, and is it in an empty paragraph of its own?
+     * Is the focus inside the body, does the page have focus at all, which field holds the caret
+     * (`body`, `figure`, `title` or `none`), is it inside an image's figure or caption, and is it
+     * in an empty paragraph of its own?
      */
     FOCUS_PROBE(
         """
@@ -200,14 +209,116 @@ enum class DraftScript(val source: String) {
           var el = node && node.nodeType === 1 ? node : node && node.parentElement;
           var inBody = !!body && !!el && body.contains(el);
           var block = inBody ? el.closest('p, h1, h2, h3, h4, h5, h6, li, figcaption') : null;
+          var where = 'none';
+          if (inBody) where = el.closest('figure, figcaption') ? 'figure' : 'body';
+          else if (active && active.tagName === 'TEXTAREA') where = 'title';
           return {
             href: location.href,
             focused: !!body && !!active && body.contains(active),
             pageFocused: document.hasFocus(),
+            where: where,
             inFigure: inBody && !!el.closest('figure, figcaption'),
             caretEmptyP: !!block && block.tagName === 'P' && block.textContent.trim() === '' &&
               !block.querySelector('img') && !block.closest('figure'),
           };
+        }
+        """,
+    ),
+
+    /**
+     * Gives the body the focus and the caret without a pointer, for an empty body that cannot be
+     * clicked: focus on the body element, the caret at the start of its first block.
+     */
+    FOCUS_BODY(
+        """
+        function (a) {
+          $SAME_DRAFT
+          var body = $BODY_LOOKUP;
+          if (!body) return { ok: false };
+          body.focus();
+          var first = body.firstElementChild;
+          var range = document.createRange();
+          if (first && first.tagName !== 'FIGURE' && !first.querySelector('img')) range.selectNodeContents(first);
+          else range.selectNodeContents(body);
+          range.collapse(true);
+          var selection = getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return { ok: true };
+        }
+        """,
+    ),
+
+    /**
+     * note only: hands the cover image to the editor's own cover file input, the one file input
+     * that sits before the title and outside the body. The bytes come from memory, so no file
+     * chooser opens.
+     */
+    COVER_FILE(
+        """
+        function (a) {
+          $SAME_DRAFT
+          var title = document.querySelector('textarea');
+          if (!title) return { ok: false, why: 'no-title' };
+          var body = $BODY_LOOKUP;
+          var inputs = document.querySelectorAll('input[type=file]');
+          var cover = [];
+          for (var i = 0; i < inputs.length; i++) {
+            var beforeTitle = (inputs[i].compareDocumentPosition(title) & 4) !== 0;
+            if (beforeTitle && !(body && body.contains(inputs[i]))) cover.push(inputs[i]);
+          }
+          if (cover.length !== 1) return { ok: false, why: 'inputs', total: inputs.length, candidates: cover.length };
+          $IMAGE_FILE
+          cover[0].files = data.files;
+          cover[0].dispatchEvent(new Event('change', { bubbles: true }));
+          return { ok: true, total: inputs.length, candidates: 1 };
+        }
+        """,
+    ),
+
+    /**
+     * note only: stored images before the title and outside the body and any dialog (the cover),
+     * and whether an image dialog (one holding a canvas or image, as a crop step does) is open
+     * with exactly one enabled button labelled one of `a.labels`, and the point to press it, if
+     * the page shows that button there.
+     */
+    COVER_STATE(
+        """
+        function (a) {
+          var title = document.querySelector('textarea');
+          var body = $BODY_LOOKUP;
+          var count = 0;
+          if (title) {
+            var images = document.querySelectorAll('img');
+            for (var i = 0; i < images.length; i++) {
+              var im = images[i];
+              var src = String(im.currentSrc || im.src || '');
+              var beforeTitle = (im.compareDocumentPosition(title) & 4) !== 0;
+              if (src.indexOf('https://') === 0 && beforeTitle && !(body && body.contains(im)) && !im.closest('[role=dialog]')) count++;
+            }
+          }
+          var dialog = null;
+          var dialogs = document.querySelectorAll('[role=dialog]');
+          for (var j = 0; j < dialogs.length; j++) {
+            if (dialogs[j].querySelector('canvas, img')) dialog = dialogs[j];
+          }
+          var result = { count: count, dialog: !!dialog, pressable: false };
+          if (!dialog) return result;
+          var buttons = dialog.querySelectorAll('button');
+          var matches = [];
+          for (var k = 0; k < buttons.length; k++) {
+            if (a.labels.indexOf(buttons[k].textContent.trim()) >= 0) matches.push(buttons[k]);
+          }
+          if (matches.length !== 1 || matches[0].disabled) return result;
+          var rect = matches[0].getBoundingClientRect();
+          var x = rect.left + rect.width / 2;
+          var y = rect.top + rect.height / 2;
+          var hit = document.elementFromPoint(x, y);
+          if (!hit || !matches[0].contains(hit)) return result;
+          result.pressable = true;
+          result.x = x;
+          result.y = y;
+          return result;
         }
         """,
     ),
@@ -353,13 +464,13 @@ enum class DraftScript(val source: String) {
     /**
      * After a Backspace: how many marker paragraphs are left, is the caret in an empty block (no
      * text, no image), is it at the end of its block (the emptied paragraph may have been merged
-     * into the one before), and is the previous block a plain paragraph or heading?
+     * into the one before), and are the blocks before and after plain text blocks?
      */
     ANCHOR_CHECK(
         """
         function (a) {
           var body = $BODY_LOOKUP;
-          if (!body) return { href: location.href, count: 0, caretEmpty: false, caretAtEnd: false, prevPlain: false };
+          if (!body) return { href: location.href, count: 0, caretEmpty: false, caretAtEnd: false, prevPlain: false, afterPlain: false };
           var count = 0;
           var blocks = body.querySelectorAll('p');
           for (var i = 0; i < blocks.length; i++) {
@@ -370,6 +481,11 @@ enum class DraftScript(val source: String) {
           var block = el && body.contains(el) ? el.closest('p, h1, h2, h3, h4, h5, h6, li') : null;
           var caretEmpty = !!block && block.textContent.trim() === '' && !block.querySelector('img');
           var prev = block ? block.previousElementSibling : null;
+          var after = null;
+          var siblings = block && block.parentNode ? block.parentNode.children : [];
+          for (var n = 0; n < siblings.length - 1; n++) {
+            if (siblings[n] === block) after = siblings[n + 1];
+          }
           var atEnd = false;
           var selection = getSelection();
           if (block && selection.rangeCount > 0) {
@@ -385,6 +501,7 @@ enum class DraftScript(val source: String) {
             caretEmpty: caretEmpty,
             caretAtEnd: atEnd,
             prevPlain: !!prev && /^(P|H[1-6])$/.test(prev.tagName),
+            afterPlain: !!after && /^(P|H[1-6]|UL|OL|BLOCKQUOTE)$/.test(after.tagName),
           };
         }
         """,

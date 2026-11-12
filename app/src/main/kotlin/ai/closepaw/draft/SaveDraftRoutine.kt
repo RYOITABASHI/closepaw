@@ -26,6 +26,7 @@ data class DraftTab(val id: String, val url: String)
 enum class DraftKey(val key: String, val keyCode: Int) {
     BACKSPACE("Backspace", 8),
     ENTER("Enter", 13),
+    DELETE("Delete", 46),
 }
 
 /** What the routine may do to Chrome. Scripts are a closed enum; URLs come from [DraftSite]. */
@@ -113,6 +114,8 @@ data class SaveDraftResult(
     val tabClosed: Boolean,
     /** One entry per in-body anchor: `"<n>:placed"`, `"<n>:missing"` or `"<n>:failed"`. */
     val anchors: List<String> = emptyList(),
+    /** note's cover image: `placed`, `failed`, or `absent` when the request asked for none. */
+    val cover: String = COVER_ABSENT,
 ) {
     /** The callback summary. Holds no article text. */
     fun toSummary(): String = buildJsonObject {
@@ -131,6 +134,7 @@ data class SaveDraftResult(
         put("images_placed", imagesPlaced)
         put("tab_closed", tabClosed)
         put("anchors", buildJsonArray { anchors.forEach { add(JsonPrimitive(it)) } })
+        put("cover", cover)
     }.toString()
 }
 
@@ -189,7 +193,12 @@ class SaveDraftRoutine(
     /** Outcomes of in-body image anchors, in image order. */
     private val anchors = java.util.Collections.synchronizedList(mutableListOf<String>())
 
-    /** True when the body only went in through the last resort, which loses its structure. */
+    @Volatile private var cover = COVER_ABSENT
+
+    /** True when a body write ended up in the title field (which is then put back). */
+    @Volatile private var titleOverwritten = false
+
+    /** True when the body arrived without its structure (measured on the body). */
     @Volatile private var flattened = false
 
     /** The step in progress, for the reason and the log when something throws. */
@@ -235,6 +244,7 @@ class SaveDraftRoutine(
         imagesPlaced = imagesPlaced,
         tabClosed = tabClosed,
         anchors = anchors.toList(),
+        cover = cover,
     )
 
     private suspend fun steps(): SaveDraftResult {
@@ -284,9 +294,13 @@ class SaveDraftRoutine(
         // image whose anchor paragraph is in the body (the header's included) waits for the body
         // and goes to its anchor instead.
         step = STEP_IMAGE
-        val anchored = draftAnchoredImages(request.html, request.images.size)
+        val coverMarker = draftHasCoverMarker(request.html)
+        val asCover = coverMarker && site.platform == DraftPlatform.NOTE && request.images.isNotEmpty()
+        val anchored = draftAnchoredImages(request.html, request.images.size).toMutableSet()
+        if (coverMarker && !asCover && request.images.isNotEmpty()) anchored += 0
+        if (asCover) anchored -= 0
         request.images.forEachIndexed { index, image ->
-            if (index !in anchored) placeImage(tab, editorUrl, image)
+            if (index !in anchored && !(asCover && index == 0)) placeImage(tab, editorUrl, image)
         }
         // A paste while an image is still uploading gets note's "uploading" alert and no body.
         if (request.images.isNotEmpty()) {
@@ -300,8 +314,16 @@ class SaveDraftRoutine(
 
         if (anchored.isNotEmpty()) {
             step = STEP_ANCHOR
-            anchored.sorted().forEach { index -> placeAnchored(tab, editorUrl, index, request.images[index]) }
+            anchored.sorted().forEach { index ->
+                val marker = if (index == 0 && coverMarker && !asCover) COVER_MARKER else draftAnchorMarker(index + 1)
+                placeAnchored(tab, editorUrl, index, request.images[index], marker)
+            }
             logInfo("anchors ${anchors.joinToString(",")} images placed=$imagesPlaced/${request.images.size}")
+        }
+        if (coverMarker && (asCover || request.images.isEmpty())) {
+            step = STEP_COVER
+            removeMarker(tab, editorUrl, COVER_MARKER)
+            if (asCover) placeCover(tab, editorUrl, request.images[0])
         }
 
         val confirmation = saveAndConfirm(tab, editorUrl)
@@ -416,12 +438,12 @@ class SaveDraftRoutine(
         val dialogsBefore = browser.dialogsAnswered()
         try {
             val first = trustedPaste(tab, editorUrl, "paste", dialogsBefore, afterImages)
-            if (first == Attempt.REFUSED) return FOCUS_IN_FIGURE
+            if (first == Attempt.REFUSED) return refusal
             if (first == Attempt.SENT && bodyFilledSoon(tab, editorUrl)) return checkStructure(tab)
             waitForUploads(tab)
             if (!bodyEmpty(tab, editorUrl)) return checkStructure(tab)
             val again = trustedPaste(tab, editorUrl, "paste-again", dialogsBefore, afterImages)
-            if (again == Attempt.REFUSED) return FOCUS_IN_FIGURE
+            if (again == Attempt.REFUSED) return refusal
             if (again == Attempt.SENT && bodyFilledSoon(tab, editorUrl)) return checkStructure(tab)
             if (!bodyEmpty(tab, editorUrl)) return checkStructure(tab)
         } finally {
@@ -430,21 +452,26 @@ class SaveDraftRoutine(
 
         focusEditor(tab, editorUrl)
         if (afterImages) placeCaretAfterImages(tab, editorUrl)
-        if (caretRefusal(tab, afterImages) != null) {
-            logInfo("body method=insert refused=$FOCUS_IN_FIGURE")
-            return FOCUS_IN_FIGURE
+        caretRefusal(tab, editorUrl, afterImages)?.let { reason ->
+            logInfo("body method=insert refused=$reason")
+            return reason
         }
         val inserted = write(tab, editorUrl, DraftScript.INSERT_HTML) { put("html", request.html) }
-        // Flattened only if the insert really put text in.
-        flattened = inserted.flag("ok") && !bodyEmpty(tab, editorUrl)
         logInfo(
             "body method=insert ok=${inserted.flag("ok")} accepted=${inserted.flag("accepted")} " +
                 shapeLog(tab) + " dialogs=${browser.dialogsAnswered() - dialogsBefore}",
         )
+        checkTitle(tab, editorUrl, "insert")
+        // Judged by what the body holds, not by the method: an insert that kept the structure
+        // in the body is a good body.
+        if (inserted.flag("ok") && !bodyEmpty(tab, editorUrl)) checkStructure(tab)
         return if (inserted.flag("ok") || inserted.flag("notEmpty")) null else "body-not-pasted"
     }
 
     private enum class Attempt { SENT, NO_CLIPBOARD, REFUSED }
+
+    /** Why the last attempt was refused before anything was written. */
+    private var refusal: String = FOCUS_NOT_BODY
 
     /**
      * Focus, the caret checked (and, after leading images, moved into an empty paragraph after
@@ -460,8 +487,9 @@ class SaveDraftRoutine(
     ): Attempt {
         focusEditor(tab, editorUrl)
         if (afterImages) placeCaretAfterImages(tab, editorUrl)
-        caretRefusal(tab, afterImages)?.let { where ->
-            logInfo("body method=$method refused=$FOCUS_IN_FIGURE caret=$where")
+        caretRefusal(tab, editorUrl, afterImages)?.let { reason ->
+            refusal = reason
+            logInfo("body method=$method refused=$reason")
             return Attempt.REFUSED
         }
         stopIfOwnerHasChrome()
@@ -487,6 +515,7 @@ class SaveDraftRoutine(
             "body method=$method clip=$clip$pageWhy " + shapeLog(tab) +
                 " dialogs=${browser.dialogsAnswered() - dialogsBefore}",
         )
+        checkTitle(tab, editorUrl, method)
         return Attempt.SENT
     }
 
@@ -521,13 +550,39 @@ class SaveDraftRoutine(
      * Null when the caret may take the body; otherwise where it is. Never in a figure or caption,
      * and after leading images only in an empty paragraph of its own.
      */
-    private suspend fun caretRefusal(tab: DraftTab, afterImages: Boolean): String? {
-        val probe = browser.evaluate(tab.id, DraftScript.FOCUS_PROBE, NO_ARGS)
+    private suspend fun caretRefusal(tab: DraftTab, editorUrl: String, afterImages: Boolean): String? {
+        var probe = browser.evaluate(tab.id, DraftScript.FOCUS_PROBE, NO_ARGS)
+        val first = probe.str("where") ?: "none"
+        if (first != "body" && first != "figure" || !probe.flag("focused")) {
+            // An empty body may offer nothing to click (build 41: the pastes went to the title).
+            val focused = write(tab, editorUrl, DraftScript.FOCUS_BODY) {}
+            probe = browser.evaluate(tab.id, DraftScript.FOCUS_PROBE, NO_ARGS)
+            logInfo("caret where=$first -> ${probe.str("where")} focusBody=${focused.flag("ok")} focused=${probe.flag("focused")}")
+        }
         return when {
-            probe.flag("inFigure") -> "figure"
-            afterImages && !probe.flag("caretEmptyP") -> "not-empty-p"
+            probe.flag("inFigure") || probe.str("where") == "figure" -> FOCUS_IN_FIGURE
+            probe.str("where") != "body" || !probe.flag("focused") -> FOCUS_NOT_BODY
+            afterImages && !probe.flag("caretEmptyP") -> FOCUS_IN_FIGURE
             else -> null
         }
+    }
+
+    /**
+     * After a body write, the title field must still hold the requested title. A write that went
+     * into it is the run's own, so the title is set back; the run then reports `title-overwritten`.
+     */
+    private suspend fun checkTitle(tab: DraftTab, editorUrl: String, method: String) {
+        val shape = try {
+            browser.evaluate(tab.id, DraftScript.BODY_SHAPE, buildJsonObject { put("title", request.title) })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return
+        }
+        if (shape["titleSame"]?.jsonPrimitive?.booleanOrNull != false) return
+        titleOverwritten = true
+        val restored = write(tab, editorUrl, DraftScript.SET_TITLE) { put("title", request.title) }.flag("ok")
+        logInfo("title overwritten by method=$method; restored=$restored")
     }
 
     /**
@@ -582,9 +637,8 @@ class SaveDraftRoutine(
      * anchor, or the text does not go, or the upload does not land, the anchor text is removed
      * and the image is left out: no anchor text may stay in a saved draft.
      */
-    private suspend fun placeAnchored(tab: DraftTab, editorUrl: String, index: Int, image: DraftImage) {
+    private suspend fun placeAnchored(tab: DraftTab, editorUrl: String, index: Int, image: DraftImage, marker: String) {
         val number = index + 1
-        val marker = draftAnchorMarker(number)
         val selected = write(tab, editorUrl, DraftScript.ANCHOR_SELECT) { put("marker", marker) }
         logInfo("anchor $number: found=${selected.anchorCount()}")
         if (!selected.flag("ok")) {
@@ -661,10 +715,57 @@ class SaveDraftRoutine(
      */
     private suspend fun dropEmptyParagraph(tab: DraftTab, editorUrl: String, marker: String) {
         val check = anchorCheck(tab, editorUrl, marker)
-        if (check.flag("caretEmpty") && check.flag("prevPlain")) {
-            stopIfOwnerHasChrome()
-            browser.pressKey(tab.id, DraftKey.BACKSPACE)
+        if (!check.flag("caretEmpty")) return
+        val key = when {
+            check.flag("prevPlain") -> DraftKey.BACKSPACE
+            // The first paragraph (a cover marker leads the body): join the block after into it.
+            check.flag("afterPlain") -> DraftKey.DELETE
+            else -> return
         }
+        stopIfOwnerHasChrome()
+        browser.pressKey(tab.id, key)
+    }
+
+    /**
+     * note's cover image (見出し画像): the file goes to the editor's own cover input, any crop
+     * dialog is pressed through with its default crop, and the cover counts once a stored image
+     * shows above the title. A failure leaves the draft without a cover; the image never goes
+     * into the body.
+     */
+    private suspend fun placeCover(tab: DraftTab, editorUrl: String, image: DraftImage) {
+        val labels = buildJsonObject { put("labels", buildJsonArray { COVER_CROP_LABELS.forEach { add(JsonPrimitive(it)) } }) }
+        val before = browser.evaluate(tab.id, DraftScript.COVER_STATE, labels)["count"]?.jsonPrimitive?.intOrNull ?: 0
+        val handed = write(tab, editorUrl, DraftScript.COVER_FILE) {
+            put("name", image.name)
+            put("mime", image.mime)
+            put("base64", image.base64)
+        }
+        logInfo(
+            "cover: input ok=${handed.flag("ok")} inputs=${handed["total"]?.jsonPrimitive?.intOrNull ?: -1} " +
+                "candidates=${handed["candidates"]?.jsonPrimitive?.intOrNull ?: -1}",
+        )
+        if (!handed.flag("ok")) {
+            cover = COVER_FAILED
+            return
+        }
+        var pressed = false
+        val placed = pollUntil(timing.imageWaitMs) {
+            val state = browser.evaluate(tab.id, DraftScript.COVER_STATE, labels)
+            val count = state["count"]?.jsonPrimitive?.intOrNull ?: 0
+            if (count > before && !state.flag("dialog")) return@pollUntil true
+            val x = state["x"]?.jsonPrimitive?.doubleOrNull
+            val y = state["y"]?.jsonPrimitive?.doubleOrNull
+            if (!pressed && state.flag("pressable") && x != null && y != null) {
+                stopIfOwnerHasChrome()
+                browser.click(tab.id, x, y)
+                pressed = true
+                logInfo("cover: crop dialog pressed")
+            }
+            null
+        } == true
+        cover = if (placed) COVER_PLACED else COVER_FAILED
+        if (placed) imagesPlaced++
+        logInfo("cover: $cover")
     }
 
     private suspend fun anchorCheck(tab: DraftTab, editorUrl: String, marker: String): JsonObject {
@@ -753,6 +854,10 @@ class SaveDraftRoutine(
                 saveEvidence = answer.str("evidence")
             }
             true.takeIf { titleOk && bodyOk && saved }
+        }
+        if (titleOverwritten) {
+            // The title was put back, but a write went where it should not: say so.
+            return result(DraftOutcome.UNCERTAIN, TITLE_OVERWRITTEN)
         }
         if (flattened) {
             // The text may be stored, but not as the article: never report that as a success.
@@ -858,12 +963,13 @@ internal const val STEP_PASTE = "paste"
 internal const val STEP_SAVE = "save"
 internal const val STEP_READBACK = "readback"
 internal const val STEP_ANCHOR = "anchor"
+internal const val STEP_COVER = "cover"
 
-/** Start of every in-body image anchor's text. */
-internal const val ANCHOR_TEXT = "{{closepaw-image-"
+/** Start of every anchor's text (images and the cover); none may remain in a saved draft. */
+internal const val ANCHOR_TEXT = "{{closepaw-"
 
 /** The anchor text for image number [number] (1-based; the header is 1). */
-internal fun draftAnchorMarker(number: Int): String = "$ANCHOR_TEXT$number}}"
+internal fun draftAnchorMarker(number: Int): String = "{{closepaw-image-$number}}"
 
 /**
  * Indexes of images whose anchor paragraph, a `<p>` holding only `{{closepaw-image-<index+1>}}`,
@@ -906,6 +1012,25 @@ internal fun draftEvaluateParams(script: DraftScript, args: JsonObject): JsonObj
 
 /** The reason for a body that went in without its structure. */
 internal const val BODY_FLATTENED = "body-flattened"
+
+/** The reason for a run whose caret could not be put in the body, so nothing went in. */
+internal const val FOCUS_NOT_BODY = "focus-not-body"
+
+/** The reason for a run where a body write landed in the title field (then put back). */
+internal const val TITLE_OVERWRITTEN = "title-overwritten"
+
+internal const val COVER_ABSENT = "absent"
+internal const val COVER_PLACED = "placed"
+internal const val COVER_FAILED = "failed"
+
+/** Marks the body's cover paragraph: images[0] becomes note's cover image (見出し画像). */
+internal const val COVER_MARKER = "{{closepaw-cover-1}}"
+
+/** Labels of the button that accepts a crop dialog's default crop. Exact, after trimming. */
+internal val COVER_CROP_LABELS = listOf("保存", "適用", "完了", "決定", "OK")
+
+internal fun draftHasCoverMarker(html: String): Boolean =
+    Regex("<p\\b[^>]*>\\s*\\{\\{closepaw-cover-1\\}\\}\\s*</p>", RegexOption.IGNORE_CASE).containsMatchIn(html)
 
 /** The reason for a run that would only have pasted into an image's figure or caption. */
 internal const val FOCUS_IN_FIGURE = "focus-in-figure"

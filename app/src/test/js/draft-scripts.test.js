@@ -49,6 +49,7 @@ function page(options = {}) {
     href = EDITOR, buttons = [], withTextarea = true, withBody = true, fileInput = null, images = 0,
     resources = [], items = [], outside = [], bodyChildren = [], fetchImpl,
     hitAt = null, active = null, pageFocused = false, execResult = true, clipboard = null,
+    fileInputs = [], imgEls = null, dialogs = [],
   } = options;
   const textarea = new El('textarea');
   let value = '';
@@ -86,6 +87,9 @@ function page(options = {}) {
     },
     querySelectorAll(sel) {
       if (sel === 'button') return buttons;
+      if (sel === 'input[type=file]') return fileInputs;
+      if (sel === '[role=dialog]') return dialogs;
+      if (sel === 'img' && imgEls) return imgEls;
       if (sel === 'img') return (Array.isArray(images) ? images : new Array(images).fill('https://x/i.png')).map((src) => ({ src }));
       if (sel.startsWith('li,')) return items;
       throw new Error('selector ' + sel);
@@ -129,7 +133,7 @@ const run = (name, sandbox, args = {}) => {
 };
 const same = { editorUrl: EDITOR };
 const image = { ...same, name: 'a.jpg', mime: 'image/jpeg', base64: Buffer.from([255, 0, 10]).toString('base64') };
-const WRITERS = ['SET_TITLE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'ANCHOR_SELECT', 'PASTE_IMAGE_HERE', 'CARET_AFTER_IMAGES', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
+const WRITERS = ['SET_TITLE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'ANCHOR_SELECT', 'PASTE_IMAGE_HERE', 'CARET_AFTER_IMAGES', 'FOCUS_BODY', 'COVER_FILE', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
 const toast = (text = '下書きを保存しました') => new El('div', { textContent: text });
 const apiEntry = (over = {}) => ({
   startTime: 6, initiatorType: 'fetch', responseStatus: 200,
@@ -143,7 +147,7 @@ const noRead = () => Promise.reject(new Error('blocked'));
 
 const tests = {
   'every script parses': () => {
-    assert.strictEqual(Object.keys(scripts).length, 19);
+    assert.strictEqual(Object.keys(scripts).length, 22);
     for (const [name, src] of Object.entries(scripts)) new vm.Script(`(${src})({})`, { filename: name });
   },
 
@@ -280,7 +284,7 @@ const tests = {
     let p = page({ bodyChildren: [prev, empty], caret: empty });
     p.body.paras = [prev, empty];
     assert.deepStrictEqual(run('ANCHOR_CHECK', p.sandbox, { marker }), {
-      href: EDITOR, count: 0, caretEmpty: true, caretAtEnd: true, prevPlain: true,
+      href: EDITOR, count: 0, caretEmpty: true, caretAtEnd: true, prevPlain: true, afterPlain: false,
     });
 
     const left = new El('p', { textContent: marker, nodeType: 1 });
@@ -289,7 +293,7 @@ const tests = {
     p = page({ bodyChildren: [left], caret: left });
     p.body.paras = [left];
     assert.deepStrictEqual(run('ANCHOR_CHECK', p.sandbox, { marker }), {
-      href: EDITOR, count: 1, caretEmpty: false, caretAtEnd: true, prevPlain: false,
+      href: EDITOR, count: 1, caretEmpty: false, caretAtEnd: true, prevPlain: false, afterPlain: false,
     });
 
     // Merged into a heading: not empty; at its end only when no text follows the caret.
@@ -434,11 +438,93 @@ const tests = {
     assert.deepStrictEqual(run('CARET_AFTER_IMAGES', p.sandbox, { ...same, mode: 'select-figure' }), { ok: false, kind: 'no-image' });
   },
 
+  'focus probe names the field that holds the caret': () => {
+    const para = new El('p', { nodeType: 1, textContent: '' });
+    para.closest = (sel) => (sel.indexOf('figure') === 0 ? null : para);
+    para.querySelector = () => null;
+    let p = page({ bodyChildren: [para], caret: para, active: para });
+    assert.strictEqual(run('FOCUS_PROBE', p.sandbox).where, 'body');
+    p = page({ caret: new El('div', { nodeType: 1 }) });
+    p.sandbox.document.activeElement = p.textarea;
+    assert.strictEqual(run('FOCUS_PROBE', p.sandbox).where, 'title');
+  },
+
+  'focus body puts the caret at the start of the first block': () => {
+    const first = new El('p');
+    first.querySelector = () => null;
+    let p = page({ bodyChildren: [first] });
+    p.body.firstElementChild = first;
+    assert.deepStrictEqual(run('FOCUS_BODY', p.sandbox, same), { ok: true });
+    assert.strictEqual(p.selection.ranges[0].contents, first);
+    assert.strictEqual(p.selection.ranges[0].collapsed, true);
+    p = page({ withBody: false });
+    assert.deepStrictEqual(run('FOCUS_BODY', p.sandbox, same), { ok: false });
+  },
+
+  'body shape can say whether the title is unchanged': () => {
+    const p = page();
+    p.textarea.value = 'T';
+    assert.strictEqual(run('BODY_SHAPE', p.sandbox, { title: 'T' }).titleSame, true);
+    p.textarea.value = 'T and the article';
+    assert.strictEqual(run('BODY_SHAPE', p.sandbox, { title: 'T' }).titleSame, false);
+    assert.strictEqual('titleSame' in run('BODY_SHAPE', p.sandbox), false);
+  },
+
+  'cover file goes to the one file input before the title, outside the body': () => {
+    const input = (beforeTitle) => {
+      const el = new El('input');
+      el.compareDocumentPosition = () => (beforeTitle ? 4 : 2);
+      return el;
+    };
+    const cover = input(true);
+    let changes = 0;
+    cover.addEventListener('change', () => changes++);
+    let p = page({ fileInputs: [cover, input(false)] });
+    assert.deepStrictEqual(run('COVER_FILE', p.sandbox, image), { ok: true, total: 2, candidates: 1 });
+    assert.strictEqual(cover.files[0].name, 'a.jpg');
+    assert.strictEqual(changes, 1);
+
+    p = page({ fileInputs: [input(true), input(true)] });
+    assert.deepStrictEqual(run('COVER_FILE', p.sandbox, image), { ok: false, why: 'inputs', total: 2, candidates: 2 });
+    p = page({ fileInputs: [input(false)] });
+    assert.strictEqual(run('COVER_FILE', p.sandbox, image).candidates, 0);
+    p = page({ withTextarea: false });
+    assert.deepStrictEqual(run('COVER_FILE', p.sandbox, image), { ok: false, why: 'no-title' });
+  },
+
+  'cover state counts stored images above the title and finds the crop button': () => {
+    const img = (src, beforeTitle, inDialog) => {
+      const el = new El('img', { src });
+      el.compareDocumentPosition = () => (beforeTitle ? 4 : 2);
+      el.closest = () => (inDialog ? {} : null);
+      return el;
+    };
+    const imgEls = [img('https://x/cover.jpg', true, false), img('https://x/body.jpg', false, false),
+      img('blob:x', true, false), img('https://x/crop.jpg', true, true)];
+    let p = page({ imgEls });
+    assert.deepStrictEqual(run('COVER_STATE', p.sandbox, { labels: ['保存'] }), { count: 1, dialog: false, pressable: false });
+
+    const button = new El('button', { textContent: ' 保存 ', disabled: false });
+    button.getBoundingClientRect = () => ({ left: 100, top: 200, width: 80, height: 40 });
+    const other = new El('button', { textContent: 'キャンセル' });
+    const dialog = new El('div');
+    dialog.querySelector = () => new El('canvas');
+    dialog.querySelectorAll = () => [other, button];
+    p = page({ imgEls: [], dialogs: [dialog], hitAt: () => button });
+    assert.deepStrictEqual(run('COVER_STATE', p.sandbox, { labels: ['保存'] }), {
+      count: 0, dialog: true, pressable: true, x: 140, y: 220,
+    });
+    p = page({ imgEls: [], dialogs: [dialog], hitAt: () => other });
+    assert.strictEqual(run('COVER_STATE', p.sandbox, { labels: ['保存'] }).pressable, false);
+    p = page({ imgEls: [], dialogs: [dialog], hitAt: () => button });
+    assert.strictEqual(run('COVER_STATE', p.sandbox, { labels: ['適用'] }).pressable, false);
+  },
+
   'focus probe says whether the focus is in the body': () => {
     const inside = new El('p');
     const p = page({ bodyChildren: [inside], active: inside, pageFocused: true });
     assert.deepStrictEqual(run('FOCUS_PROBE', p.sandbox), {
-      href: EDITOR, focused: true, pageFocused: true, inFigure: false, caretEmptyP: false,
+      href: EDITOR, focused: true, pageFocused: true, where: 'none', inFigure: false, caretEmptyP: false,
     });
     assert.strictEqual(run('FOCUS_PROBE', page({ active: new El('textarea') }).sandbox).focused, false);
   },
