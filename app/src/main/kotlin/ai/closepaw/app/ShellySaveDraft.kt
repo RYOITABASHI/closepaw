@@ -191,11 +191,11 @@ object ShellySaveDraft {
      * list could not be read. (2026-11-12: with the notification shade open after the owner tapped
      * "approve", the main display had no focused window and every run stopped "chrome-opened".)
      */
-    fun chromeInFront(foregroundPackage: String?, frontTaskIsChrome: Boolean? = null): Boolean = when {
-        foregroundPackage == ChromeFlagDeepLink.CHROME_PACKAGE || frontTaskIsChrome == true -> true
-        foregroundPackage == null -> frontTaskIsChrome == null
-        else -> false
-    }
+    // When the task list was read it decides: the window lookup falls back to the active window,
+    // which during a run is the run's own Chrome on the virtual display (build 38 still stopped
+    // every run "chrome-opened" with Spark in front of the main display).
+    fun chromeInFront(foregroundPackage: String?, frontTaskIsChrome: Boolean? = null): Boolean =
+        frontTaskIsChrome ?: (foregroundPackage == null || foregroundPackage == ChromeFlagDeepLink.CHROME_PACKAGE)
 
     /** A window event that means the owner just opened Chrome on the main display. */
     fun ownerOpenedChrome(packageName: String?, isActivityWindow: Boolean, onMainDisplay: Boolean): Boolean =

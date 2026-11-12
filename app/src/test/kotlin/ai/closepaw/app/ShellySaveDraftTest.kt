@@ -97,7 +97,9 @@ class ShellySaveDraftTest {
         assertThat(ShellySaveDraft.chromeInFront(null, frontTaskIsChrome = true)).isTrue()
         assertThat(ShellySaveDraft.chromeInFront(null, frontTaskIsChrome = null)).isTrue()
         assertThat(ShellySaveDraft.chromeInFront("com.example.other", frontTaskIsChrome = true)).isTrue()
-        assertThat(ShellySaveDraft.chromeInFront("com.android.chrome", frontTaskIsChrome = false)).isTrue()
+        // The run's own Chrome on the virtual display can be the active window; the task list wins.
+        assertThat(ShellySaveDraft.chromeInFront("com.android.chrome", frontTaskIsChrome = false)).isFalse()
+        assertThat(ShellySaveDraft.chromeInFront("com.android.chrome", frontTaskIsChrome = null)).isTrue()
     }
 
     @Test

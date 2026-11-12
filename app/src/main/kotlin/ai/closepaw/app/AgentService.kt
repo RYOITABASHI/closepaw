@@ -685,8 +685,13 @@ class AgentService : AccessibilityService() {
     }
 
     /** True when Chrome is, or may be, what the user has in front on the main display. */
-    internal fun isChromeInFront(): Boolean =
-            ShellySaveDraft.chromeInFront(currentForegroundPackageOnDefaultDisplay(), chromeTaskInFrontOnMainDisplay())
+    internal fun isChromeInFront(): Boolean {
+        val window = currentForegroundPackageOnDefaultDisplay()
+        val task = chromeTaskInFrontOnMainDisplay()
+        val chrome = ShellySaveDraft.chromeInFront(window, task)
+        if (chrome) Log.i(TAG, "chrome in front: windowIsChrome=${window == ChromeFlagDeepLink.CHROME_PACKAGE} windowKnown=${window != null} task=$task")
+        return chrome
+    }
 
     private val taskReader by lazy { ShizukuClient() }
 
