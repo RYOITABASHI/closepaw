@@ -750,7 +750,8 @@ internal fun draftAnchorMarker(number: Int): String = "$ANCHOR_TEXT$number}}"
  * holding only `{{closepaw-image-<index+1>}}`, is in the body HTML.
  */
 internal fun draftAnchoredImages(html: String, imageCount: Int): Set<Int> {
-    val numbers = Regex("<p\\b[^>]*>\\s*\\{\\{closepaw-image-(\\d{1,3})}}\\s*</p>", RegexOption.IGNORE_CASE)
+    // Android's ICU regex rejects an unescaped `}` (desktop Java accepts it; build 36 failed on device).
+    val numbers = Regex("<p\\b[^>]*>\\s*\\{\\{closepaw-image-(\\d{1,3})\\}\\}\\s*</p>", RegexOption.IGNORE_CASE)
         .findAll(html)
         .mapNotNull { it.groupValues[1].toIntOrNull() }
         .toSet()
