@@ -333,6 +333,10 @@ class SaveDraftRoutineTest {
                     titleValue = ""
                     buildJsonObject { put("ok", true) }
                 }
+                DraftScript.TITLE_DIAG -> buildJsonObject {
+                    put("ok", true)
+                    put("fields", buildJsonArray {})
+                }
                 DraftScript.TITLE_VALUE -> buildJsonObject {
                     put("ok", true)
                     put("same", titleValue == args["title"]?.jsonPrimitive?.content)
