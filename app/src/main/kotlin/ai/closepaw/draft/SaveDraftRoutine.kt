@@ -816,6 +816,7 @@ class SaveDraftRoutine(
                 if (control.anchorCount() == 0) logCoverDiag(tab)
                 return false
             }
+            val shownBefore = visibleChrome(tab)
             stopIfOwnerHasChrome()
             browser.click(tab.id, x, y)
             logInfo("cover: control pressed")
@@ -853,7 +854,10 @@ class SaveDraftRoutine(
                     }
                 }
                 null
-            } == true
+            } == true || run {
+                logCoverChanges(tab, shownBefore)
+                false
+            }
         } finally {
             try {
                 browser.interceptFileChooser(tab.id, false)
@@ -863,6 +867,35 @@ class SaveDraftRoutine(
                 logInfo("cover: chooser interception not ended: ${e.javaClass.simpleName}")
             }
         }
+    }
+
+    /** The visible page chrome as short descriptors, for [logCoverChanges]; null when unreadable. */
+    private suspend fun visibleChrome(tab: DraftTab): JsonObject? = try {
+        browser.evaluate(tab.id, DraftScript.COVER_VISIBLE, buildJsonObject { put("max", COVER_VISIBLE_MAX) })
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * After a pressed cover control led nowhere: what became visible since the press (page chrome
+     * only), and how many dialogs, menus, modal and popover elements there are now.
+     */
+    private suspend fun logCoverChanges(tab: DraftTab, before: JsonObject?) {
+        val after = visibleChrome(tab) ?: run {
+            logInfo("cover: after press unreadable")
+            return
+        }
+        fun items(o: JsonObject?) = (o?.get("items") as? JsonArray).orEmpty().mapNotNull { it.jsonPrimitive.contentOrNull }
+        val known = items(before).toSet()
+        val fresh = items(after).filterNot { it in known }
+        fun n(key: String) = after[key]?.jsonPrimitive?.intOrNull ?: -1
+        logInfo(
+            "cover: after press dialogs=${n("dialogs")} menus=${n("menus")} modals=${n("modals")} " +
+                "popovers=${n("popovers")} new=${fresh.size}${if (before == null) " (no before)" else ""}",
+        )
+        fresh.take(COVER_DIAG_MAX).forEachIndexed { i, item -> logInfo("cover: new[$i] $item") }
     }
 
     private fun logCoverControl(control: JsonObject, phase: String = "") {
@@ -1212,7 +1245,10 @@ internal val COVER_CONTROL_NAMES = listOf("見出し画像", "画像を追加")
 
 /** The cover menu's upload item, and words that mark items it must never press. */
 internal const val COVER_MENU_ITEM = "アップロード"
-internal val COVER_MENU_AVOID = listOf("AI", "生成", "Canva", "素材", "ストック")
+internal val COVER_MENU_AVOID = listOf("AI", "生成", "Canva", "素材", "ストック", "記事にあう")
+
+/** At most this many visible elements are compared before and after a press. */
+internal const val COVER_VISIBLE_MAX = 150
 
 /** At most this many elements are described when no cover control matched. */
 internal const val COVER_DIAG_MAX = 15

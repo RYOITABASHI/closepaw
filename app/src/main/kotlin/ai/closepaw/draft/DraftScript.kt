@@ -376,19 +376,29 @@ enum class DraftScript(val source: String) {
     ),
 
     /**
-     * note only: in an open menu or dialog, the one item whose text holds `a.item` and none of
-     * `a.avoid` (generated or stock images), with the point to press it.
+     * note only: the one visible clickable element (outside the title and the body) whose text or
+     * aria-label holds `a.item` and none of `a.avoid` (generated, stock or suggested images), with
+     * the point to press it. Of nested matches only the innermost counts.
      */
     COVER_MENU_ITEM(
         """
         function (a) {
-          var items = document.querySelectorAll('[role=menuitem], [role=menu] button, [role=menu] li, [role=dialog] button, [role=listbox] li');
-          var found = [];
+          var title = document.querySelector('textarea');
+          var body = $BODY_LOOKUP;
+          var items = document.querySelectorAll('[role=menuitem], [role=option], button, [role=button], li, label');
+          var matches = [];
           for (var i = 0; i < items.length; i++) {
-            var text = items[i].textContent.trim();
+            var el = items[i];
+            var text = [el.textContent, el.getAttribute('aria-label')].join(' ');
             var avoided = a.avoid.filter(function (w) { return text.indexOf(w) >= 0; });
-            if (text.indexOf(a.item) >= 0 && avoided.length === 0) found.push(items[i]);
+            var box = el.getBoundingClientRect();
+            var shown = box.width > 0 && box.height > 0;
+            var outside = el !== title && !(body && body.contains(el));
+            if (shown && outside && text.indexOf(a.item) >= 0 && avoided.length === 0) matches.push(el);
           }
+          var found = matches.filter(function (el) {
+            return matches.filter(function (other) { return other !== el && el.contains(other); }).length === 0;
+          });
           if (found.length !== 1) return { ok: false, count: found.length };
           var rect = found[0].getBoundingClientRect();
           var x = rect.left + rect.width / 2;
@@ -484,6 +494,53 @@ enum class DraftScript(val source: String) {
             frameFileInputs: frameInputs,
             unreadableFrames: unreadable,
             candidates: list,
+          };
+        }
+        """,
+    ),
+
+    /**
+     * note only, a diagnostic: the visible interactive elements outside the title and the body,
+     * each as `tag|role|aria|own text|class|WxH` (page chrome only, short), up to `a.max`, and how
+     * many dialogs, menus, modal and popover elements the page has.
+     */
+    COVER_VISIBLE(
+        """
+        function (a) {
+          var title = document.querySelector('textarea');
+          var body = $BODY_LOOKUP;
+          var cut = function (v, n) {
+            var t = String(v || '').replace(/\s+/g, ' ').trim();
+            return t.length > n ? t.slice(0, n) : t;
+          };
+          var els = document.querySelectorAll('input, label, a, li, [role=option], [role=menuitem], [role=button], button');
+          var items = [];
+          for (var i = 0; i < els.length && items.length < a.max; i++) {
+            var el = els[i];
+            var rect = el.getBoundingClientRect();
+            var outside = el !== title && !(body && body.contains(el));
+            if (outside && rect.width > 0 && rect.height > 0) {
+              var own = '';
+              var nodes = el.childNodes || [];
+              for (var k = 0; k < nodes.length; k++) {
+                if (nodes[k].nodeType === 3) own += nodes[k].textContent;
+              }
+              items.push([
+                el.tagName.toLowerCase(),
+                cut(el.getAttribute('role'), 20),
+                cut(el.getAttribute('aria-label'), 30),
+                cut(own, 20),
+                cut(el.getAttribute('class'), 40),
+                [Math.round(rect.width), Math.round(rect.height)].join('x'),
+              ].join('|'));
+            }
+          }
+          return {
+            items: items,
+            dialogs: document.querySelectorAll('[role=dialog]').length,
+            menus: document.querySelectorAll('[role=menu]').length,
+            modals: document.querySelectorAll('[aria-modal=true]').length,
+            popovers: document.querySelectorAll('[popover]').length,
           };
         }
         """,

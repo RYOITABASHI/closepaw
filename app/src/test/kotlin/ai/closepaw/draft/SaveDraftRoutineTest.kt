@@ -114,6 +114,9 @@ class SaveDraftRoutineTest {
         var chooserFileWorks = true
         val intercepts = mutableListOf<Boolean>()
         var coveredUntilHover = false
+        var controlPressed = false
+        val visibleBefore = mutableListOf("button|||記事を作成|nav|80x32")
+        val visibleAfter = mutableListOf("button|||記事を作成|nav|80x32", "div|menu||見出し画像を変更|pop|200x40")
         val hovers = mutableListOf<Pair<Double, Double>>()
         var focusTargetOk = true
         val fronted = mutableListOf<String>()
@@ -141,6 +144,7 @@ class SaveDraftRoutineTest {
                     coverCount++
                 }
                 x == CONTROL_X -> {
+                    controlPressed = true
                     if (chooserOnControl) chooserPending = CHOOSER_NODE
                     if (menuOnControl) menuShown = true
                 }
@@ -348,6 +352,14 @@ class SaveDraftRoutineTest {
                     }
                 }
                 DraftScript.FILE_TO_INPUT -> buildJsonObject { put("ok", false) }
+                DraftScript.COVER_VISIBLE -> buildJsonObject {
+                    val items = if (controlPressed) visibleAfter else visibleBefore
+                    put("items", buildJsonArray { items.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
+                    put("dialogs", 0)
+                    put("menus", if (controlPressed) 1 else 0)
+                    put("modals", 0)
+                    put("popovers", 0)
+                }
                 DraftScript.COVER_DIAG -> buildJsonObject {
                     put("titleFound", true)
                     put("fileInputs", 0)
@@ -1359,6 +1371,7 @@ class SaveDraftRoutineTest {
             .containsAtLeast(FakeBrowser.CONTROL_X, FakeBrowser.MENU_X, 140.0).inOrder()
         assertThat(info).contains("cover: menu item pressed")
         assertThat(info).contains("cover: crop dialog pressed")
+        assertThat(info.none { it.startsWith("cover: after press") }).isTrue()
     }
 
     @Test
@@ -1410,6 +1423,15 @@ class SaveDraftRoutineTest {
         assertThat(result.cover).isEqualTo("failed-body")
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
         assertThat(browser.intercepts.last()).isFalse()
+        // What the press brought up, page chrome only.
+        assertThat(info).containsAtLeast(
+            "cover: after press dialogs=0 menus=1 modals=0 popovers=0 new=1",
+            "cover: new[0] div|menu||見出し画像を変更|pop|200x40",
+        ).inOrder()
+        info.forEach { line ->
+            assertThat(line).doesNotContain("A title")
+            assertThat(line).doesNotContain("Body text")
+        }
     }
 
     @Test

@@ -50,7 +50,7 @@ function page(options = {}) {
     resources = [], items = [], outside = [], bodyChildren = [], fetchImpl,
     hitAt = null, active = null, pageFocused = false, execResult = true, clipboard = null,
     fileInputs = [], imgEls = null, dialogs = [], controls = [], menuItems = [], diagEls = [], iframes = [], shadowHosts = [],
-    labelledIcons = [],
+    labelledIcons = [], visibleEls = [],
   } = options;
   const textarea = new El('textarea');
   let value = '';
@@ -93,6 +93,8 @@ function page(options = {}) {
       if (sel === 'button, [role=button], label') return controls;
       if (sel === 'button, [role=button], label, a, input, [tabindex], [onclick]') return diagEls;
       if (sel === 'iframe') return iframes;
+      if (sel === 'input, label, a, li, [role=option], [role=menuitem], [role=button], button') return visibleEls;
+      if (sel === '[role=menu]' || sel === '[aria-modal=true]' || sel === '[popover]') return [];
       if (sel === 'svg[aria-label], [role=img][aria-label]') return labelledIcons;
       if (sel === '*') return shadowHosts;
       if (sel.startsWith('[role=menuitem]')) return menuItems;
@@ -156,7 +158,7 @@ const noRead = () => Promise.reject(new Error('blocked'));
 
 const tests = {
   'every script parses': () => {
-    assert.strictEqual(Object.keys(scripts).length, 26);
+    assert.strictEqual(Object.keys(scripts).length, 27);
     for (const [name, src] of Object.entries(scripts)) new vm.Script(`(${src})({})`, { filename: name });
   },
 
@@ -592,18 +594,47 @@ const tests = {
     assert.deepStrictEqual(p.sandbox.window.scrolled, [0, 0]);
   },
 
-  'cover menu item is the one upload item, never a generated or stock one': () => {
-    const item = (text) => {
+  'cover menu item is the one visible upload item, innermost, never a generated or stock one': () => {
+    const item = (text, aria = null, w = 200) => {
       const el = new El('li', { textContent: text });
-      el.getBoundingClientRect = () => ({ left: 0, top: 100, width: 200, height: 40 });
+      el.getAttribute = (k) => (k === 'aria-label' ? aria : null);
+      el.getBoundingClientRect = () => ({ left: 0, top: 100, width: w, height: 40 });
       return el;
     };
+    const args = { item: 'アップロード', avoid: ['AI', '生成', 'Canva', '素材', 'ストック', '記事にあう'] };
     const upload = item(' 画像をアップロード ');
-    const args = { item: 'アップロード', avoid: ['AI', '生成', 'Canva', '素材', 'ストック'] };
-    let p = page({ menuItems: [item('AIで画像を生成'), upload, item('Canvaでアップロード')], hitAt: () => upload });
+    const wrapper = item('画像をアップロード');
+    wrapper.children = [upload];
+    let p = page({
+      menuItems: [item('AIで画像を生成'), wrapper, upload, item('Canvaでアップロード'), item('記事にあう画像をアップロード'), item('アップロード', null, 0)],
+      hitAt: () => upload,
+    });
     assert.deepStrictEqual(run('COVER_MENU_ITEM', p.sandbox, args), { ok: true, count: 1, x: 100, y: 120 });
+
+    const byAria = item('', 'ファイルをアップロード');
+    p = page({ menuItems: [byAria], hitAt: () => byAria });
+    assert.strictEqual(run('COVER_MENU_ITEM', p.sandbox, args).ok, true);
+
     p = page({ menuItems: [item('Canvaでアップロード')] });
     assert.deepStrictEqual(run('COVER_MENU_ITEM', p.sandbox, args), { ok: false, count: 0 });
+  },
+
+  'visible chrome is listed short, and popups are counted': () => {
+    const el = (tag, attrs, text, w = 120) => {
+      const e = new El(tag, { childNodes: [{ nodeType: 3, textContent: text }] });
+      e.getAttribute = (k) => (k in attrs ? attrs[k] : null);
+      e.getBoundingClientRect = () => ({ width: w, height: 36.4 });
+      return e;
+    };
+    const dialog = new El('div');
+    const p = page({
+      visibleEls: [el('button', { role: 'menuitem', class: 'item  x' }, ' 画像をアップロード '), el('li', {}, 'hidden', 0)],
+      dialogs: [dialog],
+    });
+    assert.deepStrictEqual(run('COVER_VISIBLE', p.sandbox, { max: 150 }), {
+      items: ['button|menuitem||画像をアップロード|item x|120x36'],
+      dialogs: 1, menus: 0, modals: 0, popovers: 0,
+    });
   },
 
   'file to input sets the bytes on the reported file input only': () => {
