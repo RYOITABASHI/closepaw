@@ -70,7 +70,12 @@ function page(options = {}) {
     hasFocus: () => pageFocused,
     elementFromPoint: (x, y) => (hitAt ? hitAt(x, y) : null),
     execCommand: (...args) => { execCalls.push(args); return execResult; },
-    createRange: () => ({ selectNodeContents(n) { this.contents = n; } }),
+    createRange: () => ({
+      selectNodeContents(n) { this.contents = n; },
+      collapse(start) { this.collapsed = start; },
+      setStartBefore(n) { this.before = n; },
+      setEndAfter(n) { this.after = n; },
+    }),
     querySelector(sel) {
       if (sel === 'textarea') return withTextarea ? textarea : null;
       if (sel === 'input[type=file]') return fileInput;
@@ -120,7 +125,7 @@ const run = (name, sandbox, args = {}) => {
 };
 const same = { editorUrl: EDITOR };
 const image = { ...same, name: 'a.jpg', mime: 'image/jpeg', base64: Buffer.from([255, 0, 10]).toString('base64') };
-const WRITERS = ['SET_TITLE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'ANCHOR_SELECT', 'PASTE_IMAGE_HERE', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
+const WRITERS = ['SET_TITLE', 'CLIPBOARD_WRITE', 'INSERT_HTML', 'FOCUS_TARGET', 'ANCHOR_SELECT', 'PASTE_IMAGE_HERE', 'CARET_AFTER_IMAGES', 'PASTE_IMAGE', 'FILE_INPUT_IMAGE', 'NOTE_SAVE_CLICK', 'READ_BACK', 'NOTE_SAVED_PROBE', 'SUBSTACK_SAVED_PROBE'];
 const toast = (text = '下書きを保存しました') => new El('div', { textContent: text });
 const apiEntry = (over = {}) => ({
   startTime: 6, initiatorType: 'fetch', responseStatus: 200,
@@ -134,7 +139,7 @@ const noRead = () => Promise.reject(new Error('blocked'));
 
 const tests = {
   'every script parses': () => {
-    assert.strictEqual(Object.keys(scripts).length, 18);
+    assert.strictEqual(Object.keys(scripts).length, 19);
     for (const [name, src] of Object.entries(scripts)) new vm.Script(`(${src})({})`, { filename: name });
   },
 
@@ -355,10 +360,66 @@ const tests = {
     assert.strictEqual(run('FOCUS_TARGET', page({ withBody: false }).sandbox, same).why, 'no-body');
   },
 
+  'focus probe tells a caret in a figure or caption from one in an empty paragraph': () => {
+    const block = (tag, props, closestFn) => {
+      const el = new El(tag, { nodeType: 1, ...props });
+      el.closest = closestFn;
+      el.querySelector = () => null;
+      return el;
+    };
+    const caption = block('figcaption', {}, function () { return this; });
+    let p = page({ bodyChildren: [caption], caret: caption });
+    let out = run('FOCUS_PROBE', p.sandbox);
+    assert.strictEqual(out.inFigure, true);
+    assert.strictEqual(out.caretEmptyP, false);
+
+    const empty = block('p', { textContent: '' }, function (sel) { return sel.indexOf('figure') === 0 ? null : this; });
+    p = page({ bodyChildren: [empty], caret: empty });
+    out = run('FOCUS_PROBE', p.sandbox);
+    assert.strictEqual(out.inFigure, false);
+    assert.strictEqual(out.caretEmptyP, true);
+
+    const full = block('p', { textContent: 'x' }, function (sel) { return sel.indexOf('figure') === 0 ? null : this; });
+    p = page({ bodyChildren: [full], caret: full });
+    assert.strictEqual(run('FOCUS_PROBE', p.sandbox).caretEmptyP, false);
+  },
+
+  'caret after images goes into the first empty paragraph after the last image': () => {
+    const el = (tag, props = {}) => {
+      const e = new El(tag, props);
+      e.querySelector = () => props.img || null;
+      return e;
+    };
+    const fig = el('figure');
+    const text = el('p', { textContent: 'x' });
+    const empty = el('p', { textContent: '' });
+    let p = page({ bodyChildren: [el('p', { textContent: '' }), fig, text, empty] });
+    assert.deepStrictEqual(run('CARET_AFTER_IMAGES', p.sandbox, { ...same, mode: 'place' }), { ok: true, kind: 'empty-p' });
+    assert.strictEqual(p.selection.ranges[0].contents, empty);
+    assert.strictEqual(p.selection.ranges[0].collapsed, true);
+
+    p = page({ bodyChildren: [el('p', { textContent: 'x' }), fig] });
+    assert.deepStrictEqual(run('CARET_AFTER_IMAGES', p.sandbox, { ...same, mode: 'place' }), { ok: false, kind: 'figure' });
+    assert.deepStrictEqual(run('CARET_AFTER_IMAGES', p.sandbox, { ...same, mode: 'select-figure' }), { ok: true, kind: 'figure' });
+    assert.strictEqual(p.selection.ranges[0].before, fig);
+    assert.strictEqual(p.selection.ranges[0].after, fig);
+
+    // A paragraph holding an image counts as an image block.
+    const withImg = el('p', { img: new El('img') });
+    p = page({ bodyChildren: [withImg, empty] });
+    assert.strictEqual(run('CARET_AFTER_IMAGES', p.sandbox, { ...same, mode: 'place' }).kind, 'empty-p');
+
+    p = page({ bodyChildren: [el('p', { textContent: 'x' })] });
+    assert.deepStrictEqual(run('CARET_AFTER_IMAGES', p.sandbox, { ...same, mode: 'place' }), { ok: false, kind: 'no-empty-p' });
+    assert.deepStrictEqual(run('CARET_AFTER_IMAGES', p.sandbox, { ...same, mode: 'select-figure' }), { ok: false, kind: 'no-image' });
+  },
+
   'focus probe says whether the focus is in the body': () => {
     const inside = new El('p');
     const p = page({ bodyChildren: [inside], active: inside, pageFocused: true });
-    assert.deepStrictEqual(run('FOCUS_PROBE', p.sandbox), { href: EDITOR, focused: true, pageFocused: true });
+    assert.deepStrictEqual(run('FOCUS_PROBE', p.sandbox), {
+      href: EDITOR, focused: true, pageFocused: true, inFigure: false, caretEmptyP: false,
+    });
     assert.strictEqual(run('FOCUS_PROBE', page({ active: new El('textarea') }).sandbox).focused, false);
   },
 

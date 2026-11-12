@@ -22,6 +22,12 @@ import kotlinx.serialization.json.put
 
 data class DraftTab(val id: String, val url: String)
 
+/** The only keys the routine presses besides the paste key. */
+enum class DraftKey(val key: String, val keyCode: Int) {
+    BACKSPACE("Backspace", 8),
+    ENTER("Enter", 13),
+}
+
 /** What the routine may do to Chrome. Scripts are a closed enum; URLs come from [DraftSite]. */
 interface DraftBrowser {
     /** Brings Chrome onto the run's display, opening nothing. CDP needs it visible. */
@@ -55,8 +61,8 @@ interface DraftBrowser {
      */
     suspend fun pasteKey(tabId: String) {}
 
-    /** One trusted Backspace in [tabId]. The default does nothing. */
-    suspend fun pressBackspace(tabId: String) {}
+    /** One trusted key press in [tabId], from a closed set. The default does nothing. */
+    suspend fun pressKey(tabId: String, key: DraftKey) {}
 
     /** Makes [tabId] the shown tab of its window, which is on the run's display. */
     suspend fun bringToFront(tabId: String) {}
@@ -288,7 +294,8 @@ class SaveDraftRoutine(
         }
 
         step = STEP_PASTE
-        if (!pasteBody(tab, editorUrl)) return result(DraftOutcome.UNCERTAIN, "body-not-pasted")
+        val afterImages = imagesPlaced > 0
+        pasteBody(tab, editorUrl, afterImages)?.let { refusal -> return result(DraftOutcome.UNCERTAIN, refusal) }
 
         if (anchored.isNotEmpty()) {
             step = STEP_ANCHOR
@@ -400,21 +407,32 @@ class SaveDraftRoutine(
      *    image uploads), the trusted paste once more;
      * 3. as the last resort, the browser's insert command, which keeps the text but, in note,
      *    not the structure: the run then reports `body-flattened`.
-     * The clipboard is emptied afterwards.
+     * No attempt goes in with the caret in an image's figure or caption (`focus-in-figure`), and a
+     * paste that arrives as one paragraph is reported flattened without a further attempt.
+     * Returns null when the body went in, else the reason. The clipboard is emptied afterwards.
      */
-    private suspend fun pasteBody(tab: DraftTab, editorUrl: String): Boolean {
+    private suspend fun pasteBody(tab: DraftTab, editorUrl: String, afterImages: Boolean): String? {
         val dialogsBefore = browser.dialogsAnswered()
         try {
-            if (trustedPaste(tab, editorUrl, "paste", dialogsBefore) && bodyFilledSoon(tab, editorUrl)) return true
+            val first = trustedPaste(tab, editorUrl, "paste", dialogsBefore, afterImages)
+            if (first == Attempt.REFUSED) return FOCUS_IN_FIGURE
+            if (first == Attempt.SENT && bodyFilledSoon(tab, editorUrl)) return checkStructure(tab)
             waitForUploads(tab)
-            if (!bodyEmpty(tab, editorUrl)) return true
-            if (trustedPaste(tab, editorUrl, "paste-again", dialogsBefore) && bodyFilledSoon(tab, editorUrl)) return true
-            if (!bodyEmpty(tab, editorUrl)) return true
+            if (!bodyEmpty(tab, editorUrl)) return checkStructure(tab)
+            val again = trustedPaste(tab, editorUrl, "paste-again", dialogsBefore, afterImages)
+            if (again == Attempt.REFUSED) return FOCUS_IN_FIGURE
+            if (again == Attempt.SENT && bodyFilledSoon(tab, editorUrl)) return checkStructure(tab)
+            if (!bodyEmpty(tab, editorUrl)) return checkStructure(tab)
         } finally {
             clearClipboard()
         }
 
         focusEditor(tab, editorUrl)
+        if (afterImages) placeCaretAfterImages(tab, editorUrl)
+        if (caretRefusal(tab, afterImages) != null) {
+            logInfo("body method=insert refused=$FOCUS_IN_FIGURE")
+            return FOCUS_IN_FIGURE
+        }
         val inserted = write(tab, editorUrl, DraftScript.INSERT_HTML) { put("html", request.html) }
         // Flattened only if the insert really put text in.
         flattened = inserted.flag("ok") && !bodyEmpty(tab, editorUrl)
@@ -422,15 +440,29 @@ class SaveDraftRoutine(
             "body method=insert ok=${inserted.flag("ok")} accepted=${inserted.flag("accepted")} " +
                 shapeLog(tab) + " dialogs=${browser.dialogsAnswered() - dialogsBefore}",
         )
-        return inserted.flag("ok") || inserted.flag("notEmpty")
+        return if (inserted.flag("ok") || inserted.flag("notEmpty")) null else "body-not-pasted"
     }
 
+    private enum class Attempt { SENT, NO_CLIPBOARD, REFUSED }
+
     /**
-     * Focus, the HTML onto the clipboard (the page's clipboard API, else the Android clipboard),
-     * then the paste key. False when nothing could be put on the clipboard, so no key was sent.
+     * Focus, the caret checked (and, after leading images, moved into an empty paragraph after
+     * them), the HTML onto the clipboard (the page's clipboard API, else the Android clipboard),
+     * then the paste key. Never pastes with the caret in an image's figure or caption.
      */
-    private suspend fun trustedPaste(tab: DraftTab, editorUrl: String, method: String, dialogsBefore: Int): Boolean {
+    private suspend fun trustedPaste(
+        tab: DraftTab,
+        editorUrl: String,
+        method: String,
+        dialogsBefore: Int,
+        afterImages: Boolean,
+    ): Attempt {
         focusEditor(tab, editorUrl)
+        if (afterImages) placeCaretAfterImages(tab, editorUrl)
+        caretRefusal(tab, afterImages)?.let { where ->
+            logInfo("body method=$method refused=$FOCUS_IN_FIGURE caret=$where")
+            return Attempt.REFUSED
+        }
         stopIfOwnerHasChrome()
         val written = browser.evaluate(tab.id, DraftScript.CLIPBOARD_WRITE, buildJsonObject {
             put("editorUrl", editorUrl)
@@ -445,7 +477,7 @@ class SaveDraftRoutine(
         val pageWhy = written.str("why")?.let { " pageWhy=$it" }.orEmpty()
         if (clip == null) {
             logInfo("body method=$method clip=none$pageWhy")
-            return false
+            return Attempt.NO_CLIPBOARD
         }
         stopIfOwnerHasChrome()
         wrote = true
@@ -454,7 +486,71 @@ class SaveDraftRoutine(
             "body method=$method clip=$clip$pageWhy " + shapeLog(tab) +
                 " dialogs=${browser.dialogsAnswered() - dialogsBefore}",
         )
-        return true
+        return Attempt.SENT
+    }
+
+    /**
+     * After leading images the caret may be left in the image's caption or on the figure, and a
+     * paste there becomes one long caption paragraph. Puts the caret in the first empty paragraph
+     * after the last image; if there is none, selects the image block whole and presses Enter,
+     * which makes one after it, then puts the caret there.
+     */
+    private suspend fun placeCaretAfterImages(tab: DraftTab, editorUrl: String) {
+        val placed = write(tab, editorUrl, DraftScript.CARET_AFTER_IMAGES) { put("mode", "place") }
+        if (placed.flag("ok")) {
+            logInfo("caret after images: ${placed.str("kind")}")
+            return
+        }
+        if (placed.str("kind") != "figure") {
+            logInfo("caret after images: ${placed.str("kind")}")
+            return
+        }
+        val around = write(tab, editorUrl, DraftScript.CARET_AFTER_IMAGES) { put("mode", "select-figure") }
+        if (!around.flag("ok")) {
+            logInfo("caret after images: figure not selected")
+            return
+        }
+        stopIfOwnerHasChrome()
+        browser.pressKey(tab.id, DraftKey.ENTER)
+        val again = write(tab, editorUrl, DraftScript.CARET_AFTER_IMAGES) { put("mode", "place") }
+        logInfo("caret after images: ${if (again.flag("ok")) "new-p" else "none"}")
+    }
+
+    /**
+     * Null when the caret may take the body; otherwise where it is. Never in a figure or caption,
+     * and after leading images only in an empty paragraph of its own.
+     */
+    private suspend fun caretRefusal(tab: DraftTab, afterImages: Boolean): String? {
+        val probe = browser.evaluate(tab.id, DraftScript.FOCUS_PROBE, NO_ARGS)
+        return when {
+            probe.flag("inFigure") -> "figure"
+            afterImages && !probe.flag("caretEmptyP") -> "not-empty-p"
+            else -> null
+        }
+    }
+
+    /**
+     * A paste that left at most one block when the source has several lost its structure (the
+     * editor put it all in one paragraph or caption): reported as flattened, with no further
+     * attempt.
+     */
+    private suspend fun checkStructure(tab: DraftTab): String? {
+        val want = draftSourceBlocks(request.html)
+        if (want < FLAT_SOURCE_MIN_BLOCKS) return null
+        val shape = try {
+            browser.evaluate(tab.id, DraftScript.BODY_SHAPE, NO_ARGS)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return null
+        }
+        fun n(key: String) = shape[key]?.jsonPrimitive?.intOrNull ?: 0
+        val blocks = n("p") + n("h") + n("li")
+        if (blocks <= 1) {
+            flattened = true
+            logInfo("body flattened: blocks=$blocks of $want")
+        }
+        return null
     }
 
     /** `chars=N p=N h=N li=N`: numbers only. */
@@ -495,7 +591,7 @@ class SaveDraftRoutine(
             return
         }
         stopIfOwnerHasChrome()
-        browser.pressBackspace(tab.id)
+        browser.pressKey(tab.id, DraftKey.BACKSPACE)
         val emptied = anchorCheck(tab, editorUrl, marker)
         if (emptied.anchorCount() != 0 || !emptied.flag("caretEmpty")) {
             removeMarker(tab, editorUrl, marker)
@@ -530,7 +626,7 @@ class SaveDraftRoutine(
             }
             if (!selected.flag("ok")) return
             stopIfOwnerHasChrome()
-            browser.pressBackspace(tab.id)
+            browser.pressKey(tab.id, DraftKey.BACKSPACE)
             dropEmptyParagraph(tab, editorUrl, marker)
         }
     }
@@ -543,7 +639,7 @@ class SaveDraftRoutine(
         val check = anchorCheck(tab, editorUrl, marker)
         if (check.flag("caretEmpty") && check.flag("prevPlain")) {
             stopIfOwnerHasChrome()
-            browser.pressBackspace(tab.id)
+            browser.pressKey(tab.id, DraftKey.BACKSPACE)
         }
     }
 
@@ -785,6 +881,12 @@ internal fun draftEvaluateParams(script: DraftScript, args: JsonObject): JsonObj
 
 /** The reason for a body that went in without its structure. */
 internal const val BODY_FLATTENED = "body-flattened"
+
+/** The reason for a run that would only have pasted into an image's figure or caption. */
+internal const val FOCUS_IN_FIGURE = "focus-in-figure"
+
+/** A source with at least this many blocks that arrives as one is flattened. */
+internal const val FLAT_SOURCE_MIN_BLOCKS = 3
 
 /** Paragraphs, headings and list items in the source HTML, for the read-back's rough check. */
 internal fun draftSourceBlocks(html: String): Int =

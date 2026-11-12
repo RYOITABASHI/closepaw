@@ -252,21 +252,24 @@ internal class ChromeDraftBrowser(
         } ?: throw IOException("paste key timed out")
     }
 
-    /** One trusted Backspace, to delete the selected anchor text (in-body image anchors). */
-    override suspend fun pressBackspace(tabId: String) {
+    /**
+     * One trusted key from [DraftKey]: Backspace deletes selected anchor text, Enter makes a
+     * paragraph after a selected image.
+     */
+    override suspend fun pressKey(tabId: String, key: DraftKey) {
         withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
             cdp { client ->
                 for (type in listOf("rawKeyDown", "keyUp")) {
                     val event = buildJsonObject {
                         put("type", type)
-                        put("key", "Backspace")
-                        put("code", "Backspace")
-                        put("windowsVirtualKeyCode", 8)
+                        put("key", key.key)
+                        put("code", key.key)
+                        put("windowsVirtualKeyCode", key.keyCode)
                     }
                     client.send("Input.dispatchKeyEvent", event, CdpOptions(targetId = tabId))
                 }
             }
-        } ?: throw IOException("backspace timed out")
+        } ?: throw IOException("key timed out")
     }
 
     override suspend fun click(tabId: String, x: Double, y: Double) {

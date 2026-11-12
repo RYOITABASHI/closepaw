@@ -187,13 +187,72 @@ enum class DraftScript(val source: String) {
         """,
     ),
 
-    /** Is the focus inside the body, and does the page have focus at all? */
+    /**
+     * Is the focus inside the body, does the page have focus at all, is the caret inside an
+     * image's figure or caption, and is it in an empty paragraph of its own?
+     */
     FOCUS_PROBE(
         """
         function (a) {
           var body = $BODY_LOOKUP;
           var active = document.activeElement;
-          return { href: location.href, focused: !!body && !!active && body.contains(active), pageFocused: document.hasFocus() };
+          var node = getSelection().anchorNode;
+          var el = node && node.nodeType === 1 ? node : node && node.parentElement;
+          var inBody = !!body && !!el && body.contains(el);
+          var block = inBody ? el.closest('p, h1, h2, h3, h4, h5, h6, li, figcaption') : null;
+          return {
+            href: location.href,
+            focused: !!body && !!active && body.contains(active),
+            pageFocused: document.hasFocus(),
+            inFigure: inBody && !!el.closest('figure, figcaption'),
+            caretEmptyP: !!block && block.tagName === 'P' && block.textContent.trim() === '' &&
+              !block.querySelector('img') && !block.closest('figure'),
+          };
+        }
+        """,
+    ),
+
+    /**
+     * After the leading images: puts the caret in the first empty paragraph after the body's
+     * last image block (or anywhere in a body without one). With `a.mode` 'select-figure' it
+     * selects that image block as a whole instead, so an Enter makes a paragraph after it.
+     */
+    CARET_AFTER_IMAGES(
+        """
+        function (a) {
+          $SAME_DRAFT
+          var body = $BODY_LOOKUP;
+          if (!body) return { ok: false, kind: 'no-body' };
+          var children = body.children;
+          var last = -1;
+          for (var i = 0; i < children.length; i++) {
+            if (children[i].tagName === 'FIGURE' || children[i].querySelector('img')) last = i;
+          }
+          if (a.mode === 'select-figure') {
+            if (last < 0) return { ok: false, kind: 'no-image' };
+            body.focus();
+            var whole = document.createRange();
+            whole.setStartBefore(children[last]);
+            whole.setEndAfter(children[last]);
+            var around = getSelection();
+            around.removeAllRanges();
+            around.addRange(whole);
+            return { ok: true, kind: 'figure' };
+          }
+          for (var j = last + 1; j < children.length; j++) {
+            var el = children[j];
+            if (el.tagName === 'P' && el.textContent.trim() === '' && !el.querySelector('img')) {
+              body.focus();
+              var range = document.createRange();
+              range.selectNodeContents(el);
+              range.collapse(true);
+              var selection = getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              return { ok: true, kind: 'empty-p' };
+            }
+          }
+          return { ok: false, kind: last < 0 ? 'no-empty-p' : 'figure' };
         }
         """,
     ),

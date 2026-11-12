@@ -84,6 +84,14 @@ class SaveDraftRoutineTest {
         var backspaceWorks = true
         var imageHereWorks = true
         var backspaces = 0
+        var enters = 0
+        var leaveCaretInFigure = false
+        var caretInFigure = false
+        var caretInEmptyP = false
+        var trailingParagraph = true
+        var enterMakesParagraph = true
+        var figureSelected = false
+        var pasteFlattens = false
         var focusTargetOk = true
         val fronted = mutableListOf<String>()
         val clicks = mutableListOf<Pair<Double, Double>>()
@@ -116,7 +124,13 @@ class SaveDraftRoutineTest {
             return androidClipboardWorks
         }
 
-        override suspend fun pressBackspace(tabId: String) {
+        override suspend fun pressKey(tabId: String, key: DraftKey) {
+            if (key == DraftKey.ENTER) {
+                enters++
+                if (enterMakesParagraph && figureSelected) trailingParagraph = true
+                figureSelected = false
+                return
+            }
             backspaces++
             if (!backspaceWorks) return
             val marker = selectedMarker
@@ -149,6 +163,10 @@ class SaveDraftRoutineTest {
                     bodyFilled = true
                 }
                 pasteKeyIgnored -> {}
+                pasteFlattens -> {
+                    bodyFilled = true
+                    flattenedBody = true
+                }
                 else -> bodyFilled = true
             }
         }
@@ -290,6 +308,23 @@ class SaveDraftRoutineTest {
                     put("href", currentUrl)
                     put("focused", clicks.isNotEmpty())
                     put("pageFocused", false)
+                    put("inFigure", caretInFigure)
+                    put("caretEmptyP", caretInEmptyP)
+                }
+                DraftScript.CARET_AFTER_IMAGES -> buildJsonObject {
+                    if (args["mode"]?.jsonPrimitive?.content == "select-figure") {
+                        figureSelected = true
+                        put("ok", true)
+                        put("kind", "figure")
+                    } else if (trailingParagraph) {
+                        caretInFigure = false
+                        caretInEmptyP = true
+                        put("ok", true)
+                        put("kind", "empty-p")
+                    } else {
+                        put("ok", false)
+                        put("kind", "figure")
+                    }
                 }
                 DraftScript.IMAGE_COUNT -> buildJsonObject {
                     val uploading = uploadingLeft > 0
@@ -303,6 +338,8 @@ class SaveDraftRoutineTest {
                     if (script == imageRouteWorks) {
                         pageImages++
                         uploadingLeft = uploadingPolls
+                        caretInFigure = leaveCaretInFigure
+                        caretInEmptyP = false
                     }
                     buildJsonObject { put("ok", true) }
                 }
@@ -954,6 +991,88 @@ class SaveDraftRoutineTest {
             assertThat(line).doesNotContain("A title")
             assertThat(line).doesNotContain("Body text")
         }
+    }
+
+    // ── The caret after leading images ──
+
+    private val threeBlocks = "<h2>Head</h2><p>Body text here</p><p>More</p>"
+
+    @Test
+    fun `after the header the caret goes into the empty paragraph after it`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            leaveCaretInFigure = true
+        }
+        val result = routine(browser, note, listOf(image), html = threeBlocks).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.enters).isEqualTo(0)
+        assertThat(info).contains("caret after images: empty-p")
+        assertThat(browser.scripts.indexOf(DraftScript.CARET_AFTER_IMAGES))
+            .isLessThan(browser.scripts.indexOf(DraftScript.CLIPBOARD_WRITE))
+    }
+
+    @Test
+    fun `with no paragraph after the header, Enter on the selected image makes one`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            leaveCaretInFigure = true
+            trailingParagraph = false
+        }
+        val result = routine(browser, note, listOf(image), html = threeBlocks).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
+        assertThat(browser.enters).isEqualTo(1)
+        assertThat(info).contains("caret after images: new-p")
+    }
+
+    @Test
+    fun `a caret that stays in the figure is never pasted into`() = runTest {
+        val browser = noteBrowser().apply {
+            imageRouteWorks = DraftScript.PASTE_IMAGE
+            leaveCaretInFigure = true
+            trailingParagraph = false
+            enterMakesParagraph = false
+        }
+        val result = routine(browser, note, listOf(image), html = threeBlocks).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.UNCERTAIN)
+        assertThat(result.reason).isEqualTo("focus-in-figure")
+        assertThat(result.url).isEqualTo(noteEditor)
+        assertThat(browser.pasteKeys).isEqualTo(0)
+        assertThat(browser.scripts).doesNotContain(DraftScript.CLIPBOARD_WRITE)
+        assertThat(browser.scripts).doesNotContain(DraftScript.INSERT_HTML)
+        assertThat(info).contains("body method=paste refused=focus-in-figure caret=figure")
+        assertThat(result.toSummary()).contains(noteEditor)
+    }
+
+    @Test
+    fun `without leading images the caret is not moved`() = runTest {
+        val browser = noteBrowser()
+        routine(browser, note, html = threeBlocks).run()
+
+        assertThat(browser.scripts).doesNotContain(DraftScript.CARET_AFTER_IMAGES)
+        assertThat(browser.enters).isEqualTo(0)
+    }
+
+    @Test
+    fun `a paste that arrives as one paragraph is flattened and not inserted again`() = runTest {
+        val browser = noteBrowser().apply { pasteFlattens = true }
+        val result = routine(browser, note, html = threeBlocks).run()
+
+        assertThat(result.reason).isEqualTo("body-flattened")
+        assertThat(result.bodyOk).isFalse()
+        assertThat(browser.pasteKeys).isEqualTo(1)
+        assertThat(browser.scripts).doesNotContain(DraftScript.INSERT_HTML)
+        assertThat(info).contains("body flattened: blocks=1 of 3")
+    }
+
+    @Test
+    fun `a short source in one paragraph is not called flattened`() = runTest {
+        val browser = noteBrowser().apply { pasteFlattens = true }
+        val result = routine(browser, note).run()
+
+        assertThat(result.reason).isNotEqualTo("body-flattened")
     }
 
     // ── In-body image anchors ──

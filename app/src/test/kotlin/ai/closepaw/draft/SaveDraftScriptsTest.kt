@@ -127,7 +127,7 @@ class SaveDraftScriptsTest {
     fun `every script that changes the page checks the draft URL first`() {
         val guarded = listOf(
             DraftScript.SET_TITLE, DraftScript.CLIPBOARD_WRITE, DraftScript.INSERT_HTML, DraftScript.FOCUS_TARGET,
-            DraftScript.ANCHOR_SELECT, DraftScript.PASTE_IMAGE_HERE,
+            DraftScript.ANCHOR_SELECT, DraftScript.PASTE_IMAGE_HERE, DraftScript.CARET_AFTER_IMAGES,
             DraftScript.PASTE_IMAGE, DraftScript.FILE_INPUT_IMAGE,
             DraftScript.NOTE_SAVE_CLICK, DraftScript.READ_BACK, DraftScript.NOTE_SAVED_PROBE,
             DraftScript.SUBSTACK_SAVED_PROBE,
@@ -157,10 +157,11 @@ class SaveDraftScriptsTest {
     }
 
     @Test
-    fun `the only keys the run presses are paste and Backspace`() {
+    fun `the only keys the run presses are paste, Backspace and Enter`() {
         val source = browserFile.readText()
         val keys = Regex("""put\("key", "([^"]+)"\)""").findAll(source).map { it.groupValues[1] }.toList()
-        assertThat(keys).containsExactly("v", "Backspace")
+        assertThat(keys).containsExactly("v")
+        assertThat(DraftKey.values().map { it.key }).containsExactly("Backspace", "Enter")
         assertThat(source).contains("put(\"commands\", buildJsonArray { add(JsonPrimitive(\"paste\")) })")
     }
 
