@@ -92,6 +92,15 @@ class ShellySaveDraftTest {
     }
 
     @Test
+    fun `no focused window is not Chrome when the task list says so`() {
+        assertThat(ShellySaveDraft.chromeInFront(null, frontTaskIsChrome = false)).isFalse()
+        assertThat(ShellySaveDraft.chromeInFront(null, frontTaskIsChrome = true)).isTrue()
+        assertThat(ShellySaveDraft.chromeInFront(null, frontTaskIsChrome = null)).isTrue()
+        assertThat(ShellySaveDraft.chromeInFront("com.example.other", frontTaskIsChrome = true)).isTrue()
+        assertThat(ShellySaveDraft.chromeInFront("com.android.chrome", frontTaskIsChrome = false)).isTrue()
+    }
+
+    @Test
     fun `only Chrome's activity window on the main display stops a run`() {
         assertThat(ShellySaveDraft.ownerOpenedChrome("com.android.chrome", true, true)).isTrue()
         assertThat(ShellySaveDraft.ownerOpenedChrome("com.android.chrome", true, false)).isFalse()

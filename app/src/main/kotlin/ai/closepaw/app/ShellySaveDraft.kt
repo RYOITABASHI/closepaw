@@ -185,9 +185,17 @@ object ShellySaveDraft {
         else -> null
     }
 
-    /** Fails closed: an unknown foreground app counts as Chrome. */
-    fun chromeInFront(foregroundPackage: String?): Boolean =
-        foregroundPackage == null || foregroundPackage == ChromeFlagDeepLink.CHROME_PACKAGE
+    /**
+     * Fails closed: an unknown foreground app counts as Chrome, unless the task list was read and
+     * its front task on the main display is not Chrome's. [frontTaskIsChrome] is null when the task
+     * list could not be read. (2026-11-12: with the notification shade open after the owner tapped
+     * "approve", the main display had no focused window and every run stopped "chrome-opened".)
+     */
+    fun chromeInFront(foregroundPackage: String?, frontTaskIsChrome: Boolean? = null): Boolean = when {
+        foregroundPackage == ChromeFlagDeepLink.CHROME_PACKAGE || frontTaskIsChrome == true -> true
+        foregroundPackage == null -> frontTaskIsChrome == null
+        else -> false
+    }
 
     /** A window event that means the owner just opened Chrome on the main display. */
     fun ownerOpenedChrome(packageName: String?, isActivityWindow: Boolean, onMainDisplay: Boolean): Boolean =

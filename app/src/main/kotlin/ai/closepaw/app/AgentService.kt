@@ -686,21 +686,20 @@ class AgentService : AccessibilityService() {
 
     /** True when Chrome is, or may be, what the user has in front on the main display. */
     internal fun isChromeInFront(): Boolean =
-            ShellySaveDraft.chromeInFront(currentForegroundPackageOnDefaultDisplay()) ||
-                    chromeTaskInFrontOnMainDisplay()
+            ShellySaveDraft.chromeInFront(currentForegroundPackageOnDefaultDisplay(), chromeTaskInFrontOnMainDisplay())
 
     private val taskReader by lazy { ShizukuClient() }
 
     /**
      * A second look, from the task list: true when the front visible root task on the main display
-     * is Chrome's. Unreadable counts as false here; the window check above already fails closed.
+     * is Chrome's. Null when the list cannot be read (the window check then fails closed).
      */
-    private fun chromeTaskInFrontOnMainDisplay(): Boolean = try {
+    private fun chromeTaskInFrontOnMainDisplay(): Boolean? = try {
         val tasks = taskReader.rootTasksOnDisplay(Display.DEFAULT_DISPLAY)
         val front = tasks?.firstOrNull { it.visible != false } ?: tasks?.firstOrNull()
-        front != null && ChromeFlagDeepLink.CHROME_PACKAGE in front.packages
+        if (front == null) null else ChromeFlagDeepLink.CHROME_PACKAGE in front.packages
     } catch (e: Exception) {
-        false
+        null
     }
 
     /**
