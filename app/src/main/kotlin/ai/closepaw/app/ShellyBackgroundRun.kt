@@ -34,11 +34,42 @@ object ShellyBackgroundRun {
 
     const val MAX_GOAL_CHARS = 4_000
 
+    /**
+     * Result callback correlation (Shelly >= shim v14, see [ShellyResultCallback]). Shelly sends
+     * its request id and a per-run random nonce with the goal; ClosePaw echoes both back when the
+     * run finishes. Both are optional: without them (older Shelly, agent-run hand-offs) no result
+     * is sent back. Malformed values are dropped, never fail the request.
+     */
+    const val EXTRA_SHELLY_REQ_ID = "shelly_req_id"
+    const val EXTRA_SHELLY_RESULT_NONCE = "shelly_result_nonce"
+    private val SHELLY_REQ_ID_RE = Regex("^[0-9]{10,16}-[0-9a-f]{8}$")
+    private val SHELLY_RESULT_NONCE_RE = Regex("^[0-9a-f]{32}$")
+
+    /** Correlation for the result callback; null unless BOTH extras are well-formed. */
+    data class ResultCorrelation(val reqId: String, val nonce: String)
+
+    fun parseResultCorrelation(reqIdExtra: String?, nonceExtra: String?): ResultCorrelation? {
+        val reqId = reqIdExtra?.takeIf { SHELLY_REQ_ID_RE.matches(it) } ?: return null
+        val nonce = nonceExtra?.takeIf { SHELLY_RESULT_NONCE_RE.matches(it) } ?: return null
+        return ResultCorrelation(reqId, nonce)
+    }
+
     // Ordered-broadcast result codes (Shelly should send with initialCode = 0, so 0 means
     // "no receiver answered": ClosePaw missing, too old, or stopped).
     const val RESULT_STARTED_VIRTUAL_DISPLAY = 1
     const val RESULT_STARTED_MAIN_DISPLAY = 2
     const val RESULT_REJECTED = 10
+
+    /**
+     * Ordered-result extra (Int 1): this run will send [ShellyResultCallback]. Shelly treats a
+     * started run without it as "no result will come" instead of waiting forever.
+     */
+    const val RESULT_EXTRA_RESULT_CALLBACK = "result_callback"
+
+    /** True when a started run carries a result correlation (so the callback will be sent). */
+    fun reportsResult(resultCode: Int, correlation: ResultCorrelation?): Boolean =
+        correlation != null &&
+            (resultCode == RESULT_STARTED_VIRTUAL_DISPLAY || resultCode == RESULT_STARTED_MAIN_DISPLAY)
 
     enum class Block(val resultCode: Int) {
         ACCESSIBILITY_OFF(11),
@@ -54,7 +85,11 @@ object ShellyBackgroundRun {
         data class Blocked(val block: Block) : Decision
     }
 
-    data class Request(val goal: String, val allowMainDisplay: Boolean)
+    data class Request(
+        val goal: String,
+        val allowMainDisplay: Boolean,
+        val correlation: ResultCorrelation? = null,
+    )
 
     /**
      * Trust gate for the exported receiver. Returns null (= ignore the broadcast, do nothing
@@ -65,11 +100,13 @@ object ShellyBackgroundRun {
         goalExtra: String?,
         callerVerified: Boolean,
         allowMainDisplay: Boolean,
+        reqIdExtra: String? = null,
+        nonceExtra: String? = null,
     ): Request? {
         if (action != ACTION_RUN_GOAL) return null
         if (!callerVerified) return null
         val goal = goalExtra?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        return Request(goal.take(MAX_GOAL_CHARS), allowMainDisplay)
+        return Request(goal.take(MAX_GOAL_CHARS), allowMainDisplay, parseResultCorrelation(reqIdExtra, nonceExtra))
     }
 
     /** Preconditions, checked synchronously before anything becomes visible. */
@@ -121,7 +158,28 @@ class ShellyRunTracker(
     val sessionId: String,
     val onMainDisplay: Boolean,
     private val ignoredPackages: Set<String>,
+    /** Where to report the final state (null: the caller did not ask for a result). */
+    val correlation: ShellyBackgroundRun.ResultCorrelation? = null,
+    /**
+     * The start's shared report-once guard (see [ShellyPendingResult]). AgentService passes the
+     * guard it created when it accepted the start, so the tracker and the pre-tracker paths
+     * (startup failure / cancellation / destroy) can never both report.
+     */
+    val result: ShellyPendingResult = ShellyPendingResult(correlation),
 ) {
+    /** True once the final state was reported to Shelly (by any path of this start). */
+    val resultReported: Boolean get() = result.isClaimed
+
+    /**
+     * Claims this run's result once it is finished: the payload for the first claim, null when
+     * still running, already claimed (by any path of this start), or no result was requested.
+     */
+    fun claimResult(nowMs: Long): ShellyResultCallback.Payload? {
+        if (!isFinished) return null
+        if (!result.claim()) return null
+        return ShellyResultCallback.payloadFor(this, nowMs)
+    }
+
     private val vdPackages = LinkedHashSet<String>()
 
     var state: ShellyRunState = ShellyRunState.Working(onMainDisplay, emptyList())

@@ -142,6 +142,13 @@ class AgentService : AccessibilityService() {
      * instead of creating a second, orphaned session on the virtual display. Main thread only.
      */
     private var shellyStartInFlight = false
+
+    /**
+     * Report-once guard of the start currently being set up: set when [startShellyRun] accepts a
+     * start (before the async work), cleared once the tracker adopts it or startup has ended. Lets
+     * [onDestroy] report `cancelled` for a start that has no tracker yet. Main thread only.
+     */
+    private var shellyPendingStart: ShellyPendingResult? = null
     private val shellyNotifier by lazy { ShellyRunNotifier(this) }
 
     fun observeExternalSession(
@@ -283,8 +290,14 @@ class AgentService : AccessibilityService() {
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
             shellyNotifier.render(it.state)
+            reportShellyResult(it)
         }
         shellyRun = null
+        // A start still being set up (no tracker yet) would otherwise end silently when
+        // serviceScope is cancelled below. The startup coroutine's own cancellation report then
+        // finds the shared guard claimed and stays quiet.
+        shellyPendingStart?.let { reportShellyStartCancelled(it) }
+        shellyPendingStart = null
 
         eventCollectorJob?.cancel()
         eventCollectorJob = null
@@ -399,6 +412,7 @@ class AgentService : AccessibilityService() {
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
             shellyNotifier.render(it.state)
+            reportShellyResult(it)
             shellyRun = null
         }
         if (session != null) {
@@ -467,21 +481,32 @@ class AgentService : AccessibilityService() {
      *
      * Visible surface: Smart Capsule overlay + [ShellyRunNotifier] only.
      */
-    internal fun startShellyRun(goal: String, platformMode: PlatformMode) {
+    internal fun startShellyRun(
+            goal: String,
+            platformMode: PlatformMode,
+            correlation: ShellyBackgroundRun.ResultCorrelation? = null,
+    ) {
         if (!isServiceActive) {
             shellyNotifier.showBlocked(ShellyBackgroundRun.Block.ACCESSIBILITY_OFF, goal)
+            reportShellyStartFailure(correlation, "ClosePaw's accessibility service is not active")
             return
         }
         if (shellyStartInFlight) {
             Log.w(TAG, "Shelly run already starting; refusing a second start")
             shellyNotifier.showBlocked(ShellyBackgroundRun.Block.BUSY, goal)
+            reportShellyStartFailure(correlation, "ClosePaw is busy with another task")
             return
         }
         shellyStartInFlight = true
+        // The start is accepted (the receiver will answer result_callback=1 when a correlation is
+        // present): from here every exit must claim this guard exactly once.
+        val pending = ShellyPendingResult(correlation)
+        shellyPendingStart = pending
         // Replace an idle/finished session (FORCE_FRESH semantics). Busy sessions were refused
         // by the receiver's precheck.
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
+            reportShellyResult(it)
             shellyRun = null
         }
         session?.let { old ->
@@ -551,6 +576,7 @@ class AgentService : AccessibilityService() {
                     serviceScope.launch { newSession.submit(Op.Shutdown) }
                     shellyNotifier.cancel()
                     shellyNotifier.showBlocked(ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE, goal)
+                    reportShellyStartFailure(pending, "ClosePaw's virtual display became unavailable")
                     overlayController?.hideAll()
                     return@launch
                 }
@@ -566,6 +592,8 @@ class AgentService : AccessibilityService() {
                         sessionId = newSession.sessionId.value,
                         onMainDisplay = effectiveMode != PlatformMode.VIRTUAL_DISPLAY,
                         ignoredPackages = ignored,
+                        correlation = pending.correlation,
+                        result = pending,
                 )
                 // Defensive: never leave a different session running unobserved (it would keep
                 // driving the virtual display with no capsule / notification attached).
@@ -578,10 +606,16 @@ class AgentService : AccessibilityService() {
                 }
                 observeExternalSession(newSession, effectiveMode)
                 shellyRun = tracker
+                // The tracker now owns the guard; tracker paths (incl. onDestroy) report from here.
+                if (shellyPendingStart === pending) shellyPendingStart = null
                 renderShellyRun()
                 Log.i(TAG, "Shelly run started: session=${newSession.sessionId}, mode=$effectiveMode")
                 newSession.submit(Op.UserInput(text = goal))
             } catch (e: CancellationException) {
+                // Service destroyed / scope cancelled mid-startup. Once the tracker owns the guard
+                // its paths report (onDestroy finishes it); before that, claim it here — a no-op if
+                // onDestroy already claimed it.
+                if (shellyRun?.result !== pending) reportShellyStartCancelled(pending)
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Shelly run failed to start", e)
@@ -589,12 +623,16 @@ class AgentService : AccessibilityService() {
                 shellyNotifier.render(
                         ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, e.message)
                 )
+                reportShellyStartFailure(pending, "ClosePaw failed to start the task")
                 overlayController?.hideAll()
             }
         }
         // Cleared on every exit path: success, VD-lost refusal, exception and cancellation.
         startJob.invokeOnCompletion {
-            android.os.Handler(android.os.Looper.getMainLooper()).post { shellyStartInFlight = false }
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                shellyStartInFlight = false
+                if (shellyPendingStart === pending) shellyPendingStart = null
+            }
         }
     }
 
@@ -604,6 +642,7 @@ class AgentService : AccessibilityService() {
         } else {
             shellyRun?.finish(ShellyRunState.Finished.Kind.STOPPED)
             renderShellyRun()
+            shellyRun?.let { reportShellyResult(it) }
             shellyRun = null
         }
     }
@@ -631,6 +670,7 @@ class AgentService : AccessibilityService() {
         if (tracker.sessionId == newSession.sessionId.value) return
         tracker.finish(ShellyRunState.Finished.Kind.STOPPED)
         shellyNotifier.render(tracker.state)
+        reportShellyResult(tracker)
         shellyRun = null
     }
 
@@ -638,7 +678,43 @@ class AgentService : AccessibilityService() {
         val tracker = shellyRun ?: return
         if (tracker.sessionId != agentSession.sessionId.value) return
         if (tracker.onEvent(event)) renderShellyRun()
-        if (tracker.isFinished) shellyRun = null
+        if (tracker.isFinished) {
+            reportShellyResult(tracker)
+            shellyRun = null
+        }
+    }
+
+    /**
+     * Send a finished run's final state back to Shelly (at most once per run, and only when the
+     * goal broadcast carried a result correlation). See [ShellyResultCallback].
+     */
+    private fun reportShellyResult(tracker: ShellyRunTracker) {
+        // Claims the start's shared guard: no-op if a startup path already reported this start.
+        ShellyResultCallback.send(applicationContext, tracker.claimResult(System.currentTimeMillis()))
+    }
+
+    /**
+     * A verified request refused before a start was accepted (no [ShellyPendingResult] exists yet;
+     * each refusal is its own single terminal report).
+     */
+    private fun reportShellyStartFailure(
+            correlation: ShellyBackgroundRun.ResultCorrelation?,
+            message: String,
+    ) {
+        ShellyResultCallback.send(
+                applicationContext,
+                ShellyResultCallback.failurePayload(correlation, message, System.currentTimeMillis()),
+        )
+    }
+
+    /** An accepted start failed before it ran. Claims the start's guard (at most one report). */
+    private fun reportShellyStartFailure(pending: ShellyPendingResult, message: String) {
+        ShellyResultCallback.send(applicationContext, pending.claimFailed(message, System.currentTimeMillis()))
+    }
+
+    /** An accepted start was cancelled before it ran. Claims the start's guard (at most one report). */
+    private fun reportShellyStartCancelled(pending: ShellyPendingResult) {
+        ShellyResultCallback.send(applicationContext, pending.claimCancelled(System.currentTimeMillis()))
     }
 
     private fun trackShellyRunWindow(packageName: String?, className: String?, displayId: Int) {
