@@ -105,6 +105,97 @@ class ShellyResultCallbackTest {
         assertThat(p.summary).isEqualTo("busy")
     }
 
+    // ── Report-once guard per accepted start (startup cancellation / destroy) ──
+
+    private fun pending() = ShellyPendingResult(ShellyBackgroundRun.ResultCorrelation(reqId, nonce))
+
+    private fun trackerFor(guard: ShellyPendingResult) = ShellyRunTracker(
+        "s1",
+        onMainDisplay = false,
+        ignoredPackages = emptySet(),
+        correlation = guard.correlation,
+        result = guard,
+    )
+
+    @Test
+    fun `cancelled payload carries STATUS_CANCELLED and echoes the correlation`() {
+        assertThat(ShellyResultCallback.cancelledPayload(null, 0L)).isNull()
+        val p = ShellyResultCallback.cancelledPayload(ShellyBackgroundRun.ResultCorrelation(reqId, nonce), 7L)!!
+        assertThat(p.status).isEqualTo(ShellyResultCallback.STATUS_CANCELLED)
+        assertThat(p.reqId).isEqualTo(reqId)
+        assertThat(p.nonce).isEqualTo(nonce)
+        assertThat(p.summary).isEqualTo(ShellyResultCallback.CANCELLED_DURING_START_MESSAGE)
+        assertThat(p.finishedAtMs).isEqualTo(7L)
+        assertThat(p.sessionId).isNull()
+    }
+
+    @Test
+    fun `startup cancellation claim wins and later destroy or tracker claims are no-ops`() {
+        val guard = pending()
+        val first = guard.claimCancelled(1L)!!
+        assertThat(first.status).isEqualTo(ShellyResultCallback.STATUS_CANCELLED)
+        assertThat(first.reqId).isEqualTo(reqId)
+        assertThat(first.nonce).isEqualTo(nonce)
+        // onDestroy's own cancellation claim, a start failure, and a tracker sharing the guard.
+        assertThat(guard.claimCancelled(2L)).isNull()
+        assertThat(guard.claimFailed("boom", 2L)).isNull()
+        val t = trackerFor(guard)
+        t.finish(ShellyRunState.Finished.Kind.STOPPED)
+        assertThat(t.resultReported).isTrue()
+        assertThat(t.claimResult(3L)).isNull()
+    }
+
+    @Test
+    fun `destroy claim wins and the coroutine's cancellation claim is a no-op`() {
+        val guard = pending()
+        // onDestroy during startup (no tracker yet) reports once ...
+        assertThat(guard.claimCancelled(1L)!!.status).isEqualTo(ShellyResultCallback.STATUS_CANCELLED)
+        // ... then serviceScope.cancel() drives the startup coroutine into its catch.
+        assertThat(guard.claimCancelled(2L)).isNull()
+        assertThat(guard.isClaimed).isTrue()
+    }
+
+    @Test
+    fun `finished tracker claims once and blocks every later report of the start`() {
+        val guard = pending()
+        val t = trackerFor(guard)
+        assertThat(t.claimResult(0L)).isNull() // still running: nothing claimed
+        assertThat(guard.isClaimed).isFalse()
+        t.onEvent(TaskCompleted(sid, 0L, "task", "done", TaskOutcome.GOAL_ACHIEVED))
+        val p = t.claimResult(5L)!!
+        assertThat(p.status).isEqualTo(ShellyResultCallback.STATUS_COMPLETED)
+        assertThat(p.summary).isEqualTo("done")
+        assertThat(t.resultReported).isTrue()
+        assertThat(t.claimResult(6L)).isNull()
+        assertThat(guard.claimCancelled(6L)).isNull()
+        assertThat(guard.claimFailed("late", 6L)).isNull()
+    }
+
+    @Test
+    fun `startup failure claims the guard once`() {
+        val guard = pending()
+        val p = guard.claimFailed("ClosePaw failed to start the task", 1L)!!
+        assertThat(p.status).isEqualTo(ShellyResultCallback.STATUS_FAILED)
+        assertThat(p.reqId).isEqualTo(reqId)
+        assertThat(guard.claimFailed("again", 2L)).isNull()
+        assertThat(guard.claimCancelled(2L)).isNull()
+    }
+
+    @Test
+    fun `a start without correlation consumes the claim but sends nothing`() {
+        val guard = ShellyPendingResult(null)
+        assertThat(guard.claimCancelled(1L)).isNull()
+        assertThat(guard.isClaimed).isTrue()
+    }
+
+    @Test
+    fun `a standalone tracker gets its own guard`() {
+        val t = tracker()
+        t.onEvent(TaskCompleted(sid, 0L, "t", null, TaskOutcome.USER_STOPPED))
+        assertThat(t.claimResult(0L)!!.status).isEqualTo(ShellyResultCallback.STATUS_CANCELLED)
+        assertThat(t.claimResult(0L)).isNull()
+    }
+
     @Test
     fun `summary is capped by code points without splitting surrogate pairs`() {
         val emoji = "😀"
