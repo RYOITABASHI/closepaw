@@ -10,6 +10,7 @@ internal class BundledAgentSkillInstaller(
     @Throws(IOException::class)
     fun install(skillsDir: File) {
         installSkill(BROWSER_USE_SKILL, skillsDir)
+        installSkill(SHELLY_OPERATOR_SKILL, skillsDir)
     }
 
     @Throws(IOException::class)
@@ -150,6 +151,7 @@ internal class BundledAgentSkillInstaller(
         const val INSTALL_SENTINEL = ".install-complete"
         private const val AGENT_SKILLS_ROOT = "agent_skills"
         private const val BROWSER_USE_SKILL = "browser-use"
+        private const val SHELLY_OPERATOR_SKILL = "shelly-operator"
         private const val SKILL_DIR_PLACEHOLDER = "{{SKILL_DIR}}"
         private val SKILL_NAME_PATTERN = Regex("^[a-z][a-z0-9-]{0,63}$")
 

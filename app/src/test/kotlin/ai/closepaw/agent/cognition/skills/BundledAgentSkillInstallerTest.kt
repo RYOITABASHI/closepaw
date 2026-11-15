@@ -20,7 +20,7 @@ class BundledAgentSkillInstallerTest {
     fun `install copies browser use skill into filesDir skills with substituted paths`() {
         val filesDir = tempDir.newFolder("files")
         val skillsDir = File(filesDir, "skills")
-        val assets = fakeAssets(browserUseAssets())
+        val assets = fakeAssets(bundledAssets())
 
         BundledAgentSkillInstaller(assets).install(skillsDir)
 
@@ -42,10 +42,28 @@ class BundledAgentSkillInstallerTest {
     }
 
     @Test
+    fun `install seeds shelly operator skill alongside browser use`() {
+        val filesDir = tempDir.newFolder("files")
+        val skillsDir = File(filesDir, "skills")
+        val assets = fakeAssets(bundledAssets())
+
+        BundledAgentSkillInstaller(assets).install(skillsDir)
+
+        val installedDir = File(skillsDir, "shelly-operator")
+        assertThat(File(installedDir, "SKILL.md").isFile).isTrue()
+        assertThat(File(installedDir, BundledAgentSkillInstaller.INSTALL_SENTINEL).isFile).isTrue()
+        assertThat(File(installedDir, "SKILL.md").readText()).contains("name: shelly-operator")
+
+        val manager = AgentSkillManager(skillsDir)
+        assertThat(manager.entries).containsKey("browser-use")
+        assertThat(manager.entries).containsKey("shelly-operator")
+    }
+
+    @Test
     fun `install is idempotent and overwrites stale browser use files`() {
         val filesDir = tempDir.newFolder("files")
         val skillsDir = File(filesDir, "skills")
-        val assetFiles = browserUseAssets().toMutableMap()
+        val assetFiles = bundledAssets().toMutableMap()
         val assets = fakeAssets(assetFiles)
         val installer = BundledAgentSkillInstaller(assets)
 
@@ -80,6 +98,34 @@ class BundledAgentSkillInstallerTest {
         assertThat(installedSkill).contains("${installedDir.absolutePath}/scripts/tabs.js")
         assertThat(installedSkill).contains("${installedDir.absolutePath}/scripts/input.js")
     }
+
+    @Test
+    fun `install seeds real shelly operator asset with sentinel`() {
+        val skillsDir = tempDir.newFolder("skills")
+        val assets = fileBackedAssets(File("src/main/assets"))
+
+        BundledAgentSkillInstaller(assets).install(skillsDir)
+
+        val installedDir = File(skillsDir, "shelly-operator")
+        assertThat(File(installedDir, "SKILL.md").isFile).isTrue()
+        assertThat(File(installedDir, BundledAgentSkillInstaller.INSTALL_SENTINEL).isFile).isTrue()
+        assertThat(File(installedDir, "SKILL.md").readText()).contains("name: shelly-operator")
+
+        val manager = AgentSkillManager(skillsDir)
+        assertThat(manager.entries).containsKey("shelly-operator")
+    }
+
+    private fun bundledAssets(): Map<String, String> = browserUseAssets() + shellyOperatorAssets()
+
+    private fun shellyOperatorAssets(): Map<String, String> = mapOf(
+        "agent_skills/shelly-operator/SKILL.md" to """
+            |---
+            |name: shelly-operator
+            |description: Shelly operation guidance.
+            |---
+            |Operate Shelly.
+        """.trimMargin(),
+    )
 
     private fun browserUseAssets(): Map<String, String> = mapOf(
         "agent_skills/browser-use/SKILL.md" to """
