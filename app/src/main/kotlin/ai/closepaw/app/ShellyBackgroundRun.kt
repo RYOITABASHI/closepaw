@@ -160,9 +160,25 @@ class ShellyRunTracker(
     private val ignoredPackages: Set<String>,
     /** Where to report the final state (null: the caller did not ask for a result). */
     val correlation: ShellyBackgroundRun.ResultCorrelation? = null,
+    /**
+     * The start's shared report-once guard (see [ShellyPendingResult]). AgentService passes the
+     * guard it created when it accepted the start, so the tracker and the pre-tracker paths
+     * (startup failure / cancellation / destroy) can never both report.
+     */
+    val result: ShellyPendingResult = ShellyPendingResult(correlation),
 ) {
-    /** Set once the final state was reported to Shelly, so it is sent at most once. */
-    var resultReported: Boolean = false
+    /** True once the final state was reported to Shelly (by any path of this start). */
+    val resultReported: Boolean get() = result.isClaimed
+
+    /**
+     * Claims this run's result once it is finished: the payload for the first claim, null when
+     * still running, already claimed (by any path of this start), or no result was requested.
+     */
+    fun claimResult(nowMs: Long): ShellyResultCallback.Payload? {
+        if (!isFinished) return null
+        if (!result.claim()) return null
+        return ShellyResultCallback.payloadFor(this, nowMs)
+    }
 
     private val vdPackages = LinkedHashSet<String>()
 
