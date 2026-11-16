@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MCP intake server: settings section -->
+    <string name="mcp_section_title">MCP</string>
+    <string name="mcp_server_title">ClosePaw MCPサーバー</string>
+    <string name="mcp_server_on_label">オン</string>
+    <string name="mcp_server_off_label">オフ</string>
+    <string name="mcp_server_on">トークンを持つ同じネットワーク上のMCPクライアントが、このスマホでのタスク実行をClosePawに依頼できます。</string>
+    <string name="mcp_server_off">MCPクライアント（Claude Code、Codexなど）から、このスマホでのタスク実行をClosePawに依頼できるようにします。タスクは仮想ディスプレイ（Shizuku）上でバックグラウンド実行されます。</string>
+    <string name="mcp_server_status_running">ポート%1$dで待ち受け中</string>
+    <string name="mcp_server_status_failed">サーバーを起動できませんでした（%1$s）</string>
+    <string name="mcp_server_status_starting">起動中…</string>
+    <string name="mcp_address_hint">接続先: %1$s（Streamable HTTP）。ヘッダー「Authorization: Bearer &lt;トークン&gt;」を付けて送信します。</string>
+    <string name="mcp_address_hint_no_network">接続先: http://&lt;このスマホのIP&gt;:%1$d/mcp。Wi-Fiに接続するとアドレスが表示されます。</string>
+    <string name="mcp_token_label">アクセストークン</string>
+    <string name="mcp_token_copy">コピー</string>
+    <string name="mcp_token_copied">トークンをコピーしました</string>
+    <string name="mcp_token_regenerate">トークンを再生成</string>
+    <string name="mcp_token_regenerated">新しいトークンを作成しました。古いトークンは使えなくなりました。</string>
+    <string name="mcp_token_warning">このトークンを持つ同じネットワーク上の誰もが、ClosePawにスマホを操作させられます。漏れた場合は再生成してください。</string>
+</resources>

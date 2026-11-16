@@ -1,6 +1,12 @@
 package ai.closepaw.app
 
 import ai.closepaw.R
+import ai.closepaw.mcp.McpAuth
+import ai.closepaw.mcp.McpBackend
+import ai.closepaw.mcp.McpHandler
+import ai.closepaw.mcp.McpHttpRequest
+import ai.closepaw.mcp.McpHttpServer
+import ai.closepaw.mcp.McpRunRegistry
 import ai.closepaw.platform.virtualdisplay.DisplayTask
 import ai.closepaw.platform.virtualdisplay.MainDisplayHandover
 import ai.closepaw.platform.virtualdisplay.MainDisplayRefront
@@ -27,6 +33,11 @@ import io.mockk.mockkConstructor
 import io.mockk.unmockkConstructor
 import io.mockk.verify
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.json.JSONObject
 import org.junit.Test
 
@@ -1064,5 +1075,344 @@ class ShellyBackgroundRunTest {
         r.restore(vdId) // completed: nothing is owed any more
         assertThat(proxy.calls).isEqualTo(2)
         assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    // ── MCP intake (second intake into the same background-run machinery) ──
+    // Kept in this CI-enumerated class (build-shelly-variant.yml) on purpose.
+
+    private val mcpToken = "a".repeat(64)
+
+    private class FakeMcpBackend(private val registry: McpRunRegistry) : McpBackend {
+        var refuse: McpBackend.StartResult.Refused? = null
+        val started = mutableListOf<String>()
+        val stopRequests = mutableListOf<String>()
+        /** Simulates AgentService: a stop request ends the session -> tracker finishes STOPPED. */
+        var stopFinishesRun = true
+
+        override fun startRun(goal: String): McpBackend.StartResult {
+            refuse?.let { return it }
+            val handle = registry.issue()
+            registry.markRunning(handle)
+            started += goal
+            return McpBackend.StartResult.Started(handle)
+        }
+
+        override fun stopRun(runHandle: String): Boolean {
+            stopRequests += runHandle
+            if (stopFinishesRun) {
+                McpRunStatus.complete(registry, runHandle, ShellyRunState.Finished(ShellyRunState.Finished.Kind.STOPPED, null))
+            }
+            return true
+        }
+
+        override fun status() = McpBackend.Status(version = "test", shizukuReady = true, accessibilityReady = false)
+    }
+
+    private class McpFixture(token: String?) {
+        var token: String? = token
+        val audit = mutableListOf<String>()
+        val registry = McpRunRegistry()
+        val backend = FakeMcpBackend(registry)
+        private var nextSession = 0
+        val handler = McpHandler(
+            expectedToken = { this.token },
+            registry = registry,
+            backend = backend,
+            audit = { audit += it },
+            serverVersion = "test",
+            newSessionId = { "session-${++nextSession}" },
+        )
+    }
+
+    private fun mcpRequest(
+        body: String,
+        token: String? = mcpToken,
+        session: String? = null,
+        method: String = "POST",
+        path: String = "/mcp",
+        origin: String? = null,
+    ): McpHttpRequest {
+        val headers = buildMap {
+            token?.let { put("authorization", "Bearer $it") }
+            session?.let { put("mcp-session-id", it) }
+            origin?.let { put("origin", it) }
+        }
+        return McpHttpRequest(method, path, headers, body)
+    }
+
+    private fun rpc(method: String, params: String = "{}", id: Int? = 1): String =
+        if (id == null) """{"jsonrpc":"2.0","method":"$method","params":$params}"""
+        else """{"jsonrpc":"2.0","id":$id,"method":"$method","params":$params}"""
+
+    private fun McpFixture.initialize(): String {
+        val res = handler.handle(mcpRequest(rpc("initialize", """{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}""")))
+        assertThat(res.status).isEqualTo(200)
+        return res.headers.getValue(McpHandler.SESSION_HEADER)
+    }
+
+    private fun McpFixture.callTool(session: String, name: String, args: String): kotlinx.serialization.json.JsonObject {
+        val res = handler.handle(mcpRequest(rpc("tools/call", """{"name":"$name","arguments":$args}"""), session = session))
+        assertThat(res.status).isEqualTo(200)
+        return kotlinx.serialization.json.Json.parseToJsonElement(res.body!!).jsonObject["result"]!!.jsonObject
+    }
+
+    private fun kotlinx.serialization.json.JsonObject.toolText(): String =
+        this["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content
+
+    private fun kotlinx.serialization.json.JsonObject.toolData(): kotlinx.serialization.json.JsonObject {
+        assertThat(this["isError"]!!.jsonPrimitive.boolean).isFalse()
+        return kotlinx.serialization.json.Json.parseToJsonElement(toolText()).jsonObject
+    }
+
+    @Test
+    fun `mcp token - only the exact bearer token is accepted`() {
+        assertThat(McpAuth.isAuthorized("Bearer $mcpToken", mcpToken)).isTrue()
+        assertThat(McpAuth.isAuthorized("Bearer ${"b".repeat(64)}", mcpToken)).isFalse()
+        assertThat(McpAuth.isAuthorized(mcpToken, mcpToken)).isFalse()
+        assertThat(McpAuth.isAuthorized("bearer $mcpToken", mcpToken)).isFalse()
+        assertThat(McpAuth.isAuthorized("Bearer $mcpToken ", mcpToken)).isFalse()
+        assertThat(McpAuth.isAuthorized("Bearer ${mcpToken.dropLast(1)}", mcpToken)).isFalse()
+        assertThat(McpAuth.isAuthorized(null, mcpToken)).isFalse()
+        // An unconfigured / malformed server token rejects everything, including its own value.
+        assertThat(McpAuth.isAuthorized("Bearer ", "")).isFalse()
+        assertThat(McpAuth.isAuthorized("Bearer short", "short")).isFalse()
+        assertThat(McpAuth.isAuthorized("Bearer x", null)).isFalse()
+    }
+
+    @Test
+    fun `mcp token - generated tokens are 32 random bytes in hex`() {
+        val a = McpAuth.generateToken()
+        val b = McpAuth.generateToken()
+        assertThat(McpAuth.isWellFormedToken(a)).isTrue()
+        assertThat(a).isNotEqualTo(b)
+    }
+
+    @Test
+    fun `mcp token - every request is gated and regenerating invalidates the old token at once`() {
+        val f = McpFixture(mcpToken)
+        assertThat(f.handler.handle(mcpRequest(rpc("initialize"), token = null)).status).isEqualTo(401)
+        assertThat(f.handler.handle(mcpRequest(rpc("initialize"), token = "c".repeat(64))).status).isEqualTo(401)
+        val session = f.initialize()
+        assertThat(f.handler.handle(mcpRequest(rpc("tools/list"), session = session, token = null)).status).isEqualTo(401)
+
+        val fresh = "d".repeat(64)
+        f.token = fresh
+        f.handler.clearSessions()
+        assertThat(f.handler.handle(mcpRequest(rpc("tools/list"), session = session)).status).isEqualTo(401)
+        assertThat(f.handler.handle(mcpRequest(rpc("initialize"), token = fresh)).status).isEqualTo(200)
+        // The token never reaches the audit log.
+        assertThat(f.audit.none { mcpToken in it || fresh in it }).isTrue()
+        assertThat(f.audit).contains("mcp rejected: unauthorized")
+    }
+
+    @Test
+    fun `mcp origin guard refuses non-loopback origins before auth`() {
+        val f = McpFixture(mcpToken)
+        assertThat(f.handler.handle(mcpRequest(rpc("initialize"), origin = "https://evil.example")).status).isEqualTo(403)
+        assertThat(f.handler.handle(mcpRequest(rpc("initialize"), origin = "null")).status).isEqualTo(403)
+        assertThat(f.handler.handle(mcpRequest(rpc("initialize"), origin = "http://localhost:3000")).status).isEqualTo(200)
+        assertThat(f.handler.handle(mcpRequest(rpc("initialize"), origin = "http://127.0.0.1")).status).isEqualTo(200)
+        assertThat(f.handler.handle(mcpRequest(rpc("initialize"), path = "/other")).status).isEqualTo(404)
+    }
+
+    @Test
+    fun `mcp session handshake - initialize, initialized, tools list, delete`() {
+        val f = McpFixture(mcpToken)
+        // No session yet: everything but initialize is refused.
+        val noSession = f.handler.handle(mcpRequest(rpc("tools/list")))
+        assertThat(noSession.status).isEqualTo(400)
+        assertThat(noSession.body).contains("-32000")
+
+        val init = f.handler.handle(mcpRequest(rpc("initialize", """{"protocolVersion":"2025-06-18"}""")))
+        assertThat(init.status).isEqualTo(200)
+        val session = init.headers.getValue("Mcp-Session-Id")
+        val result = kotlinx.serialization.json.Json.parseToJsonElement(init.body!!).jsonObject["result"]!!.jsonObject
+        assertThat(result["protocolVersion"]!!.jsonPrimitive.content).isEqualTo("2025-06-18")
+        assertThat(result["serverInfo"]!!.jsonObject["name"]!!.jsonPrimitive.content).isEqualTo("closepaw")
+
+        val initialized = f.handler.handle(mcpRequest(rpc("notifications/initialized", id = null), session = session))
+        assertThat(initialized.status).isEqualTo(202)
+        assertThat(initialized.body).isNull()
+
+        assertThat(f.handler.handle(mcpRequest(rpc("tools/list"), session = "bogus")).status).isEqualTo(400)
+        val list = f.handler.handle(mcpRequest(rpc("tools/list"), session = session))
+        val names = kotlinx.serialization.json.Json.parseToJsonElement(list.body!!).jsonObject["result"]!!
+            .jsonObject["tools"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+        // Typed surface only: run_goal is the single execution entry; no raw input tools.
+        assertThat(names).containsExactly("run_goal", "get_run_result", "stop_run", "closepaw_status")
+
+        // Unknown protocol versions negotiate down to 2025-06-18.
+        val other = f.handler.handle(mcpRequest(rpc("initialize", """{"protocolVersion":"1999-01-01"}""")))
+        assertThat(other.body).contains("\"protocolVersion\":\"2025-06-18\"")
+
+        assertThat(f.handler.handle(mcpRequest("", session = session, method = "GET")).status).isEqualTo(405)
+        assertThat(f.handler.handle(mcpRequest("", session = session, method = "DELETE")).status).isEqualTo(200)
+        assertThat(f.handler.handle(mcpRequest(rpc("tools/list"), session = session)).status).isEqualTo(400)
+        assertThat(f.handler.handle(mcpRequest("{not json", session = session)).status).isEqualTo(400)
+    }
+
+    @Test
+    fun `mcp unknown and raw-input tools are refused`() {
+        val f = McpFixture(mcpToken)
+        val session = f.initialize()
+        for (tool in listOf("tap", "swipe", "input_text", "shell")) {
+            val res = f.handler.handle(mcpRequest(rpc("tools/call", """{"name":"$tool","arguments":{}}"""), session = session))
+            assertThat(res.body).contains("-32602")
+        }
+        assertThat(f.backend.started).isEmpty()
+    }
+
+    @Test
+    fun `mcp run handle registry - issue, poll, terminal state`() {
+        val registry = McpRunRegistry()
+        val h = registry.issue()
+        assertThat(registry.snapshot(h)!!.status).isEqualTo(McpRunRegistry.Status.STARTING)
+        assertThat(registry.markRunning(h)).isTrue()
+        assertThat(registry.activeCount()).isEqualTo(1)
+        // Non-terminal: returns the current state after waiting.
+        assertThat(registry.await(h, 30)!!.status).isEqualTo(McpRunRegistry.Status.RUNNING)
+
+        // A long poll wakes up as soon as the run finishes.
+        val waiter = Thread { Thread.sleep(50); registry.complete(h, McpRunRegistry.Status.COMPLETED, "done") }
+        waiter.start()
+        val t0 = System.nanoTime()
+        val snap = registry.await(h, 10_000)!!
+        assertThat((System.nanoTime() - t0) / 1_000_000).isLessThan(5_000L)
+        waiter.join()
+        assertThat(snap).isEqualTo(McpRunRegistry.Snapshot(h, McpRunRegistry.Status.COMPLETED, "done"))
+        // First terminal report wins.
+        assertThat(registry.complete(h, McpRunRegistry.Status.FAILED, "late")).isFalse()
+        assertThat(registry.snapshot(h)!!.status).isEqualTo(McpRunRegistry.Status.COMPLETED)
+        assertThat(registry.markRunning(h)).isFalse()
+        assertThat(registry.activeCount()).isEqualTo(0)
+        assertThat(registry.await("run_unknown", 10)).isNull()
+    }
+
+    @Test
+    fun `mcp registry is bounded and evicts finished handles first`() {
+        var n = 0
+        val registry = McpRunRegistry(maxEntries = 2, newHandle = { "h${n++}" })
+        val running = registry.issue()
+        val done = registry.issue()
+        registry.complete(done, McpRunRegistry.Status.FAILED, "x")
+        val third = registry.issue()
+        assertThat(registry.snapshot(done)).isNull()
+        assertThat(registry.snapshot(running)).isNotNull()
+        assertThat(registry.snapshot(third)).isNotNull()
+    }
+
+    @Test
+    fun `mcp run status maps background run outcomes`() {
+        val registry = McpRunRegistry()
+        val h = registry.issue()
+        McpRunStatus.complete(registry, h, ShellyRunState.Finished(ShellyRunState.Finished.Kind.DONE, "  Wi-Fi is on  "))
+        assertThat(registry.snapshot(h)).isEqualTo(McpRunRegistry.Snapshot(h, McpRunRegistry.Status.COMPLETED, "Wi-Fi is on"))
+        assertThat(McpRunStatus.of(ShellyRunState.Finished.Kind.FAILED)).isEqualTo(McpRunRegistry.Status.FAILED)
+        assertThat(McpRunStatus.of(ShellyRunState.Finished.Kind.STOPPED)).isEqualTo(McpRunRegistry.Status.CANCELLED)
+    }
+
+    @Test
+    fun `mcp run_goal, get_run_result and audit lines`() {
+        val f = McpFixture(mcpToken)
+        val session = f.initialize()
+        val handle = f.callTool(session, "run_goal", """{"goal":"open Settings"}""").toolData()["runHandle"]!!.jsonPrimitive.content
+        assertThat(f.backend.started).containsExactly("open Settings")
+
+        val running = f.callTool(session, "get_run_result", """{"runHandle":"$handle","waitMs":10}""").toolData()
+        assertThat(running["status"]!!.jsonPrimitive.content).isEqualTo("running")
+
+        f.registry.complete(handle, McpRunRegistry.Status.COMPLETED, "opened")
+        val done = f.callTool(session, "get_run_result", """{"runHandle":"$handle","waitMs":999999}""").toolData()
+        assertThat(done["status"]!!.jsonPrimitive.content).isEqualTo("completed")
+        assertThat(done["summary"]!!.jsonPrimitive.content).isEqualTo("opened")
+
+        assertThat(f.callTool(session, "run_goal", """{"goal":"  "}""")["isError"]!!.jsonPrimitive.boolean).isTrue()
+        f.backend.refuse = McpBackend.StartResult.Refused("BUSY", "ClosePaw is busy with another task")
+        val refused = f.callTool(session, "run_goal", """{"goal":"x"}""")
+        assertThat(refused.toolText()).isEqualTo("Error: [BUSY] ClosePaw is busy with another task")
+
+        val unknown = f.callTool(session, "get_run_result", """{"runHandle":"nope"}""")
+        assertThat(unknown["isError"]!!.jsonPrimitive.boolean).isTrue()
+
+        val status = f.callTool(session, "closepaw_status", "{}").toolData()
+        assertThat(status["serverOn"]!!.jsonPrimitive.boolean).isTrue()
+        assertThat(status["activeRuns"]!!.jsonPrimitive.int).isEqualTo(0)
+
+        // One line per tool call, with tool, handle and outcome — and never the goal text.
+        val toolLines = f.audit.filter { it.startsWith("mcp tool=") }
+        assertThat(toolLines).hasSize(7)
+        assertThat(toolLines[0]).isEqualTo("mcp tool=run_goal handle=$handle outcome=started")
+        assertThat(toolLines[2]).isEqualTo("mcp tool=get_run_result handle=$handle outcome=completed")
+        assertThat(toolLines[4]).isEqualTo("mcp tool=run_goal handle=- outcome=refused:BUSY")
+        assertThat(f.audit.none { "open Settings" in it }).isTrue()
+    }
+
+    @Test
+    fun `mcp stop_run propagates to the run and the poll sees cancelled`() {
+        val f = McpFixture(mcpToken)
+        val session = f.initialize()
+        val handle = f.callTool(session, "run_goal", """{"goal":"g"}""").toolData()["runHandle"]!!.jsonPrimitive.content
+
+        val stop = f.callTool(session, "stop_run", """{"runHandle":"$handle"}""").toolData()
+        assertThat(f.backend.stopRequests).containsExactly(handle)
+        assertThat(stop["stopRequested"]!!.jsonPrimitive.boolean).isTrue()
+        assertThat(stop["status"]!!.jsonPrimitive.content).isEqualTo("cancelled")
+        val polled = f.callTool(session, "get_run_result", """{"runHandle":"$handle"}""").toolData()
+        assertThat(polled["status"]!!.jsonPrimitive.content).isEqualTo("cancelled")
+
+        // Stopping a finished run does not reach the backend again.
+        val again = f.callTool(session, "stop_run", """{"runHandle":"$handle"}""").toolData()
+        assertThat(again["stopRequested"]!!.jsonPrimitive.boolean).isFalse()
+        assertThat(f.backend.stopRequests).hasSize(1)
+    }
+
+    @Test
+    fun `mcp runs are halted by STOP-ALL through the shared tracker`() {
+        // STOP-ALL / notification Stop end the session (Op.Shutdown -> SessionCompleted). The MCP
+        // run shares the Shelly tracker, whose terminal state AgentService hands to the registry.
+        val registry = McpRunRegistry()
+        val handle = registry.issue()
+        registry.markRunning(handle)
+        val t = tracker()
+        t.onEvent(screen("com.android.settings"))
+        t.onEvent(SessionCompleted(sid, 0L, SessionEndReason.USER_STOPPED))
+        assertThat(t.isFinished).isTrue()
+        // MCP runs carry no Shelly correlation: nothing would be sent to Shelly.
+        assertThat(t.claimResult(0L)).isNull()
+        McpRunStatus.complete(registry, handle, t.state as ShellyRunState.Finished)
+        assertThat(registry.await(handle, 0)!!.status).isEqualTo(McpRunRegistry.Status.CANCELLED)
+    }
+
+    @Test
+    fun `mcp http server round trip over a real socket`() {
+        val f = McpFixture(mcpToken)
+        val server = McpHttpServer(f.handler, port = 0, bindAddress = java.net.InetAddress.getLoopbackAddress())
+        server.start()
+        try {
+            fun post(body: String, session: String?): Pair<String, String> {
+                java.net.Socket(java.net.InetAddress.getLoopbackAddress(), server.boundPort).use { s ->
+                    val bytes = body.toByteArray()
+                    val head = buildString {
+                        append("POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n")
+                        append("Authorization: Bearer $mcpToken\r\n")
+                        session?.let { append("Mcp-Session-Id: $it\r\n") }
+                        append("Content-Length: ${bytes.size}\r\n\r\n")
+                    }
+                    s.getOutputStream().apply { write(head.toByteArray()); write(bytes); flush() }
+                    val raw = s.getInputStream().readBytes().toString(Charsets.UTF_8)
+                    return raw.substringBefore("\r\n\r\n") to raw.substringAfter("\r\n\r\n")
+                }
+            }
+            val (head, body) = post(rpc("initialize"), null)
+            assertThat(head).startsWith("HTTP/1.1 200")
+            val session = Regex("Mcp-Session-Id: (\\S+)").find(head)!!.groupValues[1]
+            assertThat(body).contains("2025-06-18")
+            val (listHead, listBody) = post(rpc("tools/list"), session)
+            assertThat(listHead).startsWith("HTTP/1.1 200")
+            assertThat(listBody).contains("run_goal")
+        } finally {
+            server.stop()
+        }
+        assertThat(server.isRunning).isFalse()
     }
 }

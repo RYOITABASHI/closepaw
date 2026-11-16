@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MCP intake server: settings section -->
+    <string name="mcp_section_title">MCP</string>
+    <string name="mcp_server_title">ClosePaw MCP server</string>
+    <string name="mcp_server_on_label">On</string>
+    <string name="mcp_server_off_label">Off</string>
+    <string name="mcp_server_on">MCP clients on your network that have the token can ask ClosePaw to run tasks on this phone.</string>
+    <string name="mcp_server_off">Let MCP clients (e.g. Claude Code, Codex) ask ClosePaw to run tasks on this phone. Tasks run in the background on the virtual display (Shizuku).</string>
+    <string name="mcp_server_status_running">Listening on port %1$d</string>
+    <string name="mcp_server_status_failed">Could not start the server (%1$s)</string>
+    <string name="mcp_server_status_starting">Starting…</string>
+    <string name="mcp_address_hint">Endpoint: %1$s (Streamable HTTP). Send the header \"Authorization: Bearer &lt;token&gt;\".</string>
+    <string name="mcp_address_hint_no_network">Endpoint: http://&lt;this phone\'s IP&gt;:%1$d/mcp. Connect to Wi-Fi to see the address.</string>
+    <string name="mcp_token_label">Access token</string>
+    <string name="mcp_token_copy">Copy</string>
+    <string name="mcp_token_copied">Token copied</string>
+    <string name="mcp_token_regenerate">Regenerate token</string>
+    <string name="mcp_token_regenerated">New token created. The old token no longer works.</string>
+    <string name="mcp_token_warning">Anyone on the same network who has this token can make ClosePaw operate your phone. Regenerate it if it leaks.</string>
+</resources>
