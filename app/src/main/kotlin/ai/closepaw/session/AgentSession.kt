@@ -57,6 +57,9 @@ private constructor(
         /** Hot Idle timeout: auto-shutdown after 5 minutes of inactivity. */
         private const val IDLE_TIMEOUT_MS = 300_000L
 
+        /** Re-check interval while the platform holds Hot Idle teardown ([AndroidPlatform.hasDeferredWork]). */
+        private const val IDLE_HOLD_RECHECK_MS = 30_000L
+
         /** Consecutive reacquirePlatform failures from Idle before forcing shutdown. */
         private const val MAX_REACQUIRE_FAILURES = 3
 
@@ -369,6 +372,7 @@ private constructor(
             )
         }
         try {
+            awaitReplacedTeardowns()
             services.platform.start()
         } catch (e: Exception) {
             Log.e(TAG, "Platform start failed", e)
@@ -382,6 +386,7 @@ private constructor(
     private suspend fun reacquirePlatform(): Boolean {
         cancelIdleTimeout()
         try {
+            awaitReplacedTeardowns()
             services.platform.start() // Idempotent — no-op if already running
         } catch (e: Exception) {
             Log.e(TAG, "Platform start failed on follow-up", e)
@@ -393,6 +398,24 @@ private constructor(
         consecutiveReacquireFailures = 0
         Log.i(TAG, "Hot Idle follow-up: platform ready")
         return true
+    }
+
+    /**
+     * The choke point every task start passes, whoever created this session (AgentService,
+     * MainActivity, onboarding) and whoever submitted the input: before the platform starts a
+     * task, wait until no replaced session's teardown is still running
+     * ([ai.closepaw.app.ReplacedSessionShutdownBarrier.process]). Android tasks and display 0
+     * are global, so an overlapping old teardown could move or refront the very task this run
+     * operates. Our own teardown is excluded (it needs [lifecycleMutex], held here). Past the
+     * liveness bound the start FAILS (the callers' platform-start failure path) instead of
+     * proceeding; the teardown stays registered, so the next start waits for it again.
+     */
+    private suspend fun awaitReplacedTeardowns() {
+        val barrier = ai.closepaw.app.ReplacedSessionShutdownBarrier.process
+        val timeoutMs = ai.closepaw.app.ReplacedSessionShutdownBarrier.START_TIMEOUT_MS
+        if (!barrier.awaitClear(timeoutMs, exceptOwner = services.platform)) {
+            throw IllegalStateException("a replaced session is still shutting down; try again")
+        }
     }
 
     private suspend fun startTask(text: String) {
@@ -456,6 +479,15 @@ private constructor(
                         handoff = buildHandoffIfVd(),
                 )
         )
+
+        // Platform run-end work (VD: return displaced display-0 tasks) is RECORDED while the
+        // state is not yet Idle, so a follow-up's platform.start() is ordered after it; it runs
+        // once the service has reported the run's result (Shelly runs), otherwise right away.
+        try {
+            services.platform.onTaskEnded()
+        } catch (e: Exception) {
+            Log.w(TAG, "Platform onTaskEnded failed (non-fatal)", e)
+        }
 
         // 3. Flush checkpoint for process-death recovery
         val checkpointed = checkpointCoordinator.flushIdleReady()
@@ -726,6 +758,12 @@ private constructor(
         idleTimeoutJob?.cancel()
         idleTimeoutJob = scope.launch {
             delay(IDLE_TIMEOUT_MS)
+            // The platform still has deferred work on its resources (a VD holding the user's
+            // tasks until the screen turns off): keep the session idle until it is done.
+            while (services.platform.hasDeferredWork()) {
+                Log.i(TAG, "Idle timeout expired but the platform holds deferred work; re-checking")
+                delay(IDLE_HOLD_RECHECK_MS)
+            }
             Log.i(TAG, "Idle timeout expired, auto-shutting down session $sessionId")
             lifecycleMutex.withLock { handleShutdown(ShutdownCause.IdleTimeout) }
         }

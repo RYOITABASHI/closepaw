@@ -1,6 +1,10 @@
 package ai.closepaw.platform.virtualdisplay
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PixelFormat
 import android.media.ImageReader
 import android.util.Log
@@ -19,7 +23,11 @@ import ai.closepaw.protocol.SessionConfig
 import ai.closepaw.trace.TraceRecorder
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
 import ai.closepaw.util.recycleCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import rikka.shizuku.Shizuku
 
 /**
@@ -83,6 +91,20 @@ class VirtualDisplayPlatform(
      */
     private var appliedImePolicy: Int? = null
     private val imePolicyLock = Any()
+
+    /**
+     * Build 59 deferred task return: ACTION_SCREEN_OFF receiver, registered only while the
+     * restorer holds a deferred restore (and unregistered when it clears or the VD stops).
+     * Guarded by [deferralLock].
+     */
+    private var screenOffReceiver: BroadcastReceiver? = null
+    private val deferralLock = Any()
+
+    /** Runs deferred-restore triggers off the caller's thread; never cancelled (jobs are short). */
+    private val deferralScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Records / orders the run-end display-0 return ([onTaskEnded]); a follow-up [start] waits for it. */
+    private val runEnd = RunEndRestoreSequencer(deferralScope)
 
     // ── Component Wiring ─────────────────────────────────────────
 
@@ -159,7 +181,29 @@ class VirtualDisplayPlatform(
 
     override suspend fun start() {
         arbiter.withLifecycleTransition { previous ->
-            if (previous is VdState.Running) return@withLifecycleTransition
+            if (previous is VdState.Running) {
+                // A new run (Hot Idle follow-up) needs the VD: a deferred display-0 restore is
+                // executed and CONFIRMED first (bounded retry), so the run never starts with the
+                // user's tasks still on the VD. If that cannot be confirmed, the start fails (the
+                // session reports "Platform start failed" and runs nothing); the deferral degrades
+                // to a pending retry so it does not hold Hot Idle teardown (which restores / hands
+                // the tasks over), and the tasks stay owed, so the next start reconciles again.
+                mainDisplayTasks?.let { restorer ->
+                    // The previous task's run-end restore (requested before the session went
+                    // Idle) decides / records its deferral first, then the reconcile sees it.
+                    runEnd.awaitRunEnd() // never releases it: a result report it waits for stays first
+                    val outcome = restorer.reconcileBeforeRun(previous.displayId)
+                    if (outcome == MainDisplayReconcileOutcome.FAILED) restorer.dropDeferral()
+                    syncScreenOffReceiver()
+                    if (outcome == MainDisplayReconcileOutcome.FAILED) {
+                        throw IllegalStateException(
+                                "Display-0 tasks ${restorer.unreconciledTaskIds()} are still on the " +
+                                        "virtual display; not starting a run on it"
+                        )
+                    }
+                }
+                return@withLifecycleTransition
+            }
 
             // Clean up leaked resources from a Broken state before allocating new ones
             if (previous is VdState.Broken) {
@@ -275,6 +319,10 @@ class VirtualDisplayPlatform(
 
             surfaceController.reset()
 
+            // A pending deferred restore needs no trigger any more: the restore below executes it
+            // (frozen order, refront from display 0 now); what it cannot move is handed over.
+            unregisterScreenOffReceiver()
+
             // Before the VD task cleanup below removes them: tasks this run moved off display 0
             // go back there (no-op unless a Shelly run displaced something).
             mainDisplayTasks?.let { restorer ->
@@ -341,6 +389,12 @@ class VirtualDisplayPlatform(
      * Return app tasks this run moved off the main display (Shelly background runs). Called at
      * run end so the user's display-0 context comes back immediately rather than at the Hot Idle
      * teardown; [stop] repeats it as a safety net. No-op for other sessions.
+     *
+     * Build 59: when the user has moved on (a refront would be owed) the return is DEFERRED
+     * ([MainDisplayTaskRestorer.restoreAtRunEnd]) to avoid the move-then-refront flash: the tasks
+     * stay on the VD (kept alive, see [hasDeferredWork]) until the screen turns off, a new run
+     * starts ([start]) or the VD is torn down ([stop]). With the screen already off, nobody can
+     * see the flash: the restore runs immediately.
      */
     suspend fun restoreMainDisplayTasks() {
         val restorer = mainDisplayTasks ?: return
@@ -348,7 +402,185 @@ class VirtualDisplayPlatform(
             is VdState.Running -> s.displayId
             else -> return
         }
-        restorer.restore(displayId)
+        if (isScreenInteractive()) restorer.restoreAtRunEnd(displayId) else restorer.restore(displayId)
+        syncScreenOffReceiver()
+    }
+
+    /**
+     * The session's task ended (TaskCompleted emitted, before it goes Idle): record the run-end
+     * display-0 return ([restoreMainDisplayTasks]) so a follow-up [start] and a replacing session
+     * (AgentService) can order themselves after it. When the run owes a result report
+     * ([expectRunResultReport]) it runs only after [onRunResultReported] (result callback first,
+     * as before). No-op for sessions that do not preserve display-0 tasks.
+     */
+    override fun onTaskEnded() {
+        val restorer = mainDisplayTasks ?: return
+        if (arbiter.state !is VdState.Running) return
+        runEnd.onTaskEnded(
+                // The result report never arrived in time: no move now (it may still arrive). Every
+                // displaced task stays owed: the next start's reconcile (start) or teardown (stop)
+                // places it; Hot Idle is not held, so the idle-timeout teardown bounds the wait.
+                onAbandoned = { restorer.oweAbandonedRunEndReturn() },
+        ) {
+            try {
+                restoreMainDisplayTasks()
+            } catch (e: Exception) {
+                Log.w(TAG, "run-end main display restore failed", e)
+            }
+        }
+    }
+
+    /** The current run's result will be reported by the service (Shelly run tracker attached). */
+    fun expectRunResultReport() = runEnd.expectResultReport()
+
+    /** The service reported the run's result: the run-end return may run now. */
+    fun onRunResultReported() = runEnd.resultReported()
+
+    /** The run-end restore recorded by [onTaskEnded] while it has not completed (incl. still gated). */
+    fun runEndRestoreInFlight(): kotlinx.coroutines.Job? = runEnd.inFlight()
+
+    /**
+     * A deferred display-0 restore is pending on a running VD: Hot Idle teardown waits (see
+     * [ai.closepaw.platform.AndroidPlatform.hasDeferredWork]). False once the VD is not Running
+     * (e.g. Broken), so a dead VD never keeps the session alive.
+     */
+    override fun hasDeferredWork(): Boolean =
+            arbiter.state is VdState.Running && mainDisplayTasks?.hasDeferredRestore() == true
+
+    /**
+     * Teardown ([stop]) of this platform may move tasks to / refront on display 0 (Shelly runs:
+     * restore + release handover). A session replacing this one must not start before that
+     * teardown has completed (see AgentService.shutdownReplacedSession).
+     */
+    val returnsMainDisplayTasks: Boolean get() = mainDisplayTasks != null
+
+    /**
+     * [stop] has completed (or the VD never ran). From here on this platform cannot move tasks:
+     * the screen-off receiver is unregistered, and every deferral trigger / run-end restore still
+     * launched on [deferralScope] needs a Running lease or Running state and does nothing.
+     */
+    val isStopped: Boolean get() = arbiter.state == VdState.Stopped
+
+    /**
+     * The VD viewer closed: re-evaluate a pending deferral. Screen on -> stay deferred (or clear
+     * if the user already pulled every deferred task back); screen off -> execute it. Opening the
+     * viewer never triggers a restore.
+     */
+    fun onViewerClosedRecheckDeferral() {
+        if (mainDisplayTasks?.hasDeferredRestore() != true) return
+        deferralScope.launch {
+            runDeferredTrigger("viewer closed") { restorer, displayId ->
+                if (isScreenInteractive()) restorer.recheckDeferred(displayId) else restorer.restoreDeferred(displayId)
+            }
+        }
+    }
+
+    /** Screen turned off: execute the deferred restore (nobody sees the moves now). */
+    private fun onScreenOff() {
+        deferralScope.launch {
+            runDeferredTrigger("screen off") { restorer, displayId -> restorer.restoreDeferred(displayId) }
+        }
+    }
+
+    /**
+     * Run a deferral trigger under a Running lease ([stop] drains it before releasing the VD),
+     * then register / unregister the screen-off receiver to match what is left.
+     */
+    private suspend fun runDeferredTrigger(
+            reason: String,
+            action: suspend (MainDisplayTaskRestorer, Int) -> Unit,
+    ) {
+        val restorer = mainDisplayTasks ?: return
+        try {
+            arbiter.withRunningLease { running -> action(restorer, running.displayId) }
+        } catch (e: PlatformNotRunningException) {
+            Log.d(TAG, "deferred restore ($reason): VD not running; teardown handles it")
+        } catch (e: Exception) {
+            Log.w(TAG, "deferred restore ($reason) failed", e)
+        } finally {
+            syncScreenOffReceiver()
+        }
+    }
+
+    /**
+     * Keep the screen-off receiver registered exactly while a deferral is pending on a running
+     * VD. The eligibility check and the registration happen under [deferralLock], the lock
+     * [stop]'s unregister takes AFTER it has left Running: a late call either registers before
+     * that unregister (which then removes it) or sees a non-running VD and registers nothing.
+     * Registering re-checks the screen afterwards: a screen-off that happened before the receiver
+     * existed would otherwise be missed. If registration fails, no trigger can fire: the deferral
+     * is dropped and the restore runs now (build-58 behavior), so Hot Idle teardown is not held.
+     */
+    private fun syncScreenOffReceiver() {
+        val registered = synchronized(deferralLock) {
+            if (!hasDeferredWork()) {
+                unregisterScreenOffReceiverLocked()
+                return
+            }
+            if (screenOffReceiver != null) return
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    if (intent?.action == Intent.ACTION_SCREEN_OFF) onScreenOff()
+                }
+            }
+            try {
+                val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    // A protected system broadcast is still delivered to a non-exported receiver.
+                    service.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    @Suppress("UnspecifiedRegisterReceiverFlag")
+                    service.registerReceiver(receiver, filter)
+                }
+                screenOffReceiver = receiver
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "screen-off receiver registration failed; restoring now instead of deferring", e)
+                false
+            }
+        }
+        if (!registered) {
+            restoreNowWithoutDeferral()
+        } else if (!isScreenInteractive()) {
+            onScreenOff()
+        }
+    }
+
+    /** No deferral trigger is available: degrade to a build-58 restore right away (one attempt). */
+    private fun restoreNowWithoutDeferral() {
+        val restorer = mainDisplayTasks ?: return
+        restorer.dropDeferral()
+        deferralScope.launch {
+            try {
+                arbiter.withRunningLease { running -> restorer.restore(running.displayId) }
+            } catch (e: PlatformNotRunningException) {
+                Log.d(TAG, "fallback restore: VD not running; teardown handles it")
+            } catch (e: Exception) {
+                Log.w(TAG, "fallback restore failed", e)
+            }
+        }
+    }
+
+    private fun unregisterScreenOffReceiver() {
+        synchronized(deferralLock) { unregisterScreenOffReceiverLocked() }
+    }
+
+    /** Call with [deferralLock] held. */
+    private fun unregisterScreenOffReceiverLocked() {
+        val receiver = screenOffReceiver ?: return
+        screenOffReceiver = null
+        try {
+            service.unregisterReceiver(receiver)
+        } catch (e: Exception) {
+            Log.w(TAG, "screen-off receiver was not registered", e)
+        }
+    }
+
+    /** Whether the device is interactive (screen on); unknown counts as on (the safe side). */
+    private fun isScreenInteractive(): Boolean = try {
+        (service.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager)?.isInteractive ?: true
+    } catch (e: Exception) {
+        true
     }
 
     /**
