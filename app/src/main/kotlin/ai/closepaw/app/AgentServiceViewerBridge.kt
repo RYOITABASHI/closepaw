@@ -26,6 +26,8 @@ internal class AgentServiceViewerBridge(
     fun onViewerClosed() {
         overlayControllerProvider()?.onViewerClosed()
         platformProvider()?.onViewerVisibilityChanged(open = false)
+        // A deferred display-0 restore is re-evaluated on close (never on open).
+        platformProvider()?.onViewerClosedRecheckDeferral()
     }
 
     fun onMainAppVisible() {

@@ -41,7 +41,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 class AgentService : AccessibilityService() {
 
@@ -52,6 +51,20 @@ class AgentService : AccessibilityService() {
 
         private const val OUR_PACKAGE = "ai.closepaw"
         private const val SHUTDOWN_TIMEOUT_MS = 5_000L
+
+        /**
+         * Liveness bound on waiting for a replaced session's teardown (its display-0 restore /
+         * handover). Past it the NEW start fails with an error; it never proceeds concurrently.
+         */
+        private const val REPLACED_SESSION_SHUTDOWN_TIMEOUT_MS = 30_000L
+
+        /**
+         * Runs every session teardown a later session may race ([shutdownReplacedSession]):
+         * replaced sessions and, since gate round 4, the session attached at [onDestroy].
+         * Process-lifetime and NEVER cancelled: destroying the service, which cancels
+         * `serviceScope`, must not skip a teardown the process-wide barrier is waiting for.
+         */
+        private val replacedTeardownScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
         @Volatile
         var instance: AgentService? = null
@@ -144,6 +157,13 @@ class AgentService : AccessibilityService() {
     private var shellyStartInFlight = false
 
     /**
+     * Replaced-session shutdowns every new session start waits for: the process-wide barrier,
+     * awaited by every session right before its platform starts a task (AgentSession), and by
+     * [runAgent] / [startShellyRun] before they even create one ([awaitReplacedSessionReconcile]).
+     */
+    private val replacedShutdowns = ReplacedSessionShutdownBarrier.process
+
+    /**
      * Report-once guard of the start currently being set up: set when [startShellyRun] accepts a
      * start (before the async work), cleared once the tracker adopts it or startup has ended. Lets
      * [onDestroy] report `cancelled` for a start that has no tracker yet. Main thread only.
@@ -172,6 +192,15 @@ class AgentService : AccessibilityService() {
         }
         Log.i(TAG, "Observing external session: ${externalSession.sessionId}, mode=$platformMode")
         retireShellyRunUnlessFor(externalSession)
+        // The session observed so far is being replaced by one created elsewhere (MainActivity,
+        // onboarding). If its teardown may still move display-0 tasks (a Shelly-run VD), shut it
+        // down through the barrier now: left running unobserved, its later teardown (idle timeout)
+        // would move / refront tasks in the middle of the new session's run. Registered before the
+        // caller submits the new session's first task, which then waits for it (AgentSession).
+        // Other sessions keep the previous behavior (their owner shuts them down).
+        session?.takeIf { it !== externalSession }?.let { previous ->
+            shutdownReplacedSession(previous, onlyIfItMayMoveTasks = true)
+        }
         session = externalSession
         currentPlatformMode = platformMode
         _effectivePlatformMode.value = platformMode
@@ -315,22 +344,19 @@ class AgentService : AccessibilityService() {
 
         val currentSession = session
         if (currentSession != null) {
-            // Detach shutdown onto a scope that outlives `serviceScope`. The session handles
-            // its own checkpoint persistence via NonCancellable, so the main goal here
-            // is to avoid blocking the main thread (ANR risk).
-            val shutdownScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            shutdownScope.launch {
-                try {
-                    val completed = withTimeoutOrNull(SHUTDOWN_TIMEOUT_MS) {
-                        currentSession.submit(Op.Shutdown)
-                        true
-                    }
-                    if (completed != true) {
-                        Log.w(TAG, "Timed out waiting for session shutdown")
-                    }
-                } finally {
-                    shutdownScope.cancel()
-                }
+            // Same path as a replaced session (gate round 4): a service restart in this process
+            // starts its next session against the same process-wide barrier, so this teardown is
+            // registered there (when it may move display-0 tasks) BEFORE the session is detached,
+            // and runs on the never-cancelled teardown scope under NonCancellable. Nothing here
+            // blocks the main thread (ANR risk); the session handles its own checkpoint
+            // persistence via NonCancellable.
+            val teardown = shutdownReplacedSession(currentSession)
+            if (teardown != null) {
+                // The former 5 s bound, now observe-only: it can no longer abandon the teardown.
+                val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+                watchSessionTeardown(watchScope, teardown, SHUTDOWN_TIMEOUT_MS) {
+                    Log.w(TAG, "Timed out waiting for session shutdown; it continues in the background")
+                }.invokeOnCompletion { watchScope.cancel() }
             }
         }
         session = null
@@ -433,7 +459,7 @@ class AgentService : AccessibilityService() {
             eventCollectorJob = null
             val oldSession = session
             session = null
-            serviceScope.launch { oldSession?.submit(Op.Shutdown) }
+            shutdownReplacedSession(oldSession)
         }
 
         currentPlatformMode = platformMode
@@ -441,6 +467,7 @@ class AgentService : AccessibilityService() {
 
         serviceScope.launch {
             try {
+                awaitReplacedSessionReconcile()
                 val settings = AppSettingsStore(this@AgentService).load()
                 val sessionConfig =
                         SessionConfig(
@@ -462,6 +489,17 @@ class AgentService : AccessibilityService() {
                             )
                         }
 
+                // A session attached while this one was being created (a Shelly run started in
+                // the meantime) is replaced here: its result first, then its teardown through the
+                // barrier, which newSession's first task (submitted below) waits for.
+                session?.takeIf { it !== newSession }?.let { stray ->
+                    Log.w(TAG, "runAgent: replacing session ${stray.sessionId} attached meanwhile")
+                    eventCollectorJob?.cancel()
+                    eventCollectorJob = null
+                    retireShellyRunUnlessFor(newSession)
+                    session = null
+                    shutdownReplacedSession(stray, onlyIfItMayMoveTasks = true)
+                }
                 session = newSession
 
                 observeSession(newSession)
@@ -533,7 +571,7 @@ class AgentService : AccessibilityService() {
             eventCollectorJob = null
             session = null
             _effectivePlatformMode.value = null
-            serviceScope.launch { old.submit(Op.Shutdown) }
+            shutdownReplacedSession(old)
         }
 
         val onMainDisplay = platformMode != PlatformMode.VIRTUAL_DISPLAY
@@ -544,6 +582,7 @@ class AgentService : AccessibilityService() {
 
         val startJob = serviceScope.launch {
             try {
+                awaitReplacedSessionReconcile()
                 val settings = AppSettingsState.create(applicationContext).also { it.load() }
                 val authStore = AuthStoreHolder.get(applicationContext)
                 val baseUrlOverrides: Map<LLMProvider, String> =
@@ -623,9 +662,15 @@ class AgentService : AccessibilityService() {
                     eventCollectorJob?.cancel()
                     eventCollectorJob = null
                     session = null
-                    serviceScope.launch { stray.submit(Op.Shutdown) }
+                    // Through the barrier like any replaced session: the first task of
+                    // newSession (submitted below) waits for this teardown (AgentSession).
+                    shutdownReplacedSession(stray)
                 }
                 attachObservedSession(newSession, effectiveMode)
+                // This run's result is reported by the tracker: its run-end display-0 return waits
+                // for that report (set before the task can end).
+                (newSession.getServices().platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform)
+                        ?.expectRunResultReport()
                 overlayController?.updateShellyRunDisplay(tracker.onMainDisplay)
                 shellyRun = tracker
                 // The tracker now owns the guard; tracker paths (incl. onDestroy) report from here.
@@ -656,6 +701,80 @@ class AgentService : AccessibilityService() {
                 shellyStartInFlight = false
                 if (shellyPendingStart === pending) shellyPendingStart = null
             }
+        }
+    }
+
+    /**
+     * Shut a replaced session down asynchronously (as before). A run-end restore still in flight
+     * for it is joined first, so its deferral decision is recorded before the teardown (which
+     * executes / hands it over) runs. Whenever a new session must not overlap that shutdown
+     * ([ShellyBackgroundRun.mustAwaitReplacedShutdown]) it is registered in [replacedShutdowns]
+     * until the teardown has ACTUALLY completed (owned by the old platform; a teardown that could
+     * not complete stays registered and fails later starts), and every later task start waits for it
+     * (AgentSession's platform start, plus [awaitReplacedSessionReconcile] on the service paths);
+     * otherwise no wait (unchanged timing for sessions that never touch display-0 tasks).
+     * [onlyIfItMayMoveTasks]: do nothing at all unless that wait is needed (paths that used to
+     * leave such a session alone keep doing so).
+     */
+    private fun shutdownReplacedSession(old: AgentSession?, onlyIfItMayMoveTasks: Boolean = false): Job? {
+        if (old == null) return null
+        val platform = try {
+            old.getServices().platform
+        } catch (e: Exception) {
+            null
+        }
+        val vdPlatform = platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
+        // Recorded by the platform before the old session went Idle (onTaskEnded).
+        val runEndRestore = vdPlatform?.runEndRestoreInFlight()
+        val mustAwait = ShellyBackgroundRun.mustAwaitReplacedShutdown(
+                returnsMainDisplayTasks = vdPlatform?.returnsMainDisplayTasks == true,
+                runEndRestoreInFlight = runEndRestore?.isActive == true,
+                deferredWork = try {
+                    platform?.hasDeferredWork() == true
+                } catch (e: Exception) {
+                    // Unknown: wait rather than risk the old teardown overlapping the new run.
+                    true
+                },
+        )
+        if (onlyIfItMayMoveTasks && !mustAwait) return null
+        // Its result (if any) was reported by the replacing path before this call: release a
+        // run-end restore still gated on that report, then order the teardown after it.
+        vdPlatform?.onRunResultReported()
+        // Not in serviceScope: service destruction must not cancel it before the teardown ran
+        // (launchReplacedSessionTeardown: non-cancellable critical path, truthful verdict).
+        // Owned by the old platform: the old session itself never waits for its own teardown.
+        // Registered (when mustAwait) before this returns, i.e. before the caller detaches it.
+        return launchRegisteredSessionTeardown(
+                barrier = replacedShutdowns,
+                scope = replacedTeardownScope,
+                mustAwait = mustAwait,
+                owner = platform,
+                runEndRestore = runEndRestore,
+                shutdown = { old.submit(Op.Shutdown) },
+                // VD: stop() reached Stopped (receiver gone, deferral triggers inert). Others: the
+                // shutdown returning is the teardown.
+                isTornDown = { vdPlatform?.isStopped ?: true },
+                stopPlatform = { vdPlatform?.stop() },
+                onFailure = { e ->
+                    Log.e(TAG, "Replaced session teardown did not complete" +
+                            (if (mustAwait) "; it stays in the barrier and new starts fail" else ""), e)
+                },
+        )
+    }
+
+    /**
+     * Reconcile first: the replaced session's teardown (VirtualDisplayPlatform.stop: display-0
+     * restore, deferred or not, and the release handover) must have COMPLETED before the new
+     * session starts; Android tasks and display 0 are global, so an overlapping old teardown
+     * could move the very task the new run operates. Every start waits for EVERY such shutdown
+     * still running, not only the one it replaced. There is no give-up: past the liveness bound
+     * the new start FAILS (the caller's start-failure path reports it) instead of proceeding, and
+     * the shutdown stays registered, so a later start waits for it too.
+     */
+    private suspend fun awaitReplacedSessionReconcile() {
+        if (!replacedShutdowns.awaitClear(REPLACED_SESSION_SHUTDOWN_TIMEOUT_MS)) {
+            Log.e(TAG, "Replaced session still shutting down after ${REPLACED_SESSION_SHUTDOWN_TIMEOUT_MS} ms; not starting")
+            throw IllegalStateException("the previous task is still shutting down; try again")
         }
     }
 
@@ -705,28 +824,13 @@ class AgentService : AccessibilityService() {
         if (tracker.isFinished) {
             reportShellyResult(tracker)
             shellyRun = null
-            restoreShellyMainDisplay(agentSession)
+            // Result reported: now the display-0 task return the platform recorded when the
+            // session's task ended (VirtualDisplayPlatform.onTaskEnded, before Hot Idle) may run.
+            // Build 59: it may DEFER the return when the user has moved on (no flash while they look).
+            (agentSession.getServices().platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform)
+                    ?.onRunResultReported()
             // The overlay handles this terminal event right after: keep its Done invisible.
             overlayController?.releaseShellyBackgroundRunWhenIdle()
-        }
-    }
-
-    /**
-     * Run end (completed / failed / stopped): give back any display-0 task the run moved to the
-     * virtual display (e.g. Shelly's own singleTask task when the goal operates Shelly) right
-     * away, instead of when the Hot Idle session is torn down. Teardown (shutdown, replacement,
-     * service destroyed) repeats it in VirtualDisplayPlatform.stop().
-     */
-    private fun restoreShellyMainDisplay(agentSession: AgentSession) {
-        val platform = agentSession.getServices().platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform ?: return
-        serviceScope.launch {
-            try {
-                platform.restoreMainDisplayTasks()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Shelly run: main display restore failed", e)
-            }
         }
     }
 

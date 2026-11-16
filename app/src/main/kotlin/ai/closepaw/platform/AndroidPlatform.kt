@@ -42,6 +42,21 @@ interface AndroidPlatform {
     suspend fun stop() {}
 
     /**
+     * Work the platform must still do while the session idles, so Hot Idle teardown waits for it
+     * (polled by the idle timeout). VirtualDisplayPlatform: a deferred display-0 task return
+     * that executes on screen off. Default: none.
+     */
+    fun hasDeferredWork(): Boolean = false
+
+    /**
+     * The session's current task ended (any outcome; its TaskCompleted already emitted), called
+     * BEFORE the session goes Idle, so run-end work recorded here is ordered before any follow-up
+     * [start]. Must not block or throw. VirtualDisplayPlatform: records the Shelly run-end
+     * display-0 task return.
+     */
+    fun onTaskEnded() {}
+
+    /**
      * Capture the current screen state.
      * 
      * @return ScreenSnapshot containing UI elements and their properties

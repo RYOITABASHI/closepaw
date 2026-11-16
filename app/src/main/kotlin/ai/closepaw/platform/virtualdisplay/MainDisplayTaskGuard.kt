@@ -106,6 +106,48 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
      */
     private var restoreStarted = false
 
+    /**
+     * Build 59: the frozen restore is DEFERRED ([planOrDefer]): the user had moved on at run end,
+     * so the displaced tasks stay on the virtual display (moving them back would flash them on
+     * display 0's top before the refront) until a trigger the user cannot see or that needs the
+     * VD (screen off, a new run, teardown) executes the frozen plan via [plan]. In memory only.
+     */
+    private var deferred = false
+
+    /**
+     * Tasks whose return was deferred ([planOrDefer]) and that are not yet confirmed off the
+     * virtual display. Unlike [deferred], NOT cleared by executing the deferral ([plan]) or by
+     * [dropDeferral]: only a task's confirmed absence from the VD (moved back by us
+     * ([completeRestore]), or seen missing from a VD read ([settleUnreconciled] / [plan])) or a
+     * [reset] removes it. A new run must not start on the VD while this is non-empty.
+     * Invariant: a subset of [seenOnMain]'s keys (so [hasPendingWork] stays true while non-empty).
+     */
+    private val unreconciled = LinkedHashSet<Int>()
+
+    /** Deferred tasks not yet confirmed off the virtual display (see [unreconciled]). */
+    val unreconciledTaskIds: Set<Int> get() = unreconciled.toSet()
+
+    /**
+     * An abandoned run-end return: every remembered task is owed (a new run must not start
+     * before a VD read confirms it is off the VD; [settleUnreconciled] / [plan] drop the ones
+     * that never left display 0). Keeps the invariant: a subset of [seenOnMain]'s keys.
+     */
+    fun oweAllUnreconciled() {
+        unreconciled.addAll(seenOnMain.keys)
+    }
+
+    /** Drop unreconciled tasks absent from [vdNow] (they are back on display 0, or gone). */
+    fun settleUnreconciled(vdNow: List<DisplayTask>) {
+        val onVd = vdNow.map { it.taskId }.toSet()
+        unreconciled.retainAll(onVd)
+    }
+
+    /** A deferred restore is pending (see [planOrDefer]). */
+    val isDeferred: Boolean get() = deferred
+
+    /** The deferred tasks in their frozen move order (empty when nothing is deferred). */
+    val deferredTaskIds: List<Int> get() = if (deferred) pendingRestore?.restoreTaskIds.orEmpty() else emptyList()
+
     /** There is something left to restore: displaced candidates, or a refront still pending. */
     val hasPendingWork: Boolean get() = seenOnMain.isNotEmpty() || pendingRestore != null
 
@@ -138,6 +180,7 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
         frozenTopTaskId = null
         observedChoice = null
         lastPlanTopTaskId = null
+        deferred = false
     }
 
     /**
@@ -158,6 +201,7 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
     /** Drop tasks that are back on display 0; the rest stay protected for a retry. */
     private fun forget(taskIds: Collection<Int>) {
         taskIds.forEach { seenOnMain.remove(it) }
+        unreconciled.removeAll(taskIds.toSet())
         if (displacedTopTaskId in taskIds) {
             displacedTopTaskId = null
             revealedTopTaskId = null
@@ -182,8 +226,17 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
      * [MainDisplayRefront.None] ("the last restored task ends on top") becomes an explicit
      * refront of that task when it was already restored and the retry would cover it.
      * Report the outcome with [completeRestore].
+     *
+     * Executing a deferred restore ([planOrDefer]) goes through here too and ends the deferral.
+     * Deferred tasks no longer on the virtual display (the user pulled them back to display 0)
+     * are dropped silently; when none is left, nothing of this cycle is on display 0 either (a
+     * deferral is only recorded before any move), so no refront is owed: the cycle is cleared
+     * and [MainDisplayRestorePlan.NOTHING] returned.
      */
     fun plan(vdNow: List<DisplayTask>, mainNow: List<DisplayTask>): MainDisplayRestorePlan {
+        settleUnreconciled(vdNow)
+        val wasDeferred = deferred
+        deferred = false
         val pending = pendingRestore
         val result = if (pending == null) {
             freshPlan(vdNow, mainNow).also {
@@ -203,6 +256,10 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
                     .sortedWith(compareBy<Pair<Int, Seen>>({ it.second.sequence }, { -it.second.zIndex }))
                     .map { it.first }
             val moves = extra + stillToMove
+            if (wasDeferred && moves.isEmpty()) {
+                reset()
+                return MainDisplayRestorePlan.NOTHING
+            }
             // A frozen None means "the original plan's last task ends on top". If it is already
             // back and this retry moves other tasks over it, say so explicitly, and keep that
             // explicit refront pending (a refront-only retry must not fall back to None).
@@ -219,6 +276,38 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
         if (pendingRestore != null) restoreStarted = true
         lastPlannedTaskIds = result.restoreTaskIds
         return result
+    }
+
+    /**
+     * Run end (build 59): [plan], but when the plan has moves and a refront (the user has moved
+     * on to another app or Home) and nothing of this cycle is back on display 0 yet, DEFER it:
+     * return null, execute nothing, keep the frozen plan (its move order trimmed to the tasks
+     * still on the virtual display) and the tasks protected. A later [plan] executes it, with the
+     * refront recomputed from display 0 at that moment by the retry rule. A [MainDisplayRefront.None]
+     * plan (the user is still where the run left display 0) is returned for immediate execution,
+     * exactly as before. Re-evaluating an existing deferral (e.g. viewer closed) goes through here
+     * as well: it stays deferred, or clears itself when no deferred task is left on the VD.
+     */
+    fun planOrDefer(vdNow: List<DisplayTask>, mainNow: List<DisplayTask>): MainDisplayRestorePlan? {
+        val plan = plan(vdNow, mainNow)
+        val pending = pendingRestore
+        if (pending != null && plan.restoreTaskIds.isNotEmpty() &&
+                plan.refront != MainDisplayRefront.None && movedThisCycle.isEmpty()) {
+            pendingRestore = pending.copy(restoreTaskIds = plan.restoreTaskIds)
+            deferred = true
+            unreconciled.addAll(plan.restoreTaskIds)
+            return null
+        }
+        return plan
+    }
+
+    /**
+     * Give up waiting for a deferral trigger (none can fire, or one failed to execute): the frozen
+     * plan stays pending as an ordinary build-58 retry for the next [plan] / teardown handover,
+     * the tasks stay protected. No-op when nothing is deferred.
+     */
+    fun dropDeferral() {
+        deferred = false
     }
 
     /**
@@ -364,6 +453,8 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
         frozenTopTaskId = null
         observedChoice = null
         lastPlanTopTaskId = null
+        deferred = false
+        unreconciled.clear()
     }
 
     companion object {
