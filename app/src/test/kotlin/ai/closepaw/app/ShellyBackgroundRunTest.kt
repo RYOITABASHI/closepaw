@@ -9,10 +9,12 @@ import ai.closepaw.mcp.McpHttpServer
 import ai.closepaw.mcp.McpRunRegistry
 import ai.closepaw.platform.virtualdisplay.DisplayTask
 import ai.closepaw.platform.virtualdisplay.MainDisplayHandover
+import ai.closepaw.platform.virtualdisplay.MainDisplayReconcileOutcome
 import ai.closepaw.platform.virtualdisplay.MainDisplayRefront
 import ai.closepaw.platform.virtualdisplay.MainDisplayRestorePlan
 import ai.closepaw.platform.virtualdisplay.MainDisplayTaskGuard
 import ai.closepaw.platform.virtualdisplay.MainDisplayTaskRestorer
+import ai.closepaw.platform.virtualdisplay.RunEndRestoreSequencer
 import ai.closepaw.platform.virtualdisplay.ShizukuActivityTaskTransport
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
 import ai.closepaw.protocol.ApprovalDetails
@@ -27,11 +29,22 @@ import ai.closepaw.protocol.SessionResumed
 import ai.closepaw.protocol.TaskCompleted
 import ai.closepaw.protocol.TaskOutcome
 import com.google.common.truth.Truth.assertThat
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkConstructor
 import io.mockk.unmockkConstructor
 import io.mockk.verify
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
@@ -41,6 +54,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.json.JSONObject
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ShellyBackgroundRunTest {
 
     private val sid = SessionId("s1")
@@ -759,6 +773,8 @@ class ShellyBackgroundRunTest {
         val main = main.toMutableList()
         val vd = mutableListOf<DisplayTask>()
         val failMoves = mutableSetOf<Int>()
+        /** VD reads return null (a transient Shizuku read failure). */
+        var failVdReads = false
         val log = mutableListOf<String>()
         var onMove: () -> Unit = {}
         var onMainRead: () -> Unit = {}
@@ -772,7 +788,7 @@ class ShellyBackgroundRunTest {
     private fun fakeShizuku(d: FakeDisplays): ShizukuClient {
         val s = mockk<ShizukuClient>(relaxed = true)
         every { s.rootTasksOnDisplay(0) } answers { d.onMainRead(); d.main.toList() }
-        every { s.rootTasksOnDisplay(vdId) } answers { d.vd.toList() }
+        every { s.rootTasksOnDisplay(vdId) } answers { if (d.failVdReads) null else d.vd.toList() }
         every { s.moveRootTaskToDisplay(any(), 0) } answers {
             val id = firstArg<Int>()
             val task = d.vd.firstOrNull { it.taskId == id }
@@ -1414,5 +1430,819 @@ class ShellyBackgroundRunTest {
             server.stop()
         }
         assertThat(server.isRunning).isFalse()
+    }
+
+    // ── Build 59: deferred task return (no run-end flash when the user has moved on) ──
+
+    /** Shelly displaced (Chrome revealed); the user then opens Mail on display 0. */
+    private suspend fun displaceShellyUserOpensMail(r: MainDisplayTaskRestorer, d: FakeDisplays) {
+        launchShellyOnVd(r, d)
+        d.main.add(0, mail)
+        r.onMainDisplayForeground(mail.packageName)
+    }
+
+    @Test
+    fun `deferred return - the user moved on at run end, so nothing moves and the return is deferred`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        r.restoreAtRunEnd(vdId)
+        assertThat(d.log).isEmpty() // no move, no refront: no flash
+        assertThat(d.vd).containsExactly(shelly)
+        assertThat(d.main.first()).isEqualTo(mail)
+        assertThat(r.hasDeferredRestore()).isTrue()
+        assertThat(r.deferredTaskIds()).containsExactly(shelly.taskId)
+        assertThat(r.protectedTaskIds()).contains(shelly.taskId) // kept by the VD cleanup
+    }
+
+    @Test
+    fun `deferred return - screen off executes the frozen order with a refront from a fresh read`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        launchShellyOnVd(r, d) // Chrome revealed
+        r.aroundLaunch(chrome.packageName!!, vdId) { d.toVd(chrome) } // Chrome displaced too
+        d.main.add(0, mail) // the user opens Mail
+        r.onMainDisplayForeground(mail.packageName)
+        r.restoreAtRunEnd(vdId) // frozen: [Shelly, Chrome], refront Mail; deferred
+        assertThat(d.log).isEmpty()
+        assertThat(r.deferredTaskIds()).containsExactly(shelly.taskId, chrome.taskId).inOrder()
+        d.front(home) // later the user goes Home, then turns the screen off
+        r.restoreDeferred(vdId) // the ACTION_SCREEN_OFF trigger
+        // Frozen order (the displaced top first while a refront is owed, as build 58), and the
+        // refront follows display 0 as read NOW (Home), not the frozen Mail.
+        assertThat(d.log).containsExactly(
+            "move ${chrome.taskId}", "refront home", "move ${shelly.taskId}", "refront home",
+        ).inOrder()
+        assertThat(d.main.first()).isEqualTo(home)
+        assertThat(d.vd).isEmpty()
+        assertThat(r.hasDeferredRestore()).isFalse()
+        assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    @Test
+    fun `deferred return - an untouched display 0 is still restored immediately at run end`() = runTest {
+        val d = FakeDisplays(listOf(shelly, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        launchShellyOnVd(r, d) // Home revealed, the user never touches display 0
+        r.restoreAtRunEnd(vdId)
+        assertThat(d.log).containsExactly("move ${shelly.taskId}")
+        assertThat(d.main.first()).isEqualTo(shelly)
+        assertThat(r.hasDeferredRestore()).isFalse()
+        assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    @Test
+    fun `deferred return - a deferred task the user already pulled back clears the deferral without any move`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        r.restoreAtRunEnd(vdId)
+        assertThat(r.hasDeferredRestore()).isTrue()
+        // The user opens Shelly from the launcher: its task leaves the VD for display 0 by itself.
+        d.vd.remove(shelly)
+        d.front(shelly)
+        r.restoreDeferred(vdId) // screen off
+        assertThat(d.log).isEmpty() // no move, and no refront over the app the user chose
+        assertThat(d.main.first()).isEqualTo(shelly)
+        assertThat(r.hasDeferredRestore()).isFalse()
+        assertThat(r.protectedTaskIds()).isEmpty()
+        r.restore(vdId) // teardown afterwards: nothing left to do
+        assertThat(d.log).isEmpty()
+    }
+
+    @Test
+    fun `deferred return - a re-check drops a pulled-back task and keeps the rest deferred`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        launchShellyOnVd(r, d)
+        r.aroundLaunch(chrome.packageName!!, vdId) { d.toVd(chrome) }
+        d.main.add(0, mail)
+        r.onMainDisplayForeground(mail.packageName)
+        r.restoreAtRunEnd(vdId)
+        d.vd.remove(shelly) // the user pulls Shelly back to display 0 themselves
+        d.front(shelly)
+        r.recheckDeferred(vdId) // viewer closed, screen on: stays deferred
+        assertThat(d.log).isEmpty()
+        assertThat(r.hasDeferredRestore()).isTrue()
+        assertThat(r.deferredTaskIds()).containsExactly(chrome.taskId)
+        r.restoreDeferred(vdId) // screen off: Chrome goes back, Shelly (the user's choice) stays on top
+        assertThat(d.log).containsExactly("move ${chrome.taskId}", "refront ${shelly.taskId}").inOrder()
+        assertThat(d.main.first()).isEqualTo(shelly)
+        assertThat(r.hasDeferredRestore()).isFalse()
+        assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    @Test
+    fun `deferred return - a new run reconciles the deferral before its own work`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        r.restoreAtRunEnd(vdId)
+        // Hot Idle follow-up: VirtualDisplayPlatform.start() on the running VD reconciles first...
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.RESTORED)
+        // ...and only then does the new run launch anything.
+        r.aroundLaunch(agentTask.packageName!!, vdId) { d.log += "new run launch"; d.vd.add(0, agentTask) }
+        assertThat(d.log).containsExactly(
+            "move ${shelly.taskId}", "refront ${mail.taskId}", "new run launch",
+        ).inOrder()
+        assertThat(d.main.first()).isEqualTo(mail)
+        assertThat(r.hasDeferredRestore()).isFalse()
+        assertThat(d.vd).containsExactly(agentTask)
+        assertThat(r.unreconciledTaskIds()).isEmpty()
+    }
+
+    // ── Gate fix: reconcile-before-run reports an outcome; a failed reconcile fails the start ──
+
+    @Test
+    fun `reconcile - nothing deferred reports NOTHING_PENDING and leaves a build-58 retry alone`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.NOTHING_PENDING)
+        launchShellyOnVd(r, d)
+        d.failMoves += shelly.taskId
+        r.restore(vdId) // untouched display 0: immediate (not deferred) restore, the move fails
+        d.failMoves.clear()
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.NOTHING_PENDING)
+        assertThat(d.log).isEmpty() // still teardown's job, as before
+        assertThat(r.protectedTaskIds()).contains(shelly.taskId)
+    }
+
+    @Test
+    fun `reconcile - a failed VD read reports FAILED and the task stays owed for the next start`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        r.restoreAtRunEnd(vdId)
+        d.failVdReads = true
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.FAILED)
+        assertThat(d.log).isEmpty()
+        assertThat(d.vd).containsExactly(shelly)
+        assertThat(r.unreconciledTaskIds()).containsExactly(shelly.taskId)
+        r.dropDeferral() // what start() does on FAILED (Hot Idle not held), before it throws
+        // Dropping the deferral does not reconcile: the next start still owes Shelly's return.
+        assertThat(r.unreconciledTaskIds()).containsExactly(shelly.taskId)
+        d.failVdReads = false
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.RESTORED)
+        assertThat(d.log).containsExactly("move ${shelly.taskId}", "refront ${mail.taskId}").inOrder()
+        assertThat(d.vd).isEmpty()
+        assertThat(d.main.first()).isEqualTo(mail)
+        assertThat(r.unreconciledTaskIds()).isEmpty()
+    }
+
+    @Test
+    fun `reconcile - a failed move reports FAILED even though executing the deferral cleared it`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        r.restoreAtRunEnd(vdId)
+        d.failMoves += shelly.taskId
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.FAILED)
+        assertThat(r.hasDeferredRestore()).isFalse() // the deferral flag is gone...
+        assertThat(d.vd).containsExactly(shelly) // ...but Shelly is still on the VD
+        assertThat(r.unreconciledTaskIds()).containsExactly(shelly.taskId)
+        assertThat(r.protectedTaskIds()).contains(shelly.taskId)
+        d.failMoves.clear()
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.RESTORED)
+        assertThat(d.log).containsExactly("move ${shelly.taskId}", "refront ${mail.taskId}").inOrder()
+        assertThat(d.main.first()).isEqualTo(mail)
+    }
+
+    @Test
+    fun `reconcile - a transient move failure is retried within the same start`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        r.restoreAtRunEnd(vdId)
+        d.failMoves += shelly.taskId
+        // Attempt 1 (display-0 read #1) fails the move; attempt 2's read (#2) finds Shizuku healed.
+        var mainReads = 0
+        d.onMainRead = { if (++mainReads == 2) d.failMoves.clear() }
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.RESTORED)
+        assertThat(d.log).containsExactly("move ${shelly.taskId}", "refront ${mail.taskId}").inOrder()
+        assertThat(d.vd).isEmpty()
+    }
+
+    @Test
+    fun `reconcile - a deferred task the user already pulled back counts as reconciled`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        r.restoreAtRunEnd(vdId)
+        d.vd.remove(shelly) // the user opens Shelly from the launcher
+        d.front(shelly)
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.RESTORED)
+        assertThat(d.log).isEmpty() // self-heal: no move, no refront over the user's choice
+        assertThat(r.unreconciledTaskIds()).isEmpty()
+        assertThat(r.hasDeferredRestore()).isFalse()
+    }
+
+    @Test
+    fun `reconcile - waits for a run-end restore that is still deciding, and then reconciles its deferral`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        val reading = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        // The run-end restore stalls on its display-0 read, holding the restorer, BEFORE it has
+        // recorded the deferral.
+        d.onMainRead = { reading.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        val runEnd = launch(Dispatchers.Default) { r.restoreAtRunEnd(vdId) }
+        assertThat(reading.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+        val reconcile = async(Dispatchers.Default) { r.reconcileBeforeRun(vdId) }
+        Thread.sleep(100) // give a broken (unserialized) debt check the chance to answer NOTHING_PENDING
+        assertThat(reconcile.isCompleted).isFalse()
+        release.countDown()
+        assertThat(reconcile.await()).isEqualTo(MainDisplayReconcileOutcome.RESTORED)
+        runEnd.join()
+        assertThat(d.log).containsExactly("move ${shelly.taskId}", "refront ${mail.taskId}").inOrder()
+        assertThat(d.vd).isEmpty()
+        assertThat(r.unreconciledTaskIds()).isEmpty()
+    }
+
+    // ── Gate fix: run-end restore ordering (result report -> restore -> follow-up start) ──
+
+    @Test
+    fun `run end - a follow-up start waits for the restore, which still waits for the result report`() = runTest {
+        val seq = RunEndRestoreSequencer(this)
+        val log = mutableListOf<String>()
+        seq.expectResultReport() // Shelly run: the tracker will report a result
+        seq.onTaskEnded { log += "restore" } // recorded before the session goes Idle
+        runCurrent()
+        assertThat(log).isEmpty() // gated on the result report
+        assertThat(seq.inFlight()).isNotNull()
+        launch { seq.awaitRunEnd(); log += "follow-up start" } // the follow-up reaches start() first
+        runCurrent()
+        assertThat(log).isEmpty() // waiting does NOT release the gate
+        log += "result reported"
+        seq.resultReported()
+        advanceUntilIdle()
+        assertThat(log).containsExactly("result reported", "restore", "follow-up start").inOrder()
+        assertThat(seq.inFlight()).isNull()
+    }
+
+    @Test
+    fun `run end - a result reported before the task end does not hold the restore`() = runTest {
+        val seq = RunEndRestoreSequencer(this)
+        val log = mutableListOf<String>()
+        seq.expectResultReport()
+        seq.resultReported() // the run finished on SessionError first; TaskCompleted comes later
+        seq.onTaskEnded { log += "restore" }
+        advanceUntilIdle()
+        assertThat(log).containsExactly("restore")
+    }
+
+    @Test
+    fun `run end - a run without a result report restores right away`() = runTest {
+        val seq = RunEndRestoreSequencer(this)
+        val log = mutableListOf<String>()
+        seq.onTaskEnded { log += "restore" } // e.g. a Hot Idle follow-up typed in ClosePaw
+        advanceUntilIdle()
+        assertThat(log).containsExactly("restore")
+        seq.awaitRunEnd() // completed: no wait
+    }
+
+    /** A Shelly run's run-end restore, wired as VirtualDisplayPlatform.onTaskEnded wires it. */
+    private fun recordRunEnd(seq: RunEndRestoreSequencer, r: MainDisplayTaskRestorer) {
+        seq.expectResultReport() // Shelly run: the tracker will report a result
+        seq.onTaskEnded(onAbandoned = { r.oweAbandonedRunEndReturn() }) { r.restoreAtRunEnd(vdId) }
+    }
+
+    @Test
+    fun `run end - a result report that never comes abandons the restore - no move, no wedge, the debt stays owed`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        launchShellyOnVd(r, d) // display 0 untouched: a run-end restore would move Shelly at once
+        val seq = RunEndRestoreSequencer(this, resultReportTimeoutMs = 10_000)
+        recordRunEnd(seq, r)
+        advanceTimeBy(9_999)
+        runCurrent()
+        assertThat(seq.inFlight()).isNotNull() // still waiting for the report
+        advanceUntilIdle() // the gate times out
+        // Abandoned: no move, no refront (the report may still come and must come first)...
+        assertThat(d.log).isEmpty()
+        assertThat(d.vd).containsExactly(shelly)
+        // ...the recorded run end has completed, so follow-ups / replacements do not wedge...
+        assertThat(seq.inFlight()).isNull()
+        seq.awaitRunEnd()
+        // ...and the work is still owed: protected from the VD cleanup, unreconciled for a start.
+        assertThat(r.protectedTaskIds()).contains(shelly.taskId)
+        assertThat(r.unreconciledTaskIds()).contains(shelly.taskId)
+        assertThat(r.hasDeferredRestore()).isFalse() // Hot Idle not held: idle-timeout teardown bounds it
+        // The report arrives late: it releases nothing; still no move.
+        seq.resultReported()
+        advanceUntilIdle()
+        assertThat(d.log).isEmpty()
+        // The next start's reconcile (VirtualDisplayPlatform.start) places it and confirms it.
+        assertThat(r.reconcileBeforeRun(vdId)).isEqualTo(MainDisplayReconcileOutcome.RESTORED)
+        assertThat(d.log).containsExactly("move ${shelly.taskId}")
+        assertThat(d.vd).isEmpty()
+        assertThat(d.main.first()).isEqualTo(shelly)
+        assertThat(r.unreconciledTaskIds()).isEmpty()
+        assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    @Test
+    fun `run end - an abandoned restore is placed by teardown as well`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        launchShellyOnVd(r, d)
+        val seq = RunEndRestoreSequencer(this, resultReportTimeoutMs = 10_000)
+        recordRunEnd(seq, r)
+        advanceUntilIdle() // abandoned
+        assertThat(d.log).isEmpty()
+        r.restore(vdId) // VirtualDisplayPlatform.stop(): the teardown restore
+        assertThat(d.log).containsExactly("move ${shelly.taskId}")
+        assertThat(d.main.first()).isEqualTo(shelly)
+        assertThat(r.protectedTaskIds()).isEmpty()
+        assertThat(r.unreconciledTaskIds()).isEmpty()
+    }
+
+    @Test
+    fun `run end - a report within the timeout still restores, after the report`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        launchShellyOnVd(r, d)
+        val seq = RunEndRestoreSequencer(this, resultReportTimeoutMs = 10_000)
+        recordRunEnd(seq, r)
+        advanceTimeBy(9_000)
+        runCurrent()
+        assertThat(d.log).isEmpty()
+        d.log += "result reported"
+        seq.resultReported()
+        advanceUntilIdle()
+        seq.awaitRunEnd()
+        assertThat(d.log).containsExactly("result reported", "move ${shelly.taskId}").inOrder()
+        assertThat(r.unreconciledTaskIds()).isEmpty()
+    }
+
+    @Test
+    fun `replacement - the new session waits for the old teardown whenever it may still move display-0 tasks`() {
+        fun must(returns: Boolean, inFlight: Boolean, deferred: Boolean) =
+            ShellyBackgroundRun.mustAwaitReplacedShutdown(returns, inFlight, deferred)
+        assertThat(must(returns = false, inFlight = false, deferred = false)).isFalse()
+        // A Shelly-run platform: its teardown restores / hands over, recorded deferral or not.
+        assertThat(must(returns = true, inFlight = false, deferred = false)).isTrue()
+        // The run-end restore is still suspended: no deferral recorded YET, the wait is still needed.
+        assertThat(must(returns = false, inFlight = true, deferred = false)).isTrue()
+        assertThat(must(returns = false, inFlight = false, deferred = true)).isTrue()
+    }
+
+    @Test
+    fun `replacement - a new start does not proceed until the old shutdown has completed`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val oldShutdown = Job() // the replaced session's teardown, still restoring / handing over
+        barrier.add(oldShutdown)
+        var started = false
+        launch { if (barrier.awaitClear(30_000)) started = true }
+        runCurrent()
+        assertThat(started).isFalse()
+        oldShutdown.complete()
+        advanceUntilIdle()
+        assertThat(started).isTrue()
+        assertThat(barrier.outstanding).isEqualTo(0)
+    }
+
+    @Test
+    fun `replacement - a start that timed out leaves the barrier, so a retry still waits`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val oldShutdown = Job()
+        barrier.add(oldShutdown)
+        // Start A gives up (it fails; it never proceeds concurrently with the old teardown).
+        assertThat(barrier.awaitClear(30_000)).isFalse()
+        assertThat(barrier.outstanding).isEqualTo(1)
+        // Start B (the old session is already detached, so B replaces nothing) still waits for it.
+        var bStarted = false
+        launch { if (barrier.awaitClear(30_000)) bStarted = true }
+        runCurrent()
+        assertThat(bStarted).isFalse()
+        oldShutdown.complete()
+        advanceUntilIdle()
+        assertThat(bStarted).isTrue()
+        assertThat(barrier.awaitClear(30_000)).isTrue() // nothing outstanding: immediate
+    }
+
+    @Test
+    fun `replacement - a shutdown registered while waiting is waited for too`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val first = Job()
+        val second = Job()
+        barrier.add(first)
+        var started = false
+        launch { if (barrier.awaitClear(30_000)) started = true }
+        runCurrent()
+        barrier.add(second)
+        first.complete()
+        runCurrent()
+        assertThat(started).isFalse()
+        second.complete()
+        advanceUntilIdle()
+        assertThat(started).isTrue()
+    }
+
+    @Test
+    fun `replacement - a session never waits for its own teardown, but still for every other one`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val own = Any() // the waiting session's platform
+        val other = Any()
+        val ownTeardown = Job()
+        val otherTeardown = Job()
+        barrier.add(ownTeardown, owner = own)
+        assertThat(barrier.awaitClear(30_000, exceptOwner = own)).isTrue() // no self-wait
+        barrier.add(otherTeardown, owner = other)
+        var started = false
+        launch { if (barrier.awaitClear(30_000, exceptOwner = own)) started = true }
+        runCurrent()
+        assertThat(started).isFalse()
+        otherTeardown.complete()
+        advanceUntilIdle()
+        assertThat(started).isTrue()
+        // Every other session still waits for it.
+        assertThat(barrier.awaitClear(1_000)).isFalse()
+        assertThat(barrier.awaitClear(1_000, exceptOwner = other)).isFalse()
+        ownTeardown.complete()
+        assertThat(barrier.outstanding).isEqualTo(0)
+    }
+
+    // ── Gate fix round 3: only a teardown that actually ran clears the barrier ──
+
+    /** A scope like serviceScope: cancellable, on the test scheduler. */
+    private fun kotlinx.coroutines.test.TestScope.cancellableScope() = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.test.StandardTestDispatcher(testScheduler) + kotlinx.coroutines.SupervisorJob()
+    )
+
+    @Test
+    fun `replacement - a cancelled teardown never counts as reconciled`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val teardown = Job()
+        barrier.add(teardown)
+        var result: Boolean? = null
+        launch { result = barrier.awaitClear(30_000) }
+        runCurrent()
+        assertThat(result).isNull() // waiting
+        teardown.cancel()
+        advanceUntilIdle()
+        assertThat(result).isFalse() // the waiting start fails; it does not proceed
+        assertThat(currentTime).isLessThan(30_000L) // right away, not after the bound
+        assertThat(barrier.outstanding).isEqualTo(1) // the entry stays
+        assertThat(barrier.awaitClear(30_000)).isFalse() // so every later start fails too
+    }
+
+    @Test
+    fun `replacement - a failed teardown never counts as reconciled`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val teardown = Job()
+        barrier.add(teardown, owner = Any())
+        teardown.completeExceptionally(IllegalStateException("platform stop threw"))
+        assertThat(barrier.awaitClear(30_000)).isFalse()
+        assertThat(barrier.outstanding).isEqualTo(1)
+    }
+
+    @Test
+    fun `replacement - destroying the service mid-wait cannot skip the replaced teardown`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val scope = cancellableScope()
+        val runEndRestore = Job() // session A's run-end restore, still suspended
+        val log = mutableListOf<String>()
+        var stopped = false
+        val reconciled = launchReplacedSessionTeardown(
+            scope = scope,
+            runEndRestore = runEndRestore,
+            shutdown = { log += "A teardown"; stopped = true },
+            isTornDown = { stopped },
+            stopPlatform = { log += "forced stop"; stopped = true },
+        )
+        barrier.add(reconciled, owner = Any())
+        runCurrent() // the teardown waits for the run-end restore
+        scope.cancel() // service destroyed: serviceScope-like cancellation
+        runCurrent()
+        assertThat(log).isEmpty()
+        assertThat(barrier.outstanding).isEqualTo(1) // not deregistered by the cancellation
+        var cStarted = false
+        launch { if (barrier.awaitClear(30_000)) cStarted = true } // session C after reconnection
+        runCurrent()
+        assertThat(cStarted).isFalse()
+        runEndRestore.complete()
+        advanceUntilIdle()
+        assertThat(log).containsExactly("A teardown") // ran to completion despite the cancel
+        assertThat(reconciled.isCompleted && !reconciled.isCancelled).isTrue()
+        assertThat(cStarted).isTrue() // only now
+        assertThat(barrier.outstanding).isEqualTo(0)
+    }
+
+    @Test
+    fun `replacement - a teardown cancelled before it started fails closed`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val scope = cancellableScope()
+        var shutdownRan = false
+        val failures = mutableListOf<Throwable>()
+        val reconciled = launchReplacedSessionTeardown(
+            scope = scope,
+            runEndRestore = null,
+            shutdown = { shutdownRan = true },
+            isTornDown = { shutdownRan },
+            stopPlatform = {},
+            onFailure = { failures += it },
+        )
+        barrier.add(reconciled)
+        scope.cancel() // before the body was dispatched
+        advanceUntilIdle()
+        assertThat(shutdownRan).isFalse()
+        assertThat(reconciled.isCancelled).isTrue() // failed, not "reconciled"
+        assertThat(failures).hasSize(1) // surfaced (AgentService logs it)
+        assertThat(barrier.awaitClear(30_000)).isFalse()
+        assertThat(barrier.outstanding).isEqualTo(1)
+    }
+
+    @Test
+    fun `replacement - a shutdown that returns without stopping the platform stops it, or fails`() = runTest {
+        // The old session was already claimed by a shutdown that never reached platform stop:
+        // its Shutdown op returns at once. The platform is stopped directly (idempotent).
+        val log = mutableListOf<String>()
+        var stopped = false
+        val forced = launchReplacedSessionTeardown(
+            scope = this, // test scope: advanceUntilIdle runs it (backgroundScope work it would not)
+            runEndRestore = null,
+            shutdown = { log += "shutdown (already claimed)" },
+            isTornDown = { stopped },
+            stopPlatform = { log += "forced stop"; stopped = true },
+        )
+        advanceUntilIdle()
+        assertThat(log).containsExactly("shutdown (already claimed)", "forced stop").inOrder()
+        assertThat(forced.isCompleted && !forced.isCancelled).isTrue()
+
+        // The stop itself fails: never reconciled, the barrier keeps it.
+        val barrier = ReplacedSessionShutdownBarrier()
+        val failures = mutableListOf<Throwable>()
+        val failed = launchReplacedSessionTeardown(
+            scope = this, // test scope: advanceUntilIdle runs it (backgroundScope work it would not)
+            runEndRestore = null,
+            shutdown = {},
+            isTornDown = { false },
+            stopPlatform = { throw IllegalStateException("release failed") },
+            onFailure = { failures += it },
+        )
+        barrier.add(failed)
+        advanceUntilIdle()
+        assertThat(failed.isCancelled).isTrue()
+        assertThat(failures.single()).hasMessageThat().isEqualTo("release failed")
+        assertThat(barrier.awaitClear(30_000)).isFalse()
+        assertThat(barrier.outstanding).isEqualTo(1)
+    }
+
+    // ── Gate fix round 4: the destroy path (AgentService.onDestroy) uses the same registered teardown ──
+    // onDestroy itself is Android-bound (AccessibilityService); it calls shutdownReplacedSession,
+    // whose registration + teardown is launchRegisteredSessionTeardown, plus the observe-only
+    // watchSessionTeardown for the former 5 s bound. These tests drive those two helpers.
+
+    @Test
+    fun `destroy - the attached session's teardown is registered before detach and outlives the 5 s bound`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val teardownScope = cancellableScope()
+        val checkpoint = Job() // A's teardown suspended in checkpointing / a display read
+        val log = mutableListOf<String>()
+        var stopped = false
+        val reconciled = launchRegisteredSessionTeardown(
+            barrier = barrier,
+            scope = teardownScope,
+            mustAwait = true, // A holds deferred Shelly tasks
+            owner = Any(),
+            runEndRestore = null,
+            shutdown = { checkpoint.join(); log += "A teardown"; stopped = true },
+            isTornDown = { stopped },
+            stopPlatform = { log += "forced stop"; stopped = true },
+        )
+        // Registered synchronously, i.e. before onDestroy detaches the session.
+        assertThat(barrier.outstanding).isEqualTo(1)
+        var timedOut = false
+        watchSessionTeardown(cancellableScope(), reconciled, timeoutMs = 5_000) { timedOut = true }
+        runCurrent() // A's teardown is inside its critical section, suspended
+        teardownScope.cancel() // the service is destroyed
+        var cStarted = false
+        launch { if (barrier.awaitClear(30_000)) cStarted = true } // session C of the restarted service
+        advanceTimeBy(5_001)
+        runCurrent()
+        assertThat(timedOut).isTrue() // the 5 s bound only logs ...
+        assertThat(reconciled.isActive).isTrue() // ... it did not abandon the teardown
+        assertThat(cStarted).isFalse() // C does not overlap A's teardown
+        assertThat(log).isEmpty()
+        checkpoint.complete()
+        advanceUntilIdle()
+        assertThat(log).containsExactly("A teardown")
+        assertThat(reconciled.isCompleted && !reconciled.isCancelled).isTrue()
+        assertThat(cStarted).isTrue() // only once A's platform is stopped
+        assertThat(barrier.outstanding).isEqualTo(0)
+    }
+
+    @Test
+    fun `destroy - a teardown cancelled before it started stays registered and starts fail closed`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val scope = cancellableScope()
+        var shutdownRan = false
+        val reconciled = launchRegisteredSessionTeardown(
+            barrier = barrier,
+            scope = scope,
+            mustAwait = true,
+            owner = Any(),
+            runEndRestore = null,
+            shutdown = { shutdownRan = true },
+            isTornDown = { shutdownRan },
+            stopPlatform = {},
+        )
+        assertThat(barrier.outstanding).isEqualTo(1)
+        scope.cancel() // before the body was dispatched
+        advanceUntilIdle()
+        assertThat(shutdownRan).isFalse()
+        assertThat(reconciled.isCancelled).isTrue()
+        assertThat(barrier.awaitClear(30_000)).isFalse()
+        assertThat(currentTime).isLessThan(30_000L) // right away
+        assertThat(barrier.outstanding).isEqualTo(1)
+    }
+
+    @Test
+    fun `destroy - only a task-moving session is registered, and a failed teardown keeps its entry`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        // A session that never touches display-0 tasks: torn down, not waited for (as before).
+        var stopped = false
+        val plain = launchRegisteredSessionTeardown(
+            barrier = barrier,
+            scope = this, // test scope: advanceUntilIdle runs it
+            mustAwait = false,
+            owner = Any(),
+            runEndRestore = null,
+            shutdown = { stopped = true },
+            isTornDown = { stopped },
+            stopPlatform = {},
+        )
+        assertThat(barrier.outstanding).isEqualTo(0)
+        var timedOut = false
+        watchSessionTeardown(this, plain, timeoutMs = 5_000) { timedOut = true }
+        advanceUntilIdle()
+        assertThat(stopped).isTrue()
+        assertThat(plain.isCompleted && !plain.isCancelled).isTrue()
+        assertThat(timedOut).isFalse()
+        assertThat(barrier.awaitClear(30_000)).isTrue()
+
+        // A task-moving session whose platform stop throws: never reconciled, the entry stays.
+        val failed = launchRegisteredSessionTeardown(
+            barrier = barrier,
+            scope = this,
+            mustAwait = true,
+            owner = Any(),
+            runEndRestore = null,
+            shutdown = {},
+            isTornDown = { false },
+            stopPlatform = { throw IllegalStateException("release failed") },
+        )
+        advanceUntilIdle()
+        assertThat(failed.isCancelled).isTrue()
+        assertThat(barrier.awaitClear(30_000)).isFalse()
+        assertThat(barrier.outstanding).isEqualTo(1)
+    }
+
+    // ── Gate fix round 2: the start choke point is AgentSession's platform start (every path) ──
+
+    /**
+     * A session as MainActivity / onboarding / AgentService create it (AgentSession), whose
+     * platform start is recorded and then fails, so the test ends at the platform start without
+     * running an agent.
+     */
+    private fun sessionRecordingPlatformStart(scope: kotlinx.coroutines.CoroutineScope, log: MutableList<String>):
+            Pair<ai.closepaw.session.AgentSession, ai.closepaw.platform.AndroidPlatform> {
+        val platform = mockk<ai.closepaw.platform.AndroidPlatform>(relaxed = true)
+        coEvery { platform.start() } answers {
+            log += "platform start"
+            throw IllegalStateException("test: stop at the platform start")
+        }
+        val services = mockk<ai.closepaw.session.SessionServices>(relaxed = true)
+        every { services.platform } returns platform
+        val session = ai.closepaw.session.AgentSession.createWithServices(
+            config = ai.closepaw.protocol.SessionConfig(),
+            service = mockk<android.accessibilityservice.AccessibilityService>(relaxed = true),
+            scope = scope,
+            services = services,
+        )
+        return session to platform
+    }
+
+    @Test
+    fun `wiring - a session's first task does not start its platform while a replaced teardown is running`() = runTest {
+        val log = mutableListOf<String>()
+        // E.g. MainActivity created this session (observeExternalSession) while a Shelly
+        // replacement's old teardown is still restoring / handing over display-0 tasks.
+        val (session, _) = sessionRecordingPlatformStart(backgroundScope, log)
+        val oldTeardown = Job()
+        ReplacedSessionShutdownBarrier.process.add(oldTeardown, owner = Any())
+        try {
+            val firstTask = launch { session.submit(ai.closepaw.protocol.Op.UserInput(text = "goal")) }
+            runCurrent()
+            assertThat(log).isEmpty() // the platform has not started: no task can run yet
+            assertThat(firstTask.isCompleted).isFalse()
+            log += "old teardown completed"
+            oldTeardown.complete()
+            advanceUntilIdle()
+            firstTask.join()
+            assertThat(log).containsExactly("old teardown completed", "platform start").inOrder()
+        } finally {
+            oldTeardown.complete()
+        }
+    }
+
+    @Test
+    fun `wiring - a start whose wait times out fails without starting the platform`() = runTest {
+        val log = mutableListOf<String>()
+        val (session, _) = sessionRecordingPlatformStart(backgroundScope, log)
+        val stuckTeardown = Job()
+        ReplacedSessionShutdownBarrier.process.add(stuckTeardown, owner = Any())
+        try {
+            session.submit(ai.closepaw.protocol.Op.UserInput(text = "goal")) // waits the bound out
+            assertThat(log).isEmpty() // failed (bootstrap failure path): never started
+            assertThat(session.state.value).isEqualTo(ai.closepaw.protocol.SessionState.Created)
+            assertThat(ReplacedSessionShutdownBarrier.process.outstanding).isEqualTo(1) // still registered
+        } finally {
+            stuckTeardown.complete()
+        }
+    }
+
+    @Test
+    fun `wiring - a cancelled replaced teardown fails the start instead of permitting it`() = runTest {
+        val log = mutableListOf<String>()
+        val (session, _) = sessionRecordingPlatformStart(backgroundScope, log)
+        val cancelledTeardown = Job()
+        ReplacedSessionShutdownBarrier.process.add(cancelledTeardown, owner = Any())
+        try {
+            cancelledTeardown.cancel() // e.g. ended before its teardown ran
+            session.submit(ai.closepaw.protocol.Op.UserInput(text = "goal"))
+            assertThat(log).isEmpty() // the platform never started
+            assertThat(session.state.value).isEqualTo(ai.closepaw.protocol.SessionState.Created)
+            assertThat(ReplacedSessionShutdownBarrier.process.outstanding).isEqualTo(1)
+        } finally {
+            ReplacedSessionShutdownBarrier.process.discardForTest(cancelledTeardown)
+        }
+    }
+
+    @Test
+    fun `wiring - a session never waits for its own registered teardown`() = runTest {
+        val log = mutableListOf<String>()
+        val (session, platform) = sessionRecordingPlatformStart(backgroundScope, log)
+        val ownTeardown = Job()
+        ReplacedSessionShutdownBarrier.process.add(ownTeardown, owner = platform)
+        try {
+            session.submit(ai.closepaw.protocol.Op.UserInput(text = "goal"))
+            assertThat(log).containsExactly("platform start")
+        } finally {
+            ownTeardown.complete()
+        }
+    }
+
+    @Test
+    fun `deferred return - reconciling without a deferral leaves a build-58 retry to teardown`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        launchShellyOnVd(r, d)
+        d.failMoves += shelly.taskId
+        r.restore(vdId) // untouched display 0: immediate restore, Shelly's move fails
+        assertThat(r.hasDeferredRestore()).isFalse()
+        d.failMoves.clear()
+        r.restoreDeferred(vdId) // new run / screen off: nothing deferred, nothing done
+        assertThat(d.log).isEmpty()
+        assertThat(r.protectedTaskIds()).contains(shelly.taskId)
+    }
+
+    @Test
+    fun `deferred return - teardown while deferred degrades to the build-58 restore and handover`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        r.restoreAtRunEnd(vdId)
+        assertThat(r.hasDeferredRestore()).isTrue()
+        // stop(): the restore executes the deferral; Shelly's move fails, so the release hands it over.
+        d.failMoves += shelly.taskId
+        r.restore(vdId)
+        assertThat(r.hasDeferredRestore()).isFalse()
+        val handover = r.prepareHandover(vdId)
+        assertThat(handover).isEqualTo(MainDisplayHandover(setOf(shelly.taskId), MainDisplayRefront.Task(mail.taskId)))
+        d.release() // Shelly lands on display 0's top
+        r.refrontAfterHandover(handover)
+        assertThat(d.log).containsExactly("refront ${mail.taskId}") // one landing, one refront
+        assertThat(d.main.first()).isEqualTo(mail)
+        assertThat(d.main).contains(shelly)
+        assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    @Test
+    fun `deferred return - a dropped deferral becomes an ordinary retry that teardown completes`() = runTest {
+        val d = FakeDisplays(listOf(shelly, chrome, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyUserOpensMail(r, d)
+        r.restoreAtRunEnd(vdId)
+        r.dropDeferral() // no trigger available (receiver registration failed / reconcile read failed)
+        assertThat(r.hasDeferredRestore()).isFalse()
+        assertThat(r.protectedTaskIds()).contains(shelly.taskId) // still kept by the VD cleanup
+        r.restoreDeferred(vdId) // nothing deferred any more: no-op
+        assertThat(d.log).isEmpty()
+        r.restore(vdId) // the fallback / teardown restore executes the frozen plan
+        assertThat(d.log).containsExactly("move ${shelly.taskId}", "refront ${mail.taskId}").inOrder()
+        assertThat(d.main.first()).isEqualTo(mail)
+        assertThat(r.protectedTaskIds()).isEmpty()
     }
 }

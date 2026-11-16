@@ -16,7 +16,8 @@ import kotlinx.coroutines.withContext
  * Android side of [MainDisplayTaskGuard]: snapshots display 0 / the virtual display around each
  * agent app launch and returns displaced tasks to display 0. Enabled only for Shelly background
  * runs ([ai.closepaw.protocol.SessionConfig.preserveMainDisplayTasks]); every failure is logged
- * and swallowed (the run itself must not depend on it).
+ * and swallowed (the run itself must not depend on it), except that [reconcileBeforeRun] reports
+ * a deferred return it could not complete, so a new run is not started on that VD.
  *
  * [mutex] orders launches against restores; `synchronized(guard)` protects the guard's memory,
  * which is also fed from the accessibility event thread ([onMainDisplayForeground]).
@@ -26,6 +27,16 @@ internal data class MainDisplayHandover(val taskIds: Set<Int>, val refront: Main
     companion object {
         val NONE = MainDisplayHandover(emptySet(), MainDisplayRefront.None)
     }
+}
+
+/** Outcome of [MainDisplayTaskRestorer.reconcileBeforeRun]. */
+internal enum class MainDisplayReconcileOutcome {
+    /** No deferred task was owed: nothing to reconcile. */
+    NOTHING_PENDING,
+    /** Every deferred task is confirmed off the virtual display (moved back, or gone). */
+    RESTORED,
+    /** A deferred task is still on the virtual display, or the VD could not be read. */
+    FAILED,
 }
 
 internal class MainDisplayTaskRestorer(
@@ -42,6 +53,9 @@ internal class MainDisplayTaskRestorer(
         /** Bounded wait for VD-release task reparenting before the handover refront (~1.5 s). */
         private const val HANDOVER_POLLS = 30
         private const val HANDOVER_POLL_MS = 50L
+        /** Bounded retry of the reconcile a new run needs before it may use the VD. */
+        private const val RECONCILE_ATTEMPTS = 3
+        private const val RECONCILE_RETRY_MS = 250L
     }
 
     private val guard = MainDisplayTaskGuard(homePackages)
@@ -79,6 +93,100 @@ internal class MainDisplayTaskRestorer(
     /** Tasks the virtual-display cleanup must not remove (displaced, not yet moved back). */
     fun protectedTaskIds(): Set<Int> = synchronized(guard) { guard.protectedTaskIds }
 
+    /** A deferred restore is pending ([restoreAtRunEnd]); in memory only, never persisted. */
+    fun hasDeferredRestore(): Boolean = synchronized(guard) { guard.isDeferred }
+
+    /** See [MainDisplayTaskGuard.dropDeferral]: the deferral degrades to a build-58 pending retry. */
+    fun dropDeferral() {
+        synchronized(guard) { guard.dropDeferral() }
+    }
+
+    /** The deferred tasks in their frozen move order (for tests and logs). */
+    fun deferredTaskIds(): List<Int> = synchronized(guard) { guard.deferredTaskIds }
+
+    /**
+     * Run end (build 59): like [restore], except that when the user has moved on (the plan owes a
+     * refront) the displaced tasks are NOT moved now: the restore is deferred
+     * ([MainDisplayTaskGuard.planOrDefer]) and the tasks stay on the virtual display until
+     * [restoreDeferred] (screen off, a new run) or teardown ([restore] + handover) executes it.
+     * A plan without a refront (the user has not moved on) is executed immediately, as before.
+     */
+    suspend fun restoreAtRunEnd(vdDisplayId: Int) = restore(vdDisplayId, mayDefer = true, onlyIfDeferred = false)
+
+    /**
+     * Execute a pending deferred restore now: the frozen move order, then the refront recomputed
+     * from display 0 at this moment (the retry rule). Deferred tasks the user already pulled back
+     * to display 0 are dropped; with none left the deferral just clears (no move, no refront).
+     * No-op when nothing is deferred (a build-58 pending retry is left for teardown).
+     */
+    suspend fun restoreDeferred(vdDisplayId: Int) = restore(vdDisplayId, mayDefer = false, onlyIfDeferred = true)
+
+    /**
+     * Re-evaluate a pending deferral without executing it while the user has moved on (viewer
+     * closed, screen on): it stays deferred, or clears when no deferred task is left on the VD.
+     * No-op when nothing is deferred.
+     */
+    suspend fun recheckDeferred(vdDisplayId: Int) = restore(vdDisplayId, mayDefer = true, onlyIfDeferred = true)
+
+    /**
+     * The run-end return was ABANDONED (its result report did not arrive in time; see
+     * RunEndRestoreSequencer): nothing is moved now. Every displaced task stays owed, recorded
+     * as unreconciled so the next start's [reconcileBeforeRun] executes the return and confirms
+     * it before the new run (a failure fails that start); teardown ([restore] + handover) still
+     * places it as well. In memory only, like a deferral.
+     */
+    fun oweAbandonedRunEndReturn() {
+        synchronized(guard) { guard.oweAllUnreconciled() }
+    }
+
+    /** Deferred tasks not yet confirmed off the virtual display (see [reconcileBeforeRun]). */
+    fun unreconciledTaskIds(): Set<Int> = synchronized(guard) { guard.unreconciledTaskIds }
+
+    /**
+     * A new run on the running VD ([VirtualDisplayPlatform.start]) must not begin while a task
+     * whose return was deferred is still there. Executes the deferred restore (or, after an
+     * earlier failed attempt, its pending retry: the same frozen order, refront from display 0
+     * now) and then CONFIRMS by reading the VD that every deferred task is off it; retried a
+     * bounded number of times. Reports [MainDisplayReconcileOutcome.NOTHING_PENDING] when no
+     * deferred task was owed, [MainDisplayReconcileOutcome.RESTORED] once none is left on the VD
+     * (moved back, pulled back by the user, or gone: self-heal), else
+     * [MainDisplayReconcileOutcome.FAILED] (a failed read or move after every attempt). A FAILED
+     * reconcile stays owed: the next call tries again; teardown restores / hands it over.
+     */
+    suspend fun reconcileBeforeRun(
+            vdDisplayId: Int,
+            attempts: Int = RECONCILE_ATTEMPTS,
+    ): MainDisplayReconcileOutcome {
+        if (vdDisplayId < 0) return MainDisplayReconcileOutcome.NOTHING_PENDING
+        // Under the mutex: a run-end restore in progress (holding it while it reads the displays)
+        // records its deferral before this decision is made, never after.
+        if (mutex.withLock { unreconciledTaskIds().isEmpty() }) return MainDisplayReconcileOutcome.NOTHING_PENDING
+        repeat(attempts) { attempt ->
+            restore(vdDisplayId)
+            if (unreconciledSettled(vdDisplayId)) return MainDisplayReconcileOutcome.RESTORED
+            if (attempt < attempts - 1) delay(RECONCILE_RETRY_MS)
+        }
+        Log.w(TAG, "reconcile: ${unreconciledTaskIds()} still on the virtual display after $attempts attempts")
+        return MainDisplayReconcileOutcome.FAILED
+    }
+
+    /** Read the VD: true once no unreconciled task is on it (a failed read proves nothing). */
+    private suspend fun unreconciledSettled(vdDisplayId: Int): Boolean = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (unreconciledTaskIds().isEmpty()) return@withContext true
+            val vdNow = (try {
+                shizuku.rootTasksOnDisplay(vdDisplayId)
+            } catch (e: Exception) {
+                Log.w(TAG, "reconcile: reading the virtual display failed", e)
+                null
+            }) ?: return@withContext false
+            synchronized(guard) {
+                guard.settleUnreconciled(vdNow)
+                guard.unreconciledTaskIds.isEmpty()
+            }
+        }
+    }
+
     /**
      * Return tasks displaced from display 0 by this run, then bring back the intended foreground.
      * Safe on every terminal path and idempotent: the guard freezes the first plan (order and
@@ -91,15 +199,25 @@ internal class MainDisplayTaskRestorer(
      * tasks are moved right after, in the same pass, followed by one more refront. Each refront
      * re-reads display 0 first ([MainDisplayTaskGuard.refrontNow]).
      */
-    suspend fun restore(vdDisplayId: Int) {
+    suspend fun restore(vdDisplayId: Int) = restore(vdDisplayId, mayDefer = false, onlyIfDeferred = false)
+
+    private suspend fun restore(vdDisplayId: Int, mayDefer: Boolean, onlyIfDeferred: Boolean) {
         if (vdDisplayId < 0) return
         mutex.withLock {
             if (!synchronized(guard) { guard.hasPendingWork }) return
+            if (onlyIfDeferred && !synchronized(guard) { guard.isDeferred }) return
             withContext(Dispatchers.IO) {
                 try {
                     val vdNow = shizuku.rootTasksOnDisplay(vdDisplayId) ?: return@withContext
                     val mainNow = shizuku.rootTasksOnDisplay(MAIN) ?: return@withContext
-                    val plan = synchronized(guard) { guard.plan(vdNow, mainNow) }
+                    val plan = synchronized(guard) {
+                        if (mayDefer) guard.planOrDefer(vdNow, mainNow) else guard.plan(vdNow, mainNow)
+                    }
+                    if (plan == null) {
+                        Log.i(TAG, "user moved on: deferring the return of " +
+                                "${synchronized(guard) { guard.deferredTaskIds }} to display 0")
+                        return@withContext
+                    }
                     val ids = plan.restoreTaskIds
                     val phases = if (plan.refront != MainDisplayRefront.None && ids.size > 1) {
                         listOf(listOf(ids.last()), ids.dropLast(1))
