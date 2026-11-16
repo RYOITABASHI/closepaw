@@ -9,6 +9,7 @@ import ai.closepaw.mcp.McpHttpServer
 import ai.closepaw.mcp.McpMainCall
 import ai.closepaw.mcp.McpRunRegistry
 import ai.closepaw.mcp.reconcileLateStart
+import ai.closepaw.mcp.stopTargetsLiveSession
 import ai.closepaw.platform.virtualdisplay.DisplayTask
 import ai.closepaw.platform.virtualdisplay.MainDisplayHandover
 import ai.closepaw.platform.virtualdisplay.MainDisplayReconcileOutcome
@@ -2307,6 +2308,33 @@ class ShellyBackgroundRunTest {
         registry.complete(handle, McpRunRegistry.Status.COMPLETED, "done")
         reconcileLateStart(handle, registry, guards) { error("no guard, nothing to stop") }
         assertThat(registry.snapshot(handle)!!.status).isEqualTo(McpRunRegistry.Status.COMPLETED)
+    }
+
+    @Test
+    fun `mcp intake stop - a replacement session B is never shut down on behalf of run A`() {
+        val registry = McpRunRegistry()
+        val guards = java.util.concurrent.ConcurrentHashMap<String, String>()
+        val handleA = registry.issue()
+        registry.markRunning(handleA)
+        guards[handleA] = "session-A"
+        val shutdownsDelivered = mutableListOf<String>()
+        val liveSession = "session-B"
+        // Mirrors AgentService.stopIntakeRun: delegate to the live session's Shutdown only on identity.
+        var finishedDirectly = false
+        reconcileLateStart(handleA, registry, guards) { trackerSession ->
+            if (stopTargetsLiveSession(trackerSession, liveSession)) shutdownsDelivered += liveSession
+            else finishedDirectly = true
+        }
+        assertThat(shutdownsDelivered).isEmpty()
+        assertThat(finishedDirectly).isTrue()
+        assertThat(registry.snapshot(handleA)!!.status).isEqualTo(McpRunRegistry.Status.CANCELLED)
+    }
+
+    @Test
+    fun `mcp intake stop - the run's own session or no live session is stopped through shutdown`() {
+        assertThat(stopTargetsLiveSession("session-A", "session-A")).isTrue()
+        assertThat(stopTargetsLiveSession("session-A", null)).isTrue()
+        assertThat(stopTargetsLiveSession("session-A", "session-B")).isFalse()
     }
 
     @Test

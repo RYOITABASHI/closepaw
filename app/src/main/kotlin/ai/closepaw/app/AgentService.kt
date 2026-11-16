@@ -743,8 +743,19 @@ class AgentService : AccessibilityService() {
      * before its goal is submitted. False when [pending] is no longer this service's run.
      */
     internal fun stopIntakeRun(pending: ShellyPendingResult): Boolean {
-        if (shellyRun?.result === pending) {
-            stopShellyRun()
+        val tracker = shellyRun
+        if (tracker?.result === pending) {
+            if (ai.closepaw.mcp.stopTargetsLiveSession(tracker.sessionId, session?.sessionId?.value)) {
+                stopShellyRun()
+            } else {
+                // A replacement run's session is already live: Op.Shutdown would kill it. Finish
+                // only this tracker (mirrors retireShellyRunUnlessFor / stopShellyRun's no-session path).
+                tracker.finish(ShellyRunState.Finished.Kind.STOPPED)
+                renderShellyRun()
+                reportShellyResult(tracker)
+                shellyRun = null
+                overlayController?.releaseShellyBackgroundRunWhenIdle()
+            }
             return true
         }
         if (shellyPendingStart === pending) {

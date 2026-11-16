@@ -81,3 +81,11 @@ fun <G> reconcileLateStart(
     val guard = guards.remove(handle)
     if (guard != null) stop(guard)
 }
+
+/**
+ * Identity check for a targeted intake stop: the live session may be shut down on behalf of a run
+ * only when it is that run's own session (or no session is live). A different live session belongs
+ * to a replacement run and must never receive the stop.
+ */
+fun stopTargetsLiveSession(trackerSessionId: String, liveSessionId: String?): Boolean =
+    liveSessionId == null || liveSessionId == trackerSessionId
