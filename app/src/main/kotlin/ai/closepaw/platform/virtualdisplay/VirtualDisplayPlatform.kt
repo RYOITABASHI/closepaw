@@ -55,6 +55,15 @@ class VirtualDisplayPlatform(
          */
         private const val DISPLAY_FLAGS = 0x1 or 0x8 or 0x40 or 0x200 or 0x400 or 0x800
 
+        /**
+         * WindowManager.DISPLAY_IME_POLICY_* (hidden). HIDE: an IME request from the VD shows no
+         * keyboard anywhere (without a policy the IME falls back to display 0, bound to the VD
+         * app). FALLBACK: show it on display 0 — needed while the viewer is open so takeover
+         * typing works. The per-action SHOW_MODE_HIDDEN suppression stays as a second layer.
+         */
+        private const val DISPLAY_IME_POLICY_FALLBACK_DISPLAY = 1
+        private const val DISPLAY_IME_POLICY_HIDE = 2
+
         private const val SURFACE_READY_DELAY_MS = 200L
         private const val IMAGE_READER_MAX_IMAGES = 2
     }
@@ -63,6 +72,17 @@ class VirtualDisplayPlatform(
 
     private val arbiter = VdLifecycleArbiter()
     private var binderDeadListener: Shizuku.OnBinderDeadListener? = null
+
+    /** The VD viewer is open (takeover typing needs the IME on display 0). */
+    @Volatile private var viewerOpen = false
+
+    /**
+     * IME policy last applied to the current VD (null = none / unknown). Guarded by
+     * [imePolicyLock] together with the apply, so the last writer always applies the latest
+     * [viewerOpen] (viewer callbacks race with [start] publishing Running).
+     */
+    private var appliedImePolicy: Int? = null
+    private val imePolicyLock = Any()
 
     // ── Component Wiring ─────────────────────────────────────────
 
@@ -100,6 +120,7 @@ class VirtualDisplayPlatform(
                         shizuku = shizuku,
                         homePackages = ai.closepaw.session.SystemSurfaces.resolve(service) -
                                 ai.closepaw.session.SystemSurfaces.SYSTEM_UI,
+                        context = service,
                 )
             } else null
 
@@ -169,7 +190,8 @@ class VirtualDisplayPlatform(
                                 height = config.height,
                                 densityDpi = config.densityDpi,
                                 surface = reader.surface,
-                                flags = DISPLAY_FLAGS
+                                flags = DISPLAY_FLAGS,
+                                imePolicy = DISPLAY_IME_POLICY_HIDE
                         )
                     } catch (e: Exception) {
                         reader.close()
@@ -180,6 +202,18 @@ class VirtualDisplayPlatform(
                 reader.close()
                 throw IllegalStateException("Failed to create virtual display (returned $id)")
             }
+
+            // IME policy before anything can launch on the VD (the IME display is resolved at
+            // startInput time). Fail-open: a missing API or permission only loses this layer.
+            val atCreation = try {
+                shizuku.imePolicyAppliedAtCreation(id)
+            } catch (e: Exception) {
+                false
+            }
+            synchronized(imePolicyLock) {
+                appliedImePolicy = if (atCreation) DISPLAY_IME_POLICY_HIDE else null
+            }
+            reconcileImePolicy(id)
 
             // Resources allocated — register binder death listener and commit state.
             // If anything fails here, roll back: release display, close reader, reset state.
@@ -194,6 +228,9 @@ class VirtualDisplayPlatform(
                 shizuku.addBinderDeadListener(listener)
 
                 arbiter.transitionTo(VdState.Running(id, reader))
+                // A viewer open/close that arrived before Running was published saw no running
+                // display and only recorded its state: apply the latest one now.
+                reconcileImePolicy(id)
                 delay(SURFACE_READY_DELAY_MS)
 
                 Log.i(
@@ -249,6 +286,18 @@ class VirtualDisplayPlatform(
                 }
             }
 
+            // Protected tasks still on the VD are kept by the cleanup below, so the release hands
+            // them to display 0, where they land on top. Decide the refront that undoes that now
+            // (from display 0 as the user has it), execute it once the release has handed them over.
+            val handover = mainDisplayTasks?.let { restorer ->
+                when (previous) {
+                    is VdState.Running -> restorer.prepareHandover(previous.displayId)
+                    is VdState.Draining -> restorer.prepareHandover(previous.displayId)
+                    is VdState.Broken -> restorer.prepareHandover(previous.displayId)
+                    VdState.Stopped -> null
+                }
+            }
+
             // Clean up resources from Running, Draining, or Broken state
             when (previous) {
                 is VdState.Running -> {
@@ -262,6 +311,8 @@ class VirtualDisplayPlatform(
                 }
                 VdState.Stopped -> {} // Already handled by early return above
             }
+
+            if (handover != null) mainDisplayTasks?.refrontAfterHandover(handover)
 
             shizuku.clearCachedProxies()
             arbiter.transitionTo(VdState.Stopped)
@@ -306,6 +357,36 @@ class VirtualDisplayPlatform(
      */
     fun onMainDisplayForeground(packageName: String?) {
         mainDisplayTasks?.onMainDisplayForeground(packageName)
+    }
+
+    // ── Per-display IME policy ───────────────────────────────────
+
+    /**
+     * The VD viewer opened or closed: the VD's IME policy follows (FALLBACK while open so the
+     * user can type during takeover, HIDE otherwise). The policy state lives here, with the
+     * display id; the service layer only signals open/close.
+     */
+    fun onViewerVisibilityChanged(open: Boolean) {
+        viewerOpen = open
+        val displayId = (arbiter.state as? VdState.Running)?.displayId ?: return
+        reconcileImePolicy(displayId)
+    }
+
+    /** Apply the policy [viewerOpen] calls for, unless it is already in effect. Fail-open. */
+    private fun reconcileImePolicy(displayId: Int) {
+        synchronized(imePolicyLock) {
+            val policy = if (viewerOpen) DISPLAY_IME_POLICY_FALLBACK_DISPLAY else DISPLAY_IME_POLICY_HIDE
+            if (appliedImePolicy == policy) return
+            try {
+                if (shizuku.setDisplayImePolicy(displayId, policy)) {
+                    appliedImePolicy = policy
+                } else {
+                    Log.w(TAG, "VD IME policy $policy not applied (display $displayId); per-action suppression only")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "VD IME policy $policy failed (display $displayId); continuing", e)
+            }
+        }
     }
 
     // ── Hybrid Surface Switching ──────────────────────────────────

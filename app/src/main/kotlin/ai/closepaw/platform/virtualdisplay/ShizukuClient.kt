@@ -81,9 +81,14 @@ class ShizukuClient {
     private val inputTransport = ShizukuInputTransport(proxyProvider)
     private val activityTaskTransport = ShizukuActivityTaskTransport(proxyProvider)
     private val activityLauncher = ShizukuActivityLauncher()
+    private val windowTransport = ShizukuWindowTransport(proxyProvider)
 
     /**
      * Create a virtual display via IDisplayManager through Shizuku.
+     *
+     * [imePolicy] (WindowManager.DISPLAY_IME_POLICY_*): applied atomically at creation when the
+     * API 33+ VirtualDisplayConfig.Builder supports it (see [imePolicyAppliedAtCreation]);
+     * otherwise ignored here and left to [setDisplayImePolicy].
      *
      * @return displayId of the created virtual display, or -1 on failure
      */
@@ -93,9 +98,10 @@ class ShizukuClient {
             height: Int,
             densityDpi: Int,
             surface: Surface,
-            flags: Int
+            flags: Int,
+            imePolicy: Int? = null
     ): Int {
-        return displayTransport.createVirtualDisplay(name, width, height, densityDpi, surface, flags)
+        return displayTransport.createVirtualDisplay(name, width, height, densityDpi, surface, flags, imePolicy)
     }
 
     /**
@@ -132,9 +138,26 @@ class ShizukuClient {
     fun moveRootTaskToDisplay(taskId: Int, displayId: Int): Boolean =
             activityTaskTransport.moveRootTaskToDisplay(taskId, displayId)
 
-    /** Bring an existing non-home task to the front (Recents semantics). */
-    fun startActivityFromRecents(taskId: Int): Boolean =
-            activityTaskTransport.startActivityFromRecents(taskId)
+    /** Bring an existing non-home task to the front (Recents semantics); [options] = ActivityOptions bundle. */
+    fun startActivityFromRecents(taskId: Int, options: android.os.Bundle? = null): Boolean =
+            activityTaskTransport.startActivityFromRecents(taskId, options)
+
+    /** Start an intent as the shell over binder (what `am start` does, without a process spawn). */
+    fun startActivityAsShell(intent: Intent, options: android.os.Bundle?): Boolean =
+            activityTaskTransport.startActivity(intent, options)
+
+    // ── Window Manager ──────────────────────────────────────────
+
+    /**
+     * Set a display's IME policy (WindowManager.DISPLAY_IME_POLICY_*). Fail-open: returns false
+     * and logs when the hidden API is missing or the caller lacks permission.
+     */
+    fun setDisplayImePolicy(displayId: Int, imePolicy: Int): Boolean =
+            windowTransport.setDisplayImePolicy(displayId, imePolicy)
+
+    /** Whether the display was created with an IME policy already applied (API 33+ config builder). */
+    fun imePolicyAppliedAtCreation(displayId: Int): Boolean =
+            displayTransport.imePolicyAppliedAtCreation(displayId)
 
     // ── Input Injection ─────────────────────────────────────────
 

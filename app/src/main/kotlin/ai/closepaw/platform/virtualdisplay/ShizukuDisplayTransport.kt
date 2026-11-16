@@ -27,9 +27,15 @@ internal class ShizukuDisplayTransport(
          */
         private val displayCallbacks = ConcurrentHashMap<Int, IVirtualDisplayCallback>()
 
+        /** Displays whose IME policy was set on the API 33+ config builder at creation. */
+        private val imePolicyAtCreation = ConcurrentHashMap.newKeySet<Int>()
+
         fun clear() {
                 displayCallbacks.clear()
+                imePolicyAtCreation.clear()
         }
+
+        fun imePolicyAppliedAtCreation(displayId: Int): Boolean = displayId in imePolicyAtCreation
 
         fun createVirtualDisplay(
                 name: String,
@@ -37,7 +43,8 @@ internal class ShizukuDisplayTransport(
                 height: Int,
                 densityDpi: Int,
                 surface: Surface,
-                flags: Int
+                flags: Int,
+                imePolicy: Int? = null
         ): Int {
                 return try {
                         val proxy = proxyProvider.displayManagerProxy()
@@ -49,7 +56,8 @@ internal class ShizukuDisplayTransport(
                                         height,
                                         densityDpi,
                                         surface,
-                                        flags
+                                        flags,
+                                        imePolicy
                                 )
                         } else {
                                 createVirtualDisplayLegacy(
@@ -108,6 +116,7 @@ internal class ShizukuDisplayTransport(
                                 Log.w(TAG, "No callback token for display $displayId, skipping release")
                         }
                         displayCallbacks.remove(displayId)
+                        imePolicyAtCreation.remove(displayId)
                         Log.d(TAG, "Released virtual display $displayId")
                 } catch (e: Exception) {
                         Log.e(TAG, "Failed to release virtual display $displayId", e)
@@ -122,7 +131,8 @@ internal class ShizukuDisplayTransport(
                 height: Int,
                 densityDpi: Int,
                 surface: Surface,
-                flags: Int
+                flags: Int,
+                imePolicy: Int?
         ): Int {
                 val builderClass = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
                 val builder =
@@ -137,6 +147,7 @@ internal class ShizukuDisplayTransport(
 
                 builderClass.getMethod("setSurface", Surface::class.java).invoke(builder, surface)
                 builderClass.getMethod("setFlags", Int::class.javaPrimitiveType).invoke(builder, flags)
+                val imePolicySet = imePolicy != null && applyImePolicy(builderClass, builder, imePolicy)
 
                 val config =
                         builderClass.getMethod("build").invoke(builder)
@@ -161,6 +172,7 @@ internal class ShizukuDisplayTransport(
                         try {
                                 val displayId =
                                         method.invoke(proxy, config, callback, null, packageName) as Int
+                                if (imePolicySet && displayId >= 0) imePolicyAtCreation.add(displayId)
                                 return registerDisplayCallback(
                                         displayId,
                                         callback,
@@ -313,6 +325,30 @@ internal class ShizukuDisplayTransport(
                         }
                 }
                 throw lastError ?: IllegalStateException("createVirtualDisplay legacy-alt failed")
+        }
+
+        /**
+         * Probe the hidden VirtualDisplayConfig.Builder.setDisplayImePolicy(int) and set [imePolicy]
+         * so the policy holds from the display's first frame. Fail-open: false when the method is
+         * absent (the caller then sets it through IWindowManager) or the call fails.
+         */
+        private fun applyImePolicy(builderClass: Class<*>, builder: Any, imePolicy: Int): Boolean {
+                return try {
+                        builderClass
+                                .getMethod("setDisplayImePolicy", Int::class.javaPrimitiveType)
+                                .invoke(builder, imePolicy)
+                        Log.i(TAG, "VirtualDisplayConfig IME policy=$imePolicy set at creation")
+                        true
+                } catch (e: NoSuchMethodException) {
+                        Log.i(TAG, "VirtualDisplayConfig.Builder.setDisplayImePolicy absent; IWindowManager fallback")
+                        false
+                } catch (e: Exception) {
+                        Log.w(TAG, "VirtualDisplayConfig.Builder.setDisplayImePolicy failed; IWindowManager fallback", e)
+                        false
+                } catch (e: LinkageError) {
+                        Log.w(TAG, "VirtualDisplayConfig.Builder.setDisplayImePolicy unavailable; IWindowManager fallback", e)
+                        false
+                }
         }
 
         private fun newDisplayCallback(): IVirtualDisplayCallback {

@@ -9,11 +9,13 @@ internal class ShizukuServiceProxyProvider {
         @Volatile private var cachedDisplayProxy: Any? = null
         @Volatile private var cachedInputProxy: Any? = null
         @Volatile private var cachedActivityTaskProxy: Any? = null
+        @Volatile private var cachedWindowManagerProxy: Any? = null
 
         fun clear() {
                 cachedDisplayProxy = null
                 cachedInputProxy = null
                 cachedActivityTaskProxy = null
+                cachedWindowManagerProxy = null
         }
 
         fun displayManagerProxy(): Any {
@@ -47,6 +49,16 @@ internal class ShizukuServiceProxyProvider {
                                 )
                 val proxy = asInterface(binder, "android.app.IActivityTaskManager\$Stub")
                 cachedActivityTaskProxy = proxy
+                return proxy
+        }
+
+        fun windowManagerProxy(): Any {
+                cachedWindowManagerProxy?.let { return it }
+                val binder =
+                        SystemServiceHelper.getSystemService("window")
+                                ?: throw IllegalStateException("Cannot obtain window service binder")
+                val proxy = asInterface(binder, "android.view.IWindowManager\$Stub")
+                cachedWindowManagerProxy = proxy
                 return proxy
         }
 
