@@ -15,6 +15,18 @@ internal class ShizukuActivityTaskTransport(
                 private const val TAG = "ShizukuActivityTask"
                 /** WindowConfiguration.WINDOWING_MODE_PINNED (hidden). */
                 private const val WINDOWING_MODE_PINNED = 2
+                private const val SHELL_PACKAGE = "com.android.shell"
+                /** UserHandle.USER_CURRENT (hidden): `am start`'s default target user. */
+                private const val USER_CURRENT = -2
+
+                /**
+                 * Whether a binder start result is a success: ActivityManager's START_* success
+                 * codes are 0..99 (START_SUCCESS .. START_DELIVERED_TO_TOP and friends). Negative
+                 * codes are errors, and codes >= 100 (START_SWITCHES_CANCELED = 100,
+                 * START_RETURN_LOCK_TASK_MODE_VIOLATION = 101; ActivityManager's fatal-error
+                 * threshold) mean nothing was started either.
+                 */
+                internal fun isStartSuccess(result: Int): Boolean = result in 0..99
         }
 
         fun removeRootTasksOnDisplay(displayId: Int, keepTaskIds: Set<Int> = emptySet()): Int {
@@ -90,8 +102,11 @@ internal class ShizukuActivityTaskTransport(
                 }
         }
 
-        /** Bring an existing (non-home) task to the front, as the Recents screen does. */
-        fun startActivityFromRecents(taskId: Int): Boolean {
+        /**
+         * Bring an existing (non-home) task to the front, as the Recents screen does. [options]:
+         * ActivityOptions bundle (e.g. no animation); null = platform default transition.
+         */
+        fun startActivityFromRecents(taskId: Int, options: android.os.Bundle? = null): Boolean {
                 return try {
                         val proxy = activityTaskManagerProxy()
                         val result =
@@ -101,12 +116,58 @@ internal class ShizukuActivityTaskTransport(
                                                 Int::class.javaPrimitiveType,
                                                 android.os.Bundle::class.java
                                         )
-                                        .invoke(proxy, taskId, null) as? Int ?: -1
-                        // ActivityManager START_* codes: >= 0 is success (incl. START_TASK_TO_FRONT).
-                        if (result < 0) Log.w(TAG, "startActivityFromRecents($taskId) returned $result")
-                        result >= 0
+                                        .invoke(proxy, taskId, options) as? Int ?: -1
+                        // Recents may delegate to an activity start, so the same START_* range
+                        // applies: 0..99 (incl. START_TASK_TO_FRONT) only; 101 = lock-task violation.
+                        val ok = isStartSuccess(result)
+                        if (!ok) Log.w(TAG, "startActivityFromRecents($taskId) returned $result")
+                        ok
                 } catch (e: Exception) {
                         Log.w(TAG, "startActivityFromRecents($taskId) failed: ${e.summary()}")
+                        false
+                }
+        }
+
+        /**
+         * Start [intent] as the shell for the CURRENT user, as `am start` does (its default user
+         * is USER_CURRENT), over binder instead of a process spawn. [options] carries e.g. the
+         * launch display. Uses IActivityTaskManager.startActivityAsUser, looked up by shape (12
+         * parameters, Intent 4th, int userId last): startActivityAsUser(caller, callingPackage,
+         * callingFeatureId, intent, resolvedType, resultTo, resultWho, requestCode, flags,
+         * profilerInfo, options, userId) since Android 11. Plain startActivity would resolve the
+         * shell's own user (0), which is wrong on a secondary-user session.
+         */
+        fun startActivity(intent: android.content.Intent, options: android.os.Bundle?): Boolean {
+                return try {
+                        val proxy = activityTaskManagerProxy()
+                        val method =
+                                proxy.javaClass.methods.firstOrNull { m ->
+                                        m.name == "startActivityAsUser" &&
+                                                m.parameterTypes.size == 12 &&
+                                                m.parameterTypes[3] == android.content.Intent::class.java &&
+                                                m.parameterTypes[11] == Int::class.javaPrimitiveType
+                                } ?: throw NoSuchMethodException("IActivityTaskManager.startActivityAsUser (12 args)")
+                        val result =
+                                method.invoke(
+                                        proxy,
+                                        null, // caller
+                                        SHELL_PACKAGE, // callingPackage (must match the shell uid)
+                                        null, // callingFeatureId
+                                        intent,
+                                        null, // resolvedType
+                                        null, // resultTo
+                                        null, // resultWho
+                                        0, // requestCode
+                                        0, // flags
+                                        null, // profilerInfo
+                                        options,
+                                        USER_CURRENT
+                                ) as? Int ?: -1
+                        val ok = isStartSuccess(result)
+                        if (!ok) Log.w(TAG, "startActivity(${intent.action}) returned $result")
+                        ok
+                } catch (e: Exception) {
+                        Log.w(TAG, "startActivity(${intent.action}) failed: ${e.summary()}")
                         false
                 }
         }

@@ -75,6 +75,31 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
     private var lastPlannedTaskIds: List<Int> = emptyList()
 
     /**
+     * Display 0's (filtered) top task the frozen refront was computed from. A retry keeps the
+     * frozen refront while display 0 still shows this; a different top is the user's newer choice.
+     */
+    private var frozenTopTaskId: Int? = null
+
+    /**
+     * The user's latest choice observed AFTER the freeze: the refront a retry, handover or
+     * pre-refront re-read derived from a filtered top that differed from its reference, and that
+     * top. Once set, it replaces the frozen (refront, [frozenTopTaskId]) pair as the reference for
+     * later "unchanged top" decisions, so returning to the frozen top later (e.g. Home -> Chrome
+     * -> Home) is followed instead of resurrecting the frozen intent. The frozen move order is not
+     * affected. Null while display 0's top never differed (untouched semantics kept).
+     */
+    private var observedChoice: Pair<MainDisplayRefront, Int>? = null
+
+    /** Display 0's (filtered) top the last plan's refront was computed from (in-pass re-reads). */
+    private var lastPlanTopTaskId: Int? = null
+
+    /**
+     * Tasks this cycle already moved back to display 0 ([completeRestore]). On display 0's top
+     * they are our own doing, never the user's choice, so current-top refront decisions skip them.
+     */
+    private val movedThisCycle = HashSet<Int>()
+
+    /**
      * Set once a restore has been planned: from then on display-0 foreground events are (or may
      * be) produced by our own moves / refront, so they no longer count as user actions. Cleared
      * by the next displacement, which starts a new cycle.
@@ -109,6 +134,10 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
         // display 0, so the next plan is computed afresh (still from every remembered candidate).
         pendingRestore = null
         restoreStarted = false
+        movedThisCycle.clear()
+        frozenTopTaskId = null
+        observedChoice = null
+        lastPlanTopTaskId = null
     }
 
     /**
@@ -145,15 +174,25 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
      * the restored tasks.
      *
      * The first plan of a cycle is frozen; while it is pending, a retry returns the moves still
-     * to do (in the original order) and the ORIGINAL refront, whatever display 0 shows now. An
-     * original [MainDisplayRefront.None] ("the last restored task ends on top") becomes an
-     * explicit refront of that task when it was already restored and the retry would cover it.
+     * to do (in the original order). Its refront is recomputed from display 0's CURRENT top,
+     * ignoring tasks this cycle already moved back itself (those are our own doing): a home top
+     * refronts Home, another task refronts that task. When that filtered top is empty, or is still
+     * the top the frozen refront was computed from, the ORIGINAL refront is kept; once a later
+     * decision followed a different top, that choice and top are the reference instead. An original
+     * [MainDisplayRefront.None] ("the last restored task ends on top") becomes an explicit
+     * refront of that task when it was already restored and the retry would cover it.
      * Report the outcome with [completeRestore].
      */
     fun plan(vdNow: List<DisplayTask>, mainNow: List<DisplayTask>): MainDisplayRestorePlan {
         val pending = pendingRestore
         val result = if (pending == null) {
-            freshPlan(vdNow, mainNow).also { if (it != MainDisplayRestorePlan.NOTHING) pendingRestore = it }
+            freshPlan(vdNow, mainNow).also {
+                if (it != MainDisplayRestorePlan.NOTHING) {
+                    pendingRestore = it
+                    frozenTopTaskId = topOf(mainNow)?.taskId
+                    lastPlanTopTaskId = frozenTopTaskId
+                }
+            }
         } else {
             val remaining = movableCandidates(vdNow).map { it.first }.toSet()
             val stillToMove = pending.restoreTaskIds.filter { it in remaining }
@@ -172,7 +211,10 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
                     moves.last() != intendedTop) {
                 pendingRestore = pending.copy(refront = MainDisplayRefront.Task(intendedTop))
             }
-            MainDisplayRestorePlan(moves, pendingRestore!!.refront)
+            val (refront, basisTop) = refrontFromReference(
+                    mainNow, alsoExclude = emptyList(), intent = pendingRestore!!.refront)
+            lastPlanTopTaskId = basisTop
+            MainDisplayRestorePlan(moves, refront)
         }
         if (pendingRestore != null) restoreStarted = true
         lastPlannedTaskIds = result.restoreTaskIds
@@ -188,6 +230,7 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
      */
     fun completeRestore(moved: Collection<Int>, refronted: Boolean) {
         if (pendingRestore == null) return
+        movedThisCycle.addAll(moved)
         forget(moved)
         if (refronted && moved.containsAll(lastPlannedTaskIds)) reset()
     }
@@ -214,16 +257,97 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
                     if (top != null && top in ids) ids - top + top else ids
                 }
 
-        val currentTop = topOf(mainNow)
-        val untouched = displacedTopTaskId in ordered && !mainTouched &&
-                currentTop?.taskId == revealedTopTaskId
-        val refront = when {
+        return MainDisplayRestorePlan(ordered, freshRefront(displacedTopTaskId in ordered, topOf(mainNow)))
+    }
+
+    /** The first plan's refront rule, for display 0's [currentTop]. */
+    private fun freshRefront(displacedTopIncluded: Boolean, currentTop: DisplayTask?): MainDisplayRefront {
+        val untouched = displacedTopIncluded && !mainTouched && currentTop?.taskId == revealedTopTaskId
+        return when {
             untouched -> MainDisplayRefront.None
             currentTop == null -> MainDisplayRefront.None
             currentTop.packageName in homePackages -> MainDisplayRefront.Home
             else -> MainDisplayRefront.Task(currentTop.taskId)
         }
-        return MainDisplayRestorePlan(ordered, refront)
+    }
+
+    /**
+     * The one current-top refront rule (retry plans, the restorer's re-read right before a
+     * refront, the post-release handover): display 0's top app task, skipping tasks this cycle
+     * moved back ([movedThisCycle]) and [alsoExclude]. Empty, or unchanged from [basisTopTaskId]
+     * -> [fallback]; home -> Home; another task -> that task. Also returns the top it decided on.
+     * A decision that followed a top different from [basisTopTaskId] is recorded as
+     * [observedChoice].
+     */
+    private fun refrontFromCurrent(
+            mainNow: List<DisplayTask>,
+            alsoExclude: Collection<Int>,
+            basisTopTaskId: Int?,
+            fallback: MainDisplayRefront,
+    ): Pair<MainDisplayRefront, Int?> {
+        val top = topOf(mainNow.filter { it.taskId !in movedThisCycle && it.taskId !in alsoExclude })
+        if (top == null || top.taskId == basisTopTaskId) return fallback to basisTopTaskId
+        val followed = if (top.packageName in homePackages) MainDisplayRefront.Home else MainDisplayRefront.Task(top.taskId)
+        observedChoice = followed to top.taskId
+        return followed to top.taskId
+    }
+
+    /**
+     * [refrontFromCurrent] against the cycle's reference: the latest [observedChoice] if any, else
+     * the frozen [intent] and [frozenTopTaskId].
+     */
+    private fun refrontFromReference(
+            mainNow: List<DisplayTask>,
+            alsoExclude: Collection<Int>,
+            intent: MainDisplayRefront,
+    ): Pair<MainDisplayRefront, Int?> {
+        val observed = observedChoice
+        return if (observed == null) {
+            refrontFromCurrent(mainNow, alsoExclude, frozenTopTaskId, intent)
+        } else {
+            refrontFromCurrent(mainNow, alsoExclude, observed.second, observed.first)
+        }
+    }
+
+    /**
+     * Re-check of the last plan's refront ([planned]) against display 0 as read right before the
+     * refront executes, skipping tasks moved back in this pass ([movedInPass]) or earlier in the
+     * cycle. Narrows the read-then-act window: a user switch since the plan's read is followed
+     * (and becomes the cycle's [observedChoice]). Within the pass the reference stays the plan's.
+     */
+    fun refrontNow(
+            mainNow: List<DisplayTask>,
+            movedInPass: Collection<Int>,
+            planned: MainDisplayRefront,
+    ): MainDisplayRefront =
+            refrontFromCurrent(mainNow, movedInPass, lastPlanTopTaskId, planned).first
+
+    /**
+     * Refront owed after releasing the virtual display hands [handedOver] (protected tasks still
+     * on it) to display 0, where they land on top. Decided from display 0 BEFORE the release
+     * ([mainNow]), skipping the handed-over tasks and tasks this cycle moved back:
+     * - nothing handed over -> None (no refront);
+     * - a pending restore -> its intent, re-checked against display 0's current top as a retry
+     *   is; a frozen None whose intended top is not among the handed-over tasks (already back,
+     *   or gone) becomes an explicit refront of it, because the handed-over tasks cover it; a
+     *   user choice observed since the freeze ([observedChoice]) is the reference instead;
+     * - no plan was ever made -> the first plan's rule for display 0's current top.
+     */
+    fun handoverRefront(mainNow: List<DisplayTask>, handedOver: Collection<Int>): MainDisplayRefront {
+        if (handedOver.isEmpty()) return MainDisplayRefront.None
+        val pending = pendingRestore
+        if (pending == null) {
+            val top = topOf(mainNow.filter { it.taskId !in movedThisCycle && it.taskId !in handedOver })
+            return freshRefront(displacedTopTaskId in handedOver, top)
+        }
+        val intendedTop = pending.restoreTaskIds.lastOrNull()
+        val intent = if (pending.refront == MainDisplayRefront.None && intendedTop != null &&
+                intendedTop !in handedOver) {
+            MainDisplayRefront.Task(intendedTop)
+        } else {
+            pending.refront
+        }
+        return refrontFromReference(mainNow, handedOver, intent).first
     }
 
     /** Forget everything (after a complete restore). */
@@ -236,6 +360,10 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
         pendingRestore = null
         lastPlannedTaskIds = emptyList()
         restoreStarted = false
+        movedThisCycle.clear()
+        frozenTopTaskId = null
+        observedChoice = null
+        lastPlanTopTaskId = null
     }
 
     companion object {
