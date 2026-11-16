@@ -93,11 +93,22 @@ class VirtualDisplayPlatform(
                     sessionConfig = sessionConfig,
                     traceRecorder = traceRecorder
             )
+    /** Shelly background runs only (see [MainDisplayTaskGuard]); null keeps the old behavior. */
+    private val mainDisplayTasks: MainDisplayTaskRestorer? =
+            if (sessionConfig.preserveMainDisplayTasks) {
+                MainDisplayTaskRestorer(
+                        shizuku = shizuku,
+                        homePackages = ai.closepaw.session.SystemSurfaces.resolve(service) -
+                                ai.closepaw.session.SystemSurfaces.SYSTEM_UI,
+                )
+            } else null
+
     private val appController =
             VirtualDisplayAppController(
                     service = service,
                     shizuku = shizuku,
-                    displayIdProvider = displayIdProvider
+                    displayIdProvider = displayIdProvider,
+                    mainDisplayTasks = mainDisplayTasks,
             )
     private val surfaceController =
             VirtualDisplaySurfaceController(
@@ -227,6 +238,17 @@ class VirtualDisplayPlatform(
 
             surfaceController.reset()
 
+            // Before the VD task cleanup below removes them: tasks this run moved off display 0
+            // go back there (no-op unless a Shelly run displaced something).
+            mainDisplayTasks?.let { restorer ->
+                when (previous) {
+                    is VdState.Running -> restorer.restore(previous.displayId)
+                    is VdState.Draining -> restorer.restore(previous.displayId)
+                    is VdState.Broken -> restorer.restore(previous.displayId)
+                    VdState.Stopped -> {}
+                }
+            }
+
             // Clean up resources from Running, Draining, or Broken state
             when (previous) {
                 is VdState.Running -> {
@@ -256,10 +278,34 @@ class VirtualDisplayPlatform(
 
     private fun removeRootTasksBeforeRelease(displayId: Int) {
         try {
-            shizuku.removeRootTasksOnDisplay(displayId)
+            // Displaced user tasks that could not be moved back are kept: releasing the display
+            // then hands them to display 0 instead of destroying them.
+            shizuku.removeRootTasksOnDisplay(displayId, mainDisplayTasks?.protectedTaskIds().orEmpty())
         } catch (e: Exception) {
             Log.w(TAG, "VD task cleanup before release failed; continuing teardown", e)
         }
+    }
+
+    /**
+     * Return app tasks this run moved off the main display (Shelly background runs). Called at
+     * run end so the user's display-0 context comes back immediately rather than at the Hot Idle
+     * teardown; [stop] repeats it as a safety net. No-op for other sessions.
+     */
+    suspend fun restoreMainDisplayTasks() {
+        val restorer = mainDisplayTasks ?: return
+        val displayId = when (val s = arbiter.state) {
+            is VdState.Running -> s.displayId
+            else -> return
+        }
+        restorer.restore(displayId)
+    }
+
+    /**
+     * An activity window of [packageName] came to the foreground on the main display. Lets the
+     * restore tell "user untouched display 0" from "user acted there" (no-op for other sessions).
+     */
+    fun onMainDisplayForeground(packageName: String?) {
+        mainDisplayTasks?.onMainDisplayForeground(packageName)
     }
 
     // ── Hybrid Surface Switching ──────────────────────────────────
