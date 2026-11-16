@@ -49,7 +49,13 @@ data class SessionConfig(
          * engine then denies — instead of asking about — direct actions on the home launcher /
          * System UI, so the agent uses open_app. Default false keeps interactive behavior.
          */
-        val unattended: Boolean = false
+        val unattended: Boolean = false,
+        /**
+         * Shelly background runs on the virtual display: never leave the user's display-0 tasks
+         * moved by the run (see ai.closepaw.platform.virtualdisplay.MainDisplayTaskGuard).
+         * Default false keeps MainActivity-initiated sessions unchanged.
+         */
+        val preserveMainDisplayTasks: Boolean = false
 )
 
 /** Canonical LLM routing config used at runtime. */

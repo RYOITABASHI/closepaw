@@ -46,14 +46,27 @@ Shelly's own MCP *server* settings are ONLY in the **shelly config** screen:
 1. Tap the magnifier (command palette) in the top bar.
 2. Tap the action labelled **Settings**. A modal titled **shelly config** opens:
    one long scrollable list of sections.
-3. Scroll to the section **エージェント** (Agents). The MCP rows are there, in
-   this order (Japanese label / English label):
-   - MCPサーバー / MCP Server — the server on/off switch
+3. Scroll to the section **エージェント** (Agents). The MCP rows are DEEP inside
+   it: eight non-MCP rows come first, each with a long description, so the section
+   is many screens tall. In order: 自律クラウド / Autonomous Cloud;
+   無人実行でClaudeのサブスクを使う / Claude subscription for unattended runs;
+   クォータ超過時 / On Quota Exhausted; 楽観的な書き込み / Optimistic Workspace Writes;
+   ChatGPT からのエージェント承認 / Approve Agents from ChatGPT;
+   ウィジェット登録の確認省略 / Widget No-Confirm Register;
+   エージェント安全ルール（ベータ） / Agent Safety Rules (beta); A2Aサーバー / A2A Server.
+   Seeing only these rows means you have NOT scrolled far enough: KEEP SCROLLING
+   down within エージェント until the MCPサーバー row appears. The MCP rows are
+   then, in this order (Japanese label / English label):
+   - MCPサーバー / MCP Server — the server on/off switch (9th row of the section)
    - MCPトークンをコピー / Copy MCP Token — button コピー / Copy — DO NOT TAP
    - MCPトークンを再発行 / Regenerate MCP Token — button 再発行 / Regenerate — DO NOT TAP
    - MCP: ターミナル出力の読み取りを許可 / MCP: Allow reading terminal output — switch
    - MCP: 診断情報（ログ・設定）の読み取りを許可 / MCP: Allow diagnostics (logs, settings) — switch
+   - MCP: 型付き操作（エージェント実行）を許可 / MCP: Allow typed operations (run agents) — switch
    - MCP: 実行/書き込みを許可（危険） / MCP: Allow exec/write (dangerous) — switch
+   The END of エージェント is the rows プロファイル学習 / Profile Learning,
+   ファクトを表示・削除 / View/Edit Facts, プロファイルをリセット / Reset Profile; the
+   next section header is Telegramゲートウェイ / Telegram Gateway.
 4. Close the modal with the × at its top-right when done.
 
 TRAP: the gear (quick Settings) panel has a section 連携 (Integrations) with a row
@@ -66,7 +79,11 @@ The same warning applies to the "MCP Servers" title inside that screen.
 
 1. Open Shelly with open_app (package dev.shelly.terminal).
 2. Open **shelly config** via the command palette → **Settings** (see above).
-3. Scroll to エージェント and find the six MCP rows.
+3. Scroll to エージェント, then KEEP SCROLLING within it until the MCPサーバー row
+   appears (eight non-MCP rows precede it; see the list above). Only if you reach
+   the END of エージェント (Profile Learning / View/Edit Facts / Reset Profile rows,
+   or the Telegram Gateway header) without seeing the MCP rows may you conclude
+   they are absent: then report them as not found in UNEXPECTED.
 4. Read the switch state (on/off) of these four rows: MCPサーバー;
    MCP: ターミナル出力の読み取りを許可; MCP: 診断情報（ログ・設定）の読み取りを許可;
    MCP: 実行/書き込みを許可（危険）. Do not tap any switch or button.

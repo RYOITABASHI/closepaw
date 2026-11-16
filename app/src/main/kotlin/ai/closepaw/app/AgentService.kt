@@ -574,6 +574,7 @@ class AgentService : AccessibilityService() {
                                 },
                                 platformMode = platformMode,
                                 unattended = true,
+                                preserveMainDisplayTasks = true,
                         )
                 val newSession =
                         withContext(Dispatchers.Default) {
@@ -704,8 +705,28 @@ class AgentService : AccessibilityService() {
         if (tracker.isFinished) {
             reportShellyResult(tracker)
             shellyRun = null
+            restoreShellyMainDisplay(agentSession)
             // The overlay handles this terminal event right after: keep its Done invisible.
             overlayController?.releaseShellyBackgroundRunWhenIdle()
+        }
+    }
+
+    /**
+     * Run end (completed / failed / stopped): give back any display-0 task the run moved to the
+     * virtual display (e.g. Shelly's own singleTask task when the goal operates Shelly) right
+     * away, instead of when the Hot Idle session is torn down. Teardown (shutdown, replacement,
+     * service destroyed) repeats it in VirtualDisplayPlatform.stop().
+     */
+    private fun restoreShellyMainDisplay(agentSession: AgentSession) {
+        val platform = agentSession.getServices().platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform ?: return
+        serviceScope.launch {
+            try {
+                platform.restoreMainDisplayTasks()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Shelly run: main display restore failed", e)
+            }
         }
     }
 
@@ -743,6 +764,16 @@ class AgentService : AccessibilityService() {
     }
 
     private fun trackShellyRunWindow(packageName: String?, className: String?, displayId: Int) {
+        // Event.displayId exists only on API 33+; below that every event reports display 0 (incl.
+        // virtual-display ones), so do not feed them: the guard then falls back to comparing
+        // display 0's final foreground task (see MainDisplayTaskGuard.plan).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                displayId == Display.DEFAULT_DISPLAY && isActivityWindowClass(className)) {
+            // Display-0 foreground changes, for the run-end restore (no-op unless a Shelly run
+            // displaced a task; see MainDisplayTaskGuard).
+            (session?.getServices()?.platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform)
+                    ?.onMainDisplayForeground(packageName)
+        }
         val tracker = shellyRun ?: return
         if (!isActivityWindowClass(className)) return
         if (displayId != Display.DEFAULT_DISPLAY) {

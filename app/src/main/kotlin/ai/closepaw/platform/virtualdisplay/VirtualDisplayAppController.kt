@@ -13,7 +13,9 @@ import kotlinx.coroutines.withContext
 internal class VirtualDisplayAppController(
         private val service: AccessibilityService,
         private val shizuku: ShizukuClient,
-        private val displayIdProvider: () -> Int
+        private val displayIdProvider: () -> Int,
+        /** Shelly background runs only: keeps display 0's tasks where the user left them. */
+        private val mainDisplayTasks: MainDisplayTaskRestorer? = null,
 ) {
         companion object {
                 private const val TAG = "VDAppController"
@@ -32,6 +34,18 @@ internal class VirtualDisplayAppController(
 
         suspend fun launchApp(packageName: String): ActionResult {
                 val displayId = displayIdProvider()
+                val restorer = mainDisplayTasks ?: return launchApp(packageName, displayId, newTask = false)
+                return restorer.aroundLaunch(packageName, displayId) { newTask ->
+                        launchApp(packageName, displayId, newTask)
+                }
+        }
+
+        /**
+         * [newTask] adds FLAG_ACTIVITY_MULTIPLE_TASK to the shell launch so an app whose task is on
+         * display 0 gets a separate task here instead of having that task moved off display 0
+         * (singleTask / singleInstance activities ignore the flag; see [MainDisplayTaskGuard]).
+         */
+        private suspend fun launchApp(packageName: String, displayId: Int, newTask: Boolean): ActionResult {
                 return withContext(Dispatchers.IO) {
                         try {
                                 val launchIntent =
@@ -57,7 +71,7 @@ internal class VirtualDisplayAppController(
                                                         component,
                                                         "--display",
                                                         "$displayId"
-                                                )
+                                                ) + (if (newTask) arrayOf("--activity-multiple-task") else emptyArray<String>())
                                         val code = shizuku.executeShellCommand(cmd)
                                         if (code == 0) {
                                                 return@withContext ActionResult.Success(

@@ -120,9 +120,21 @@ class ShizukuClient {
      *
      * @return number of root tasks removed, or -1 when the transport fails
      */
-    fun removeRootTasksOnDisplay(displayId: Int): Int {
-        return activityTaskTransport.removeRootTasksOnDisplay(displayId)
+    fun removeRootTasksOnDisplay(displayId: Int, keepTaskIds: Set<Int> = emptySet()): Int {
+        return activityTaskTransport.removeRootTasksOnDisplay(displayId, keepTaskIds)
     }
+
+    /** Root tasks on a display, top-most first; null when the query fails. */
+    internal fun rootTasksOnDisplay(displayId: Int): List<DisplayTask>? =
+            activityTaskTransport.rootTasksOnDisplay(displayId)
+
+    /** Move a root task to a display (it lands on top). */
+    fun moveRootTaskToDisplay(taskId: Int, displayId: Int): Boolean =
+            activityTaskTransport.moveRootTaskToDisplay(taskId, displayId)
+
+    /** Bring an existing non-home task to the front (Recents semantics). */
+    fun startActivityFromRecents(taskId: Int): Boolean =
+            activityTaskTransport.startActivityFromRecents(taskId)
 
     // ── Input Injection ─────────────────────────────────────────
 
