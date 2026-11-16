@@ -6,7 +6,9 @@ import ai.closepaw.mcp.McpBackend
 import ai.closepaw.mcp.McpHandler
 import ai.closepaw.mcp.McpHttpRequest
 import ai.closepaw.mcp.McpHttpServer
+import ai.closepaw.mcp.McpMainCall
 import ai.closepaw.mcp.McpRunRegistry
+import ai.closepaw.mcp.reconcileLateStart
 import ai.closepaw.platform.virtualdisplay.DisplayTask
 import ai.closepaw.platform.virtualdisplay.MainDisplayHandover
 import ai.closepaw.platform.virtualdisplay.MainDisplayReconcileOutcome
@@ -2244,5 +2246,89 @@ class ShellyBackgroundRunTest {
         assertThat(d.log).containsExactly("move ${shelly.taskId}", "refront ${mail.taskId}").inOrder()
         assertThat(d.main.first()).isEqualTo(mail)
         assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    // ---- MCP intake: post-and-await with abandon/reconcile on timeout -------------------------
+
+    @Test
+    fun `mcp main call - a block posted but not yet run at timeout never executes`() {
+        val queued = mutableListOf<Runnable>()
+        val call = McpMainCall(post = { queued += it }, onTargetThread = { false }, timeoutMs = 50)
+        var ran = false
+        val result = call.call<String> { ran = true; "started" }
+        assertThat(result).isNull()
+        queued.forEach { it.run() } // the looper finally gets to it
+        assertThat(ran).isFalse()
+    }
+
+    @Test
+    fun `mcp main call - a block that completes after the timeout has its created run reconciled`() {
+        val registry = McpRunRegistry()
+        val guards = java.util.concurrent.ConcurrentHashMap<String, String>()
+        val stopped = mutableListOf<String>()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        var worker: Thread? = null
+        val call = McpMainCall(
+            post = { r -> worker = Thread(r).also { it.start() } },
+            onTargetThread = { false },
+            timeoutMs = 300,
+        )
+        val result = call.call<String>(
+            reconcile = { handle -> reconcileLateStart(handle, registry, guards) { stopped += it } },
+        ) {
+            entered.countDown()
+            release.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            val handle = registry.issue()
+            guards[handle] = "guard-$handle"
+            registry.markRunning(handle)
+            handle
+        }
+        assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
+        assertThat(result).isNull() // the client is told TIMEOUT
+        release.countDown()
+        worker!!.join(5_000)
+
+        assertThat(registry.activeCount()).isEqualTo(0)
+        assertThat(guards).isEmpty()
+        assertThat(stopped).hasSize(1)
+        val handle = stopped.single().removePrefix("guard-")
+        val snap = registry.snapshot(handle)!!
+        assertThat(snap.status).isEqualTo(McpRunRegistry.Status.CANCELLED)
+        assertThat(snap.summary).contains("timed out")
+    }
+
+    @Test
+    fun `mcp main call - reconcile of an already finished run is harmless`() {
+        val registry = McpRunRegistry()
+        val guards = java.util.concurrent.ConcurrentHashMap<String, String>()
+        val handle = registry.issue()
+        registry.markRunning(handle)
+        registry.complete(handle, McpRunRegistry.Status.COMPLETED, "done")
+        reconcileLateStart(handle, registry, guards) { error("no guard, nothing to stop") }
+        assertThat(registry.snapshot(handle)!!.status).isEqualTo(McpRunRegistry.Status.COMPLETED)
+    }
+
+    @Test
+    fun `mcp main call - the normal path returns the block result unchanged and does not reconcile`() {
+        var reconciled = false
+        val call = McpMainCall(
+            post = { r -> Thread(r).start() },
+            onTargetThread = { false },
+            timeoutMs = 5_000,
+        )
+        val result = call.call<String>(reconcile = { reconciled = true }) { "run-1" }
+        assertThat(result).isEqualTo("run-1")
+        assertThat(reconciled).isFalse()
+    }
+
+    @Test
+    fun `mcp main call - a block failure is rethrown and on the target thread the block runs inline`() {
+        val failing = McpMainCall(post = { r -> Thread(r).start() }, onTargetThread = { false }, timeoutMs = 5_000)
+        val thrown = runCatching { failing.call<String> { throw IllegalStateException("boom") } }.exceptionOrNull()
+        assertThat(thrown).isInstanceOf(IllegalStateException::class.java)
+
+        val inline = McpMainCall(post = { error("must not post") }, onTargetThread = { true }, timeoutMs = 1)
+        assertThat(inline.call<String> { "inline" }).isEqualTo("inline")
     }
 }

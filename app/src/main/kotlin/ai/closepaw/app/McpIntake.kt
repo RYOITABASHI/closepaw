@@ -5,8 +5,10 @@ import ai.closepaw.llm.ModelCatalogRepositoryHolder
 import ai.closepaw.mcp.McpBackend
 import ai.closepaw.mcp.McpHandler
 import ai.closepaw.mcp.McpHttpServer
+import ai.closepaw.mcp.McpMainCall
 import ai.closepaw.mcp.McpRunRegistry
 import ai.closepaw.mcp.McpSettingsStore
+import ai.closepaw.mcp.reconcileLateStart
 import ai.closepaw.onboarding.OnboardingStore
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
 import android.content.Context
@@ -16,9 +18,6 @@ import android.provider.Settings
 import android.util.Log
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -67,6 +66,13 @@ internal class AgentServiceMcpBackend(
 ) : McpBackend {
     private val main = Handler(Looper.getMainLooper())
 
+    /** Post-and-await on the main looper; abandon/reconcile-on-timeout logic is the pure [McpMainCall]. */
+    private val mainCall = McpMainCall(
+        post = { main.post(it) },
+        onTargetThread = { Looper.myLooper() == Looper.getMainLooper() },
+        timeoutMs = MAIN_TIMEOUT_MS,
+    )
+
     /** runHandle -> the start's report-once guard (identifies the run inside AgentService). */
     private val guards = ConcurrentHashMap<String, ShellyPendingResult>()
 
@@ -77,7 +83,7 @@ internal class AgentServiceMcpBackend(
             Log.e(TAG, "probe failed: ${e.javaClass.simpleName}")
             return McpBackend.StartResult.Refused("PROBE_FAILED", "ClosePaw could not check its readiness")
         }
-        return onMain { startOnMain(goal, probes) }
+        return mainCall.call(reconcile = ::reconcileTimedOutStart) { startOnMain(goal, probes) }
             ?: McpBackend.StartResult.Refused("TIMEOUT", "ClosePaw did not respond in time")
     }
 
@@ -115,7 +121,7 @@ internal class AgentServiceMcpBackend(
 
     override fun stopRun(runHandle: String): Boolean {
         val guard = guards[runHandle] ?: return false
-        return onMain { AgentService.instance?.stopIntakeRun(guard) == true } == true
+        return mainCall.call<Boolean> { AgentService.instance?.stopIntakeRun(guard) == true } == true
     }
 
     override fun status(): McpBackend.Status = McpBackend.Status(
@@ -158,24 +164,10 @@ internal class AgentServiceMcpBackend(
         false
     }
 
-    /** Runs [block] on the main thread and waits for it; null on timeout. */
-    private fun <T> onMain(block: () -> T): T? {
-        if (Looper.myLooper() == Looper.getMainLooper()) return block()
-        val result = AtomicReference<T?>(null)
-        val failure = AtomicReference<Throwable?>(null)
-        val done = CountDownLatch(1)
-        main.post {
-            try {
-                result.set(block())
-            } catch (e: Throwable) {
-                failure.set(e)
-            } finally {
-                done.countDown()
-            }
-        }
-        if (!done.await(MAIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return null
-        failure.get()?.let { throw it }
-        return result.get()
+    /** The client was told TIMEOUT, but the start finished anyway: stop it so nothing unaddressable runs. */
+    private fun reconcileTimedOutStart(result: McpBackend.StartResult) {
+        if (result !is McpBackend.StartResult.Started) return
+        reconcileLateStart(result.runHandle, registry, guards) { AgentService.instance?.stopIntakeRun(it) }
     }
 
     companion object {
