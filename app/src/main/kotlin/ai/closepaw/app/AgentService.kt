@@ -169,6 +169,15 @@ class AgentService : AccessibilityService() {
      * [onDestroy] report `cancelled` for a start that has no tracker yet. Main thread only.
      */
     private var shellyPendingStart: ShellyPendingResult? = null
+
+    /**
+     * Second intake (MCP, see McpIntake.kt): terminal observers keyed by the start's report-once
+     * guard. Shelly starts register none, so for them every hook below is a no-op. Main thread.
+     */
+    private val intakeObservers = java.util.IdentityHashMap<ShellyPendingResult, (ShellyRunState.Finished) -> Unit>()
+
+    /** An MCP stop_run that arrived while its start was still being set up (see [stopIntakeRun]). */
+    private var stopRequestedForStart: ShellyPendingResult? = null
     private val shellyNotifier by lazy { ShellyRunNotifier(this) }
 
     fun observeExternalSession(
@@ -295,6 +304,8 @@ class AgentService : AccessibilityService() {
         Log.i(TAG, "ActionVisualizerManager initialized")
 
         registerDebugStopReceiverIfNeeded(this, stopReceiver)
+        // MCP intake server: runs only while its settings toggle is ON (Keystore read: off main).
+        serviceScope.launch(Dispatchers.IO) { McpServerController.sync(applicationContext) }
         registerDebugExecReceiverIfNeeded(this, debugExecReceiver)
         registerDebugMobileActionReceiverIfNeeded(this, debugMobileActionReceiver)
     }
@@ -542,23 +553,31 @@ class AgentService : AccessibilityService() {
             goal: String,
             platformMode: PlatformMode,
             correlation: ShellyBackgroundRun.ResultCorrelation? = null,
-    ) {
+            /**
+             * MCP intake only (Shelly passes null): called once on the main thread with the run's
+             * terminal state, from the same report-once paths that send the Shelly result.
+             */
+            onTerminal: ((ShellyRunState.Finished) -> Unit)? = null,
+    ): ShellyPendingResult? {
         if (!isServiceActive) {
             shellyNotifier.showBlocked(ShellyBackgroundRun.Block.ACCESSIBILITY_OFF, goal)
             reportShellyStartFailure(correlation, "ClosePaw's accessibility service is not active")
-            return
+            onTerminal?.invoke(ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, "ClosePaw's accessibility service is not active"))
+            return null
         }
         if (shellyStartInFlight) {
             Log.w(TAG, "Shelly run already starting; refusing a second start")
             shellyNotifier.showBlocked(ShellyBackgroundRun.Block.BUSY, goal)
             reportShellyStartFailure(correlation, "ClosePaw is busy with another task")
-            return
+            onTerminal?.invoke(ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, "ClosePaw is busy with another task"))
+            return null
         }
         shellyStartInFlight = true
         // The start is accepted (the receiver will answer result_callback=1 when a correlation is
         // present): from here every exit must claim this guard exactly once.
         val pending = ShellyPendingResult(correlation)
         shellyPendingStart = pending
+        onTerminal?.let { intakeObservers[pending] = it }
         // Replace an idle/finished session (FORCE_FRESH semantics). Busy sessions were refused
         // by the receiver's precheck.
         shellyRun?.let {
@@ -643,6 +662,18 @@ class AgentService : AccessibilityService() {
                 if (settings.llmBackend == LLMBackendType.LOCAL) {
                     (newSession.getServices().llmClient as? LFMLLMClient)?.loadModel()
                 }
+                if (stopRequestedForStart === pending) {
+                    // MCP stop_run during setup: cancel before the goal is ever submitted. No suspension
+                    // point between this check and the tracker taking over below, so none is lost.
+                    Log.i(TAG, "Background run: stop requested during setup; not starting")
+                    stopRequestedForStart = null
+                    serviceScope.launch { newSession.submit(Op.Shutdown) }
+                    shellyNotifier.cancel()
+                    reportShellyStartCancelled(pending)
+                    overlayController?.clearShellyBackgroundRun()
+                    overlayController?.hideAll()
+                    return@launch
+                }
 
                 val ignored = buildSet {
                     add(packageName)
@@ -700,7 +731,48 @@ class AgentService : AccessibilityService() {
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 shellyStartInFlight = false
                 if (shellyPendingStart === pending) shellyPendingStart = null
+                if (stopRequestedForStart === pending) stopRequestedForStart = null
             }
+        }
+        return pending
+    }
+
+    /**
+     * MCP stop_run for the start owning [pending]: the running tracker is stopped through
+     * [stopShellyRun] (the notification's Stop path); a start still being set up is cancelled
+     * before its goal is submitted. False when [pending] is no longer this service's run.
+     */
+    internal fun stopIntakeRun(pending: ShellyPendingResult): Boolean {
+        val tracker = shellyRun
+        if (tracker?.result === pending) {
+            if (ai.closepaw.mcp.stopTargetsLiveSession(tracker.sessionId, session?.sessionId?.value)) {
+                stopShellyRun()
+            } else {
+                // A replacement run's session is already live: Op.Shutdown would kill it. Finish
+                // only this tracker (mirrors retireShellyRunUnlessFor / stopShellyRun's no-session path).
+                tracker.finish(ShellyRunState.Finished.Kind.STOPPED)
+                renderShellyRun()
+                reportShellyResult(tracker)
+                shellyRun = null
+                overlayController?.releaseShellyBackgroundRunWhenIdle()
+            }
+            return true
+        }
+        if (shellyPendingStart === pending) {
+            stopRequestedForStart = pending
+            return true
+        }
+        return false
+    }
+
+    /** Hands a terminal state to the MCP observer of [pending], at most once. No-op for Shelly starts. */
+    private fun notifyIntake(pending: ShellyPendingResult, finished: ShellyRunState.Finished?) {
+        finished ?: return
+        val observer = intakeObservers.remove(pending) ?: return
+        try {
+            observer(finished)
+        } catch (e: Exception) {
+            Log.w(TAG, "intake observer failed: ${e.javaClass.simpleName}")
         }
     }
 
@@ -841,6 +913,7 @@ class AgentService : AccessibilityService() {
     private fun reportShellyResult(tracker: ShellyRunTracker) {
         // Claims the start's shared guard: no-op if a startup path already reported this start.
         ShellyResultCallback.send(applicationContext, tracker.claimResult(System.currentTimeMillis()))
+        notifyIntake(tracker.result, tracker.state as? ShellyRunState.Finished)
     }
 
     /**
@@ -860,11 +933,19 @@ class AgentService : AccessibilityService() {
     /** An accepted start failed before it ran. Claims the start's guard (at most one report). */
     private fun reportShellyStartFailure(pending: ShellyPendingResult, message: String) {
         ShellyResultCallback.send(applicationContext, pending.claimFailed(message, System.currentTimeMillis()))
+        notifyIntake(pending, ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, message))
     }
 
     /** An accepted start was cancelled before it ran. Claims the start's guard (at most one report). */
     private fun reportShellyStartCancelled(pending: ShellyPendingResult) {
         ShellyResultCallback.send(applicationContext, pending.claimCancelled(System.currentTimeMillis()))
+        notifyIntake(
+                pending,
+                ShellyRunState.Finished(
+                        ShellyRunState.Finished.Kind.STOPPED,
+                        ShellyResultCallback.CANCELLED_DURING_START_MESSAGE,
+                ),
+        )
     }
 
     private fun trackShellyRunWindow(packageName: String?, className: String?, displayId: Int) {
