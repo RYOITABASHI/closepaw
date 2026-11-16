@@ -159,6 +159,17 @@ class AgentService : AccessibilityService() {
             Log.w(TAG, "Ignoring observeExternalSession while service is shutting down")
             return
         }
+        // A MainActivity / onboarding session: back to the normal (visible) overlay behavior.
+        overlayController?.clearShellyBackgroundRun()
+        attachObservedSession(externalSession, platformMode)
+    }
+
+    /** Shared by [observeExternalSession] and the Shelly path (which keeps its invisible overlay). */
+    private fun attachObservedSession(externalSession: AgentSession, platformMode: PlatformMode) {
+        if (!isServiceActive) {
+            Log.w(TAG, "Ignoring observeExternalSession while service is shutting down")
+            return
+        }
         Log.i(TAG, "Observing external session: ${externalSession.sessionId}, mode=$platformMode")
         retireShellyRunUnlessFor(externalSession)
         session = externalSession
@@ -409,6 +420,7 @@ class AgentService : AccessibilityService() {
             Log.w(TAG, "Ignoring runAgent because service is not active")
             return
         }
+        overlayController?.clearShellyBackgroundRun()
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
             shellyNotifier.render(it.state)
@@ -479,7 +491,14 @@ class AgentService : AccessibilityService() {
      * FORCE_FRESH session creation (same persisted settings, credentials and recording), so the
      * run shows up in ClosePaw's history and MainActivity rebinds to it when the user opens it.
      *
-     * Visible surface: Smart Capsule overlay + [ShellyRunNotifier] only.
+     * Visible surface: while the run works normally on the virtual display, ONLY the
+     * [ShellyRunNotifier] notification (incl. its heads-up for attention states) — no Smart
+     * Capsule, island or edge glow on the main display, and its completion (Done) is reported by
+     * the notifier alone. The capsule appears on the main display only in attention states:
+     * waiting for approval / input / action, error, and takeover (pending or confirmed, i.e. the
+     * user paused it). Opening the VirtualDisplayViewer shows the usual viewer overlays. A run
+     * that falls back to the main display (accessibility mode) is never hidden. Decision rule:
+     * [shouldSuppressForShellyBackgroundRun].
      */
     internal fun startShellyRun(
             goal: String,
@@ -520,7 +539,7 @@ class AgentService : AccessibilityService() {
         val onMainDisplay = platformMode != PlatformMode.VIRTUAL_DISPLAY
         currentPlatformMode = platformMode
         overlayController?.setPlatformMode(platformMode)
-        overlayController?.onBackgroundRunRequested()
+        overlayController?.onBackgroundRunRequested(onMainDisplay)
         shellyNotifier.render(ShellyRunState.Working(onMainDisplay, emptyList()))
 
         val startJob = serviceScope.launch {
@@ -577,6 +596,7 @@ class AgentService : AccessibilityService() {
                     shellyNotifier.cancel()
                     shellyNotifier.showBlocked(ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE, goal)
                     reportShellyStartFailure(pending, "ClosePaw's virtual display became unavailable")
+                    overlayController?.clearShellyBackgroundRun()
                     overlayController?.hideAll()
                     return@launch
                 }
@@ -604,7 +624,8 @@ class AgentService : AccessibilityService() {
                     session = null
                     serviceScope.launch { stray.submit(Op.Shutdown) }
                 }
-                observeExternalSession(newSession, effectiveMode)
+                attachObservedSession(newSession, effectiveMode)
+                overlayController?.updateShellyRunDisplay(tracker.onMainDisplay)
                 shellyRun = tracker
                 // The tracker now owns the guard; tracker paths (incl. onDestroy) report from here.
                 if (shellyPendingStart === pending) shellyPendingStart = null
@@ -624,6 +645,7 @@ class AgentService : AccessibilityService() {
                         ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, e.message)
                 )
                 reportShellyStartFailure(pending, "ClosePaw failed to start the task")
+                overlayController?.clearShellyBackgroundRun()
                 overlayController?.hideAll()
             }
         }
@@ -644,6 +666,7 @@ class AgentService : AccessibilityService() {
             renderShellyRun()
             shellyRun?.let { reportShellyResult(it) }
             shellyRun = null
+            overlayController?.releaseShellyBackgroundRunWhenIdle()
         }
     }
 
@@ -681,6 +704,8 @@ class AgentService : AccessibilityService() {
         if (tracker.isFinished) {
             reportShellyResult(tracker)
             shellyRun = null
+            // The overlay handles this terminal event right after: keep its Done invisible.
+            overlayController?.releaseShellyBackgroundRunWhenIdle()
         }
     }
 

@@ -133,13 +133,30 @@ class ServiceOverlayController(
     /** User preference: capsule or island while overlays are visible (A11y/VD). */
     private var showPreference = ShowPreference.ISLAND
 
+    /**
+     * Shelly background-run state (see [shouldSuppressForShellyBackgroundRun], [ShellyOverlayState]).
+     * Off by default and only ever turned on by [onBackgroundRunRequested], so MainActivity-initiated
+     * sessions keep the unchanged overlay behavior. Main thread only.
+     */
+    private val shelly = ShellyOverlayState()
+
     init {
         statusIslandManager?.startObserving(stateHolder, scope)
 
         // Observe mode for terminal transitions (Done→Hidden auto-hide) that affect visibility
         scope.launch {
+            var lastModeClass: Any? = null
             stateHolder.mode.collect { mode ->
+                val modeKindChanged = lastModeClass != mode::class
+                lastModeClass = mode::class
+                shelly.onMode(mode)
                 if (mode is CapsuleMode.Hidden || mode is CapsuleMode.Done || mode is CapsuleMode.Error) {
+                    applyVisibility()
+                } else if (shelly.active && modeKindChanged) {
+                    // During a Shelly run, entering or leaving an attention mode flips main-display
+                    // visibility (e.g. approval answered from the notification → back to Running,
+                    // takeover requested from the notification → TakeoverPending). Those paths do
+                    // not call applyVisibility themselves.
                     applyVisibility()
                 }
             }
@@ -168,12 +185,15 @@ class ServiceOverlayController(
             mode = mode,
             hasActiveTask = stateHolder.hasActiveTask,
             showPreference = showPreference,
+            shellyBackgroundRun = shelly.active,
+            shellyRunOnMainDisplay = shelly.onMainDisplay,
         )
         Log.i(
             logTag,
             "applyVisibility: platformMode=$platformMode, location=$userLocation, " +
                 "mode=${mode::class.simpleName}, hasActiveTask=${stateHolder.hasActiveTask}, " +
-                "showPreference=$showPreference => showCapsule=${decision.showCapsule}, " +
+                "showPreference=$showPreference, shellyBackgroundRun=${shelly.active}, " +
+                "shellyRunOnMainDisplay=${shelly.onMainDisplay} => showCapsule=${decision.showCapsule}, " +
                 "showIsland=${decision.showIsland}, showGlow=${decision.showGlow}, " +
                 "normalizedShowPreference=${decision.normalizedShowPreference}"
         )
@@ -334,13 +354,39 @@ class ServiceOverlayController(
      * MAIN_APP and only changes on window events, so if no event arrived since the service
      * connected the overlay would stay hidden. MainActivity is not resumed, so the user is
      * elsewhere: treat it as OTHER_APP.
+     *
+     * Also marks the run as Shelly-initiated: while it works on the virtual display
+     * ([onMainDisplay] false) the main-display overlays stay hidden except in attention modes
+     * (see [shouldSuppressForShellyBackgroundRun]).
      */
-    fun onBackgroundRunRequested() {
+    fun onBackgroundRunRequested(onMainDisplay: Boolean) {
+        shelly.start(onMainDisplay)
         if (!isMainAppResumed && userLocation == OverlayUserLocation.MAIN_APP) {
             userLocation = OverlayUserLocation.OTHER_APP
             updateContext()
-            applyVisibility()
         }
+        applyVisibility()
+    }
+
+    /** The Shelly run's display placement became known/changed (tracker's onMainDisplay). */
+    fun updateShellyRunDisplay(onMainDisplay: Boolean) {
+        if (shelly.updateDisplay(onMainDisplay)) applyVisibility()
+    }
+
+    /**
+     * The Shelly run finished. Keep it invisible until the capsule settles to Hidden (so its
+     * Done does not pop up on the main display), then drop the Shelly state.
+     */
+    fun releaseShellyBackgroundRunWhenIdle() {
+        if (shelly.release(stateHolder.mode.value)) applyVisibility()
+    }
+
+    /**
+     * Drop the Shelly state immediately: a non-Shelly session (MainActivity, onboarding) took
+     * over, or the Shelly start was refused / failed.
+     */
+    fun clearShellyBackgroundRun() {
+        if (shelly.clear()) applyVisibility()
     }
 
     /** Pause the agent as if the user pressed the capsule's takeover button. */
@@ -367,6 +413,9 @@ class ServiceOverlayController(
     // ── Event handlers ──
 
     fun onTaskStarted(taskId: String, input: String) {
+        // A new task after the Shelly run finished (same session, e.g. a follow-up from
+        // MainActivity) is not a Shelly background run: restore the normal overlay.
+        shelly.onTaskStarted()
         stateHolder.onTaskStarted(taskId, input)
         showPreference = ShowPreference.CAPSULE
         applyVisibility()
