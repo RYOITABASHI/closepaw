@@ -69,7 +69,12 @@ internal class MainDisplayTaskRestorer(
             mutex.withLock {
                 val mainBefore = withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(MAIN) }
                 val vdBefore = withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(vdDisplayId) }
-                if (mainBefore != null) synchronized(guard) { guard.observeMain(mainBefore) }
+                synchronized(guard) {
+                    if (mainBefore != null) guard.observeMain(mainBefore)
+                    // A failed pre-launch read (null) must reach the guard too: this launch may be
+                    // the one that retakes the displaced task, so a stale attribution is cleared.
+                    guard.beforeAgentAction(mainBefore)
+                }
                 val newTask = mainBefore != null && vdBefore != null &&
                         MainDisplayTaskGuard.shouldLaunchInNewTask(packageName, mainBefore, vdBefore)
                 val result = launch(newTask)
@@ -85,9 +90,44 @@ internal class MainDisplayTaskRestorer(
                 result
             }
 
-    /** Display-0 activity window came to the foreground (accessibility event thread). */
+    /**
+     * Display-0 activity window came to the foreground (accessibility event thread). Only when the
+     * guard cannot decide the event alone (the revealed screen after the user returned to the
+     * displaced app, [MainDisplayTaskGuard.needsMainSnapshot]) is display 0 read, right away and
+     * outside the guard lock; a failed read leaves the guard's conservative default.
+     */
     fun onMainDisplayForeground(packageName: String?) {
-        synchronized(guard) { guard.onMainDisplayForeground(packageName) }
+        val mainNow = if (synchronized(guard) { guard.needsMainSnapshot(packageName) }) {
+            try {
+                shizuku.rootTasksOnDisplay(MAIN)
+            } catch (e: Exception) {
+                Log.w(TAG, "display-0 read for a foreground event failed", e)
+                null
+            }
+        } else {
+            null
+        }
+        synchronized(guard) { guard.onMainDisplayForeground(packageName, mainNow) }
+    }
+
+    /**
+     * Right BEFORE an agent action is dispatched on the virtual display: while the owner's return
+     * to the displaced app is undecided ([MainDisplayTaskGuard.needsActionSnapshot]) read display
+     * 0, so a later reveal of the home screen can be attributed to this action only if the owner
+     * was still in that app when it was taken ([MainDisplayTaskGuard.beforeAgentAction]). Reads
+     * nothing otherwise; a failed read clears the record (a later reveal then counts as moved on).
+     */
+    suspend fun beforeAgentAction() {
+        if (!synchronized(guard) { guard.needsActionSnapshot() }) return
+        val mainBefore = withContext(Dispatchers.IO) {
+            try {
+                shizuku.rootTasksOnDisplay(MAIN)
+            } catch (e: Exception) {
+                Log.w(TAG, "display-0 read before an agent action failed", e)
+                null
+            }
+        }
+        synchronized(guard) { guard.beforeAgentAction(mainBefore) }
     }
 
     /** Tasks the virtual-display cleanup must not remove (displaced, not yet moved back). */

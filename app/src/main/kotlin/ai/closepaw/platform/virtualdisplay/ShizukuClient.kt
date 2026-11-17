@@ -99,9 +99,12 @@ class ShizukuClient {
             densityDpi: Int,
             surface: Surface,
             flags: Int,
-            imePolicy: Int? = null
+            imePolicy: Int? = null,
+            optionalFlags: Int = 0
     ): Int {
-        return displayTransport.createVirtualDisplay(name, width, height, densityDpi, surface, flags, imePolicy)
+        return displayTransport.createVirtualDisplay(
+                name, width, height, densityDpi, surface, flags, imePolicy, optionalFlags
+        )
     }
 
     /**

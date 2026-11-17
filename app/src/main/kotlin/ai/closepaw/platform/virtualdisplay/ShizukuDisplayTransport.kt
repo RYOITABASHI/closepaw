@@ -7,6 +7,26 @@ import android.view.Surface
 import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * Fail-open creation with optional display flags: [create] (returns a display id, < 0 on
+ * failure) is tried with [flags] | [optionalFlags]; if that fails it is retried once with
+ * [flags] alone and [onRejected] is told which optional flags were dropped. Without optional
+ * flags this is exactly one [create] call with [flags] (the pre-build-61 behavior).
+ */
+internal fun createWithOptionalFlags(
+        flags: Int,
+        optionalFlags: Int,
+        onRejected: (Int) -> Unit = {},
+        create: (Int) -> Int,
+): Int {
+        val extra = optionalFlags and flags.inv()
+        if (extra == 0) return create(flags)
+        val id = create(flags or extra)
+        if (id >= 0) return id
+        onRejected(extra)
+        return create(flags)
+}
+
 /** Transport layer for virtual display lifecycle calls through IDisplayManager. */
 internal class ShizukuDisplayTransport(
         private val proxyProvider: ShizukuServiceProxyProvider
@@ -37,6 +57,11 @@ internal class ShizukuDisplayTransport(
 
         fun imePolicyAppliedAtCreation(displayId: Int): Boolean = displayId in imePolicyAtCreation
 
+        /**
+         * [optionalFlags] (e.g. the API 34+ focus-isolation flags) are requested together with
+         * [flags]; a creation that fails with them is retried once with [flags] alone, so a
+         * rejected optional flag never aborts VD creation (see [createWithOptionalFlags]).
+         */
         fun createVirtualDisplay(
                 name: String,
                 width: Int,
@@ -44,8 +69,33 @@ internal class ShizukuDisplayTransport(
                 densityDpi: Int,
                 surface: Surface,
                 flags: Int,
-                imePolicy: Int? = null
+                imePolicy: Int? = null,
+                optionalFlags: Int = 0
+        ): Int =
+                createWithOptionalFlags(
+                        flags = flags,
+                        optionalFlags = optionalFlags,
+                        onRejected = { rejected ->
+                                Log.w(
+                                        TAG,
+                                        "createVirtualDisplay with optional flags 0x${Integer.toHexString(rejected)} " +
+                                                "failed; retrying without them"
+                                )
+                        }
+                ) { attemptFlags ->
+                        createVirtualDisplayOnce(name, width, height, densityDpi, surface, attemptFlags, imePolicy)
+                }
+
+        private fun createVirtualDisplayOnce(
+                name: String,
+                width: Int,
+                height: Int,
+                densityDpi: Int,
+                surface: Surface,
+                flags: Int,
+                imePolicy: Int?
         ): Int {
+                Log.i(TAG, "createVirtualDisplay: flags=0x${Integer.toHexString(flags)}")
                 return try {
                         val proxy = proxyProvider.displayManagerProxy()
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

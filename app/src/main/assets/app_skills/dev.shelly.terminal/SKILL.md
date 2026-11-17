@@ -11,6 +11,7 @@ metadata:
 - In that section, never tap 「MCPトークンを再発行」 or 「MCPトークンをコピー」.
 - Toggling any MCP switch restarts Shelly's MCP server; a brief restart is normal.
 - Main layout: top bar + left sidebar (☰) + up to 4 panes + bottom bar. Top-bar icons: cloud-download = Updates, magnifier = command palette, history = recent logs, gear = quick Settings panel.
+- A terminal pane still busy running `shelly closepaw` (waiting/progress status) is the launcher of the current ClosePaw run, not the target: never type or Ctrl+C there; go to the real screen. Old run reports in any pane's scrollback are history, not evidence of current settings.
 - Terminal sessions are named shelly-1…shelly-4. A terminal pane's key bar (above the keyboard) has real Ctrl+C, Tab, ↑, ↓, Paste, Alt, Enter buttons — use them, not key chords.
 - Updates screen (cloud-download icon) shows 「Shelly は最新です」 when current, or 「更新があります」 with current vs available version lines.
 - If a dialog mentions 署名鍵 / バックアップ / アンインストール (signing-key migration), stop and report — never automate it.

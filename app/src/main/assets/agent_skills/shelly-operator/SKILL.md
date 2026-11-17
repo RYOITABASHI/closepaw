@@ -36,6 +36,16 @@ skill, STOP and report what you actually see (see Reporting).
   above the keyboard with buttons: **Ctrl+C**, Tab, ↑, ↓, Paste, Alt, Enter
   (compact labels may show ^C). Use these buttons instead of trying to send key
   chords. Tap a terminal pane to focus it before typing.
+- TRAP — your own run's screen: this task may have been launched from a Shelly
+  terminal pane by a command starting with `shelly closepaw` (often with `--wait`).
+  While that command is still running, its pane shows the command, a
+  waiting/"still running" status line, and often the reports of EARLIER runs above
+  it. That busy pane is the launcher of the run you are in, NOT the UI
+  you were asked to operate, and NOT evidence of any setting's state. The same goes
+  for ClosePaw's own run-status / chat view. Never wait on it, read results from it,
+  tap Ctrl+C in it, or type into it. Leave it at once and go to the target surface
+  the procedure names (shelly config: magnifier → Settings; Updates: cloud-download
+  icon). If you cannot get off it, STOP and report that in UNEXPECTED.
 - The sidebar's **MY AGENTS** section lists the user's agents. You should not need
   it for these procedures.
 
@@ -75,10 +85,25 @@ to as a client (Start/Stop buttons, client config). It is NOT Shelly's own serve
 and shows nothing about it. Never use it to judge or change Shelly's MCP server state.
 The same warning applies to the "MCP Servers" title inside that screen.
 
+## LIVE OBSERVATION ONLY — read carefully
+
+Every state you report must come from the target screen itself, seen during THIS
+run (for MCP switches: the rows inside shelly config). Text that is not that screen
+— terminal scrollback, output or reports of earlier ClosePaw runs, `shelly closepaw`
+status lines, AI-pane / chat history, notifications — is NOT an observation, even if
+it names the same labels and looks current. Never copy a state from it and never use
+it to fill a gap. If you cannot reach the target screen, write "not observed" for
+that state and explain in UNEXPECTED. (Exception by design: in Procedure 2 the
+target IS the delivery-loop terminal pane, so its live output is the observation.)
+
 ## PROCEDURE 1 — Report Shelly's MCP server state (read-only)
 
 1. Open Shelly with open_app (package dev.shelly.terminal).
 2. Open **shelly config** via the command palette → **Settings** (see above).
+   If Shelly comes up on a terminal pane showing this run's own `shelly closepaw`
+   command, or on old reports, do not read anything there — go straight to the
+   command palette (see UI MAP TRAP). If shelly config cannot be opened, STOP:
+   report the four states as "not observed" and say why in UNEXPECTED.
 3. Scroll to エージェント, then KEEP SCROLLING within it until the MCPサーバー row
    appears (eight non-MCP rows precede it; see the list above). Only if you reach
    the END of エージェント (Profile Learning / View/Edit Facts / Reset Profile rows,
@@ -86,7 +111,9 @@ The same warning applies to the "MCP Servers" title inside that screen.
    they are absent: then report them as not found in UNEXPECTED.
 4. Read the switch state (on/off) of these four rows: MCPサーバー;
    MCP: ターミナル出力の読み取りを許可; MCP: 診断情報（ログ・設定）の読み取りを許可;
-   MCP: 実行/書き込みを許可（危険）. Do not tap any switch or button.
+   MCP: 実行/書き込みを許可（危険）. Do not tap any switch or button. Read each
+   state from the switch itself on the open shelly config screen, now — never from
+   scrollback or an earlier run's report (see LIVE OBSERVATION ONLY).
 5. Close the modal (×). Report using the Reporting format, quoting the labels
    exactly as shown on screen.
 
@@ -100,6 +127,12 @@ Its tab shows periodic delivery/status output lines instead of an idle prompt.
    whose visible output is the delivery loop's repeating status lines.
    - If NO pane shows the loop and every terminal sits at an idle shell prompt,
      the loop is not running: use the first terminal pane and say so in your report.
+   - The pane still busy running this run's own `shelly closepaw` command is
+     never the loop pane and never counts as "the first terminal pane": leave it
+     out of this procedure entirely (see UI MAP TRAP) and judge "every terminal"
+     by the other panes only. If it is the only terminal pane, STOP and report
+     that in UNEXPECTED. (A pane merely showing OLD `shelly closepaw` output at an
+     idle prompt is an ordinary terminal pane.)
 2. Tap that terminal pane to focus it.
 3. Tap **Ctrl+C** in the key bar. Wait for the shell prompt to return. (If output
    keeps scrolling, tap Ctrl+C once more. If the terminal asks a yes/no question,
@@ -155,4 +188,8 @@ possible; "none" if nothing>
 
 Rules for reporting: quote on-screen text exactly (Japanese as shown). Never claim
 a state you did not see on screen. If you stopped early, say where and why in
-UNEXPECTED.
+UNEXPECTED. "On screen" means the live target screen during this run — terminal
+scrollback, earlier run reports, `shelly closepaw` status output and chat history
+never count as a setting's or version's state (see LIVE OBSERVATION ONLY; the
+loop pane's own output in Procedure 2 is that procedure's target and does count). A state you could not observe is reported
+as "not observed", with the reason in UNEXPECTED.
