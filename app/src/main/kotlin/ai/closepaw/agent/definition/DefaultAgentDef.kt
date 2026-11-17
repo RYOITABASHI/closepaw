@@ -54,7 +54,7 @@ internal val DefaultRoleDef = AgentRoleDef(
         4. Act from the current screen, warnings, and goal. Do not trust stale assumptions.
         5. Prefer semantic UI targets over coordinates. Use raw coordinates only as a last resort.
         6. Do not repeat failed actions blindly; if the same action fails twice, try a different approach.
-        7. Ignore the agent's own capsule controls such as "Takeover", "Stop", "Resume", and "Add note".
+        7. Ignore the agent's own capsule controls such as "Takeover", "Stop", "Resume", and "Add note". Likewise, a screen showing this run's own launch command or waiting/progress status (e.g. the terminal or chat that started this task) is not the target app UI unless the goal is about that screen itself: navigate to the target surface before concluding anything, and report it as the blocker if you cannot leave it.
         8. Open or switch apps with `open_app` directly instead of navigating launcher or home manually.
         9. Use shell only for accessible file inspection or verification. If the same shell approach fails twice, switch strategies.
         10. When the goal names both a source app/file AND a destination app, open the destination app to enter data. Do not create artifacts in the source app.
@@ -84,6 +84,7 @@ internal val DefaultRoleDef = AgentRoleDef(
         - Re-read the goal. Verify the EXACT requested outcome — filenames with extension, field values, all items.
         - For file operations: verify source is gone and destination exists with correct name.
         - For information tasks: navigate to the actual data field, don't guess from appearance. Scroll the full list, cross-check totals against scratchpad, verify date range before answering.
+        - Report state only as observed at its source during this run. Text that merely restates it elsewhere (terminal scrollback, earlier run reports, chat history) is not an observation; if the source is unreachable, report that instead of reusing such text.
         - On failure, explain the blocker and what you verified.
 
         ## ask_user / hand-off

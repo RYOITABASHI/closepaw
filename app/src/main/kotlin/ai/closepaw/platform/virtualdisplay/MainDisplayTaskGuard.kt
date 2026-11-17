@@ -54,13 +54,39 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
 
     /** The task that was display 0's foreground when a launch displaced it. */
     private var displacedTopTaskId: Int? = null
+    private var displacedTopPackage: String? = null
 
     /** Display 0's foreground right after that displacement (what the run left behind). */
     private var revealedTopTaskId: Int? = null
     private var revealedTopPackage: String? = null
 
-    /** The user brought some other app to display 0's foreground after the displacement. */
+    /**
+     * The user's latest display-0 choice since the displacement is some other app (they moved
+     * on). Set by a foreground of a package other than the revealed one; cleared again when the
+     * user brings the displaced app itself back to display 0 (build 61: a return to the run's
+     * displaced app is the pre-run foreground, not "moved on"); set when a launch later takes the
+     * displaced task from display 0's background (the user was elsewhere at that moment).
+     */
     private var mainTouched = false
+
+    /**
+     * The user's latest display-0 choice was the displaced app itself (they brought it back).
+     * While set, a foreground of the revealed screen is ambiguous: the user leaving the app for it,
+     * or the agent taking the task back to the VD (which reveals that screen under the user); a
+     * display-0 read tells them apart ([needsMainSnapshot]).
+     */
+    private var returnedToDisplaced = false
+
+    /**
+     * While [returnedToDisplaced]: the latest display-0 read taken right BEFORE an agent action
+     * ([beforeAgentAction]) that still had the displaced task on display 0 showed it as display
+     * 0's top, i.e. the owner was in it when the agent last acted. Only this lets a revealed-screen
+     * foreground whose read misses the displaced task count as the agent's retake: the read alone
+     * cannot order "owner went Home, then the agent took the task" against "the agent took the
+     * task, revealing Home" (both read [Home], displaced absent). Reads without the displaced task
+     * leave it unchanged (the earlier departure's attribution stands).
+     */
+    private var agentActedOnDisplacedTop = false
 
     /**
      * The restore as first planned: its move order and, above all, its intended final foreground
@@ -166,12 +192,27 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
      */
     fun onLaunched(before: List<DisplayTask>, mainAfter: List<DisplayTask>, vdAfter: List<DisplayTask>) {
         val beforeTop = topOf(before) ?: return
-        if (vdAfter.none { it.taskId == beforeTop.taskId }) return
+        if (vdAfter.none { it.taskId == beforeTop.taskId }) {
+            // Build 61: the cycle's displaced task, which the user had brought back to display 0,
+            // taken again from display 0's BACKGROUND (its top, the user's app, stayed): the user
+            // was not in it, so their earlier return to it no longer describes display 0.
+            val displaced = displacedTopTaskId
+            if (!restoreStarted && displaced != null && before.any { it.taskId == displaced } &&
+                    vdAfter.any { it.taskId == displaced }) {
+                mainTouched = true
+                returnedToDisplaced = false
+                agentActedOnDisplacedTop = false
+            }
+            return
+        }
         displacedTopTaskId = beforeTop.taskId
+        displacedTopPackage = beforeTop.packageName
         val revealed = topOf(mainAfter)
         revealedTopTaskId = revealed?.taskId
         revealedTopPackage = revealed?.packageName
         mainTouched = false
+        returnedToDisplaced = false
+        agentActedOnDisplacedTop = false
         // A new displacement starts a new cycle: an earlier frozen intent no longer describes
         // display 0, so the next plan is computed afresh (still from every remembered candidate).
         pendingRestore = null
@@ -186,14 +227,84 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
     /**
      * An activity window of [packageName] came to the foreground on display 0 (accessibility
      * event). Anything other than what the displacement revealed means the user acted there, even
-     * if they later returned to the same screen (e.g. Home → Chrome → Home).
+     * if they later returned to the same screen (e.g. Home → Chrome → Home) — except the displaced
+     * app itself: the user brought the run's displaced task back to display 0 (launcher, Recents,
+     * a notification; singleTask reuse pulls it off the VD), i.e. returned to where they were
+     * before the run. If the agent takes it again afterwards (e.g. by tapping it on the virtual
+     * display, which no launch snapshot sees), the run end must give it back on top instead of
+     * treating the user as moved on (build 61, defect 2: Home refront / deferral stranded them).
+     *
+     * After such a return, a foreground of the revealed screen is decided by [mainNow] (display
+     * 0 read right after the event, see [needsMainSnapshot]): the displaced task still on display
+     * 0 = the user left it for that screen (moved on). Gone from display 0 is NOT enough on its
+     * own: the read comes after the event (delivery + read latency), so "the owner went Home, then
+     * the agent took the task" reads the same as "the agent took the task, revealing Home". It
+     * counts as the agent's retake (not a choice) only when the last agent action was taken while
+     * the displaced task was display 0's top ([beforeAgentAction]); otherwise, and when display 0
+     * is unknown (null), it counts as moved on (the pre-build-61 outcome, keeps the deferral).
      */
-    fun onMainDisplayForeground(packageName: String?) {
+    fun onMainDisplayForeground(packageName: String?, mainNow: List<DisplayTask>? = null) {
         // Once the restore has begun, display-0 foreground changes are our own moves / refront.
         if (restoreStarted) return
-        if (displacedTopTaskId == null || packageName.isNullOrBlank()) return
-        if (packageName != revealedTopPackage) mainTouched = true
+        val displaced = displacedTopTaskId
+        if (displaced == null || packageName.isNullOrBlank()) return
+        when (packageName) {
+            revealedTopPackage -> {
+                val agentRetook = mainNow != null && mainNow.none { it.taskId == displaced } &&
+                        agentActedOnDisplacedTop
+                if (returnedToDisplaced && !agentRetook) {
+                    mainTouched = true
+                    returnedToDisplaced = false
+                    agentActedOnDisplacedTop = false
+                }
+            }
+            displacedTopPackage -> {
+                // A fresh return: no agent action has been seen over it yet. (A repeated event of
+                // the app the owner is still in keeps what the agent's reads recorded.)
+                if (!returnedToDisplaced) agentActedOnDisplacedTop = false
+                mainTouched = false
+                returnedToDisplaced = true
+            }
+            else -> {
+                mainTouched = true
+                returnedToDisplaced = false
+                agentActedOnDisplacedTop = false
+            }
+        }
     }
+
+    /**
+     * Whether [beforeAgentAction] needs a display-0 read: only while the owner's return to the
+     * displaced app is pending a decision, so the action path reads nothing in the common case.
+     */
+    fun needsActionSnapshot(): Boolean = !restoreStarted && displacedTopTaskId != null && returnedToDisplaced
+
+    /**
+     * Display 0 as read right BEFORE an agent action on the virtual display is dispatched (a tap,
+     * key, swipe, or a launch's pre-launch read). Records whether the owner was in the displaced
+     * app at that moment; a read without the displaced task on display 0 changes nothing. A failed
+     * read (null) clears the record: this action may be the one that takes the task, and the
+     * owner's position before it is unknown, so a later reveal counts as moved on.
+     */
+    fun beforeAgentAction(mainBefore: List<DisplayTask>?) {
+        if (!needsActionSnapshot()) return
+        val displaced = displacedTopTaskId ?: return
+        if (mainBefore == null) {
+            agentActedOnDisplacedTop = false
+            return
+        }
+        if (mainBefore.none { it.taskId == displaced }) return
+        agentActedOnDisplacedTop = topOf(mainBefore)?.taskId == displaced
+    }
+
+    /**
+     * Whether [onMainDisplayForeground] for [packageName] needs a display-0 read to be decided
+     * (the revealed screen after the user returned to the displaced app); false otherwise, so the
+     * event path reads nothing in the common case.
+     */
+    fun needsMainSnapshot(packageName: String?): Boolean =
+            !restoreStarted && displacedTopTaskId != null && returnedToDisplaced &&
+                    !packageName.isNullOrBlank() && packageName == revealedTopPackage
 
     /** Tasks that may be the user's and must not be destroyed by the virtual-display cleanup. */
     val protectedTaskIds: Set<Int> get() = seenOnMain.keys.toSet()
@@ -204,9 +315,12 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
         unreconciled.removeAll(taskIds.toSet())
         if (displacedTopTaskId in taskIds) {
             displacedTopTaskId = null
+            displacedTopPackage = null
             revealedTopTaskId = null
             revealedTopPackage = null
             mainTouched = false
+            returnedToDisplaced = false
+            agentActedOnDisplacedTop = false
         }
     }
 
@@ -443,9 +557,12 @@ internal class MainDisplayTaskGuard(private val homePackages: Set<String>) {
     fun reset() {
         seenOnMain.clear()
         displacedTopTaskId = null
+        displacedTopPackage = null
         revealedTopTaskId = null
         revealedTopPackage = null
         mainTouched = false
+        returnedToDisplaced = false
+        agentActedOnDisplacedTop = false
         pendingRestore = null
         lastPlannedTaskIds = emptyList()
         restoreStarted = false

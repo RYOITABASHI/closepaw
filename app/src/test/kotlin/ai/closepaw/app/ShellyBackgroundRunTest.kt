@@ -20,6 +20,9 @@ import ai.closepaw.platform.virtualdisplay.MainDisplayTaskRestorer
 import ai.closepaw.platform.virtualdisplay.RunEndRestoreSequencer
 import ai.closepaw.platform.virtualdisplay.ShizukuActivityTaskTransport
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
+import ai.closepaw.platform.virtualdisplay.VD_FOCUS_ISOLATION_FLAGS
+import ai.closepaw.platform.virtualdisplay.createWithOptionalFlags
+import ai.closepaw.platform.virtualdisplay.vdOptionalDisplayFlags
 import ai.closepaw.protocol.ApprovalDetails
 import ai.closepaw.protocol.ApprovalRequired
 import ai.closepaw.protocol.PlatformMode
@@ -533,6 +536,157 @@ class ShellyBackgroundRunTest {
         assertThat(g.userTouchedMainDisplay).isTrue()
     }
 
+    // ── Build 61: the owner returns to the displaced (operated) app mid-run ──
+
+    @Test
+    fun `an owner who reopened the displaced app is not moved on when the agent takes it again`() {
+        val g = guard()
+        displaceShelly(g) // run start: Shelly displaced, Home revealed
+        // Mid-run the owner reopens Shelly on display 0 (singleTask reuse pulls it off the VD).
+        g.onMainDisplayForeground(shelly.packageName)
+        // After the approval the agent re-opens Shelly from the VD's own screen (a tap, no launch
+        // snapshot). The platform reads display 0 right before dispatching that tap: the owner is
+        // still in Shelly. The tap takes the task off display 0 again, which reveals Home; display
+        // 0 read after that event no longer has Shelly: the agent took it, the owner chose nothing.
+        assertThat(g.needsActionSnapshot()).isTrue()
+        g.beforeAgentAction(listOf(shelly, home))
+        assertThat(g.needsMainSnapshot(launcher)).isTrue()
+        g.onMainDisplayForeground(launcher, mainNow = listOf(home))
+        assertThat(g.userTouchedMainDisplay).isFalse()
+        // Run end: the owner gets Shelly back on top right away (no Home refront, no deferral).
+        assertThat(g.planOrDefer(vdNow = listOf(shelly), mainNow = listOf(home)))
+            .isEqualTo(MainDisplayRestorePlan(listOf(shelly.taskId), MainDisplayRefront.None))
+        assertThat(g.isDeferred).isFalse()
+    }
+
+    @Test
+    fun `an owner who left the reopened app is still moved on`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName) // the owner reopens Shelly...
+        g.onMainDisplayForeground("com.android.chrome") // ...then switches to Chrome
+        assertThat(g.userTouchedMainDisplay).isTrue()
+    }
+
+    @Test
+    fun `an owner who went Home from the reopened app is moved on`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName) // the owner reopens Shelly...
+        // ...then deliberately goes Home: Shelly is still on display 0, behind Home.
+        g.onMainDisplayForeground(launcher, mainNow = listOf(home, shelly))
+        assertThat(g.userTouchedMainDisplay).isTrue()
+        assertThat(g.needsMainSnapshot(launcher)).isFalse() // decided; later Home events read nothing
+        // The agent later takes Shelly back by a tap on the VD; at run end the owner stays on Home.
+        assertThat(g.planOrDefer(vdNow = listOf(shelly), mainNow = listOf(home))).isNull()
+        assertThat(g.deferredTaskIds).containsExactly(shelly.taskId)
+    }
+
+    @Test
+    fun `an unreadable display 0 after the owner reopened the app keeps the pre-build-61 moved-on outcome`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName)
+        g.onMainDisplayForeground(launcher, mainNow = null)
+        assertThat(g.userTouchedMainDisplay).isTrue()
+    }
+
+    @Test
+    fun `a launch that takes the reopened app from display 0's background keeps the owner moved on`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName) // the owner reopens Shelly...
+        // ...then goes Home, but the agent's open_app takes Shelly from display 0's background
+        // before the event's display-0 read: the read already misses Shelly. The launch's own
+        // pre-launch read (Home on top, Shelly behind it) came first and shows the owner was not
+        // in Shelly when the agent acted, so the event is decided as moved on right away.
+        val before = listOf(home, shelly)
+        g.observeMain(before)
+        g.beforeAgentAction(before)
+        g.onMainDisplayForeground(launcher, mainNow = listOf(home))
+        assertThat(g.userTouchedMainDisplay).isTrue()
+        // The launch snapshot agrees (taken from display 0's background).
+        g.onLaunched(before, mainAfter = listOf(home), vdAfter = listOf(shelly))
+        assertThat(g.userTouchedMainDisplay).isTrue()
+        // Run end: the owner is on Home by choice, so the return is deferred (build 59).
+        assertThat(g.planOrDefer(vdNow = listOf(shelly), mainNow = listOf(home))).isNull()
+        assertThat(g.deferredTaskIds).containsExactly(shelly.taskId)
+    }
+
+    @Test
+    fun `an owner Home read only after the agent's tap retake is still moved on (gate ordering)`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName) // the owner reopens Shelly...
+        // ...then deliberately presses Home; the Home event is generated, but BEFORE its display-0
+        // read the agent retakes Shelly by a VD tap. The read right before that tap shows the
+        // owner already on Home (Shelly behind it).
+        g.beforeAgentAction(listOf(home, shelly))
+        // The Home event's read now misses Shelly: it looks exactly like an agent retake.
+        g.onMainDisplayForeground(launcher, mainNow = listOf(home))
+        assertThat(g.userTouchedMainDisplay).isTrue()
+        // Run end: no restore over the owner's deliberate Home; the build-59 deferral holds.
+        assertThat(g.planOrDefer(vdNow = listOf(shelly), mainNow = listOf(home))).isNull()
+        assertThat(g.deferredTaskIds).containsExactly(shelly.taskId)
+    }
+
+    @Test
+    fun `a reveal that misses the displaced task with no agent action seen over it counts as moved on`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName)
+        // No agent action read display 0 since the return: who removed Shelly cannot be told.
+        g.onMainDisplayForeground(launcher, mainNow = listOf(home))
+        assertThat(g.userTouchedMainDisplay).isTrue()
+        assertThat(g.planOrDefer(vdNow = listOf(shelly), mainNow = listOf(home))).isNull()
+    }
+
+    @Test
+    fun `an agent action read taken before the owner's previous departure does not vouch for a later reveal`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName) // the owner reopens Shelly
+        g.beforeAgentAction(listOf(shelly, home)) // the agent acts elsewhere while the owner is in it
+        g.onMainDisplayForeground("com.android.chrome") // the owner leaves for Chrome (moved on)
+        g.onMainDisplayForeground(shelly.packageName) // ...and comes back to Shelly
+        g.onMainDisplayForeground(launcher, mainNow = listOf(home)) // Home, read after a retake
+        assertThat(g.userTouchedMainDisplay).isTrue()
+    }
+
+    @Test
+    fun `agent action reads after the retake keep the retake attribution`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName)
+        g.beforeAgentAction(listOf(shelly, home)) // the retaking tap, owner in Shelly
+        g.beforeAgentAction(listOf(home)) // further agent actions: Shelly is no longer on display 0
+        g.onMainDisplayForeground(launcher, mainNow = listOf(home)) // the reveal, delivered late
+        assertThat(g.userTouchedMainDisplay).isFalse()
+        assertThat(g.needsActionSnapshot()).isTrue()
+    }
+
+    @Test
+    fun `a failed read before an agent action withdraws an earlier retake attribution`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName)
+        g.beforeAgentAction(listOf(shelly, home)) // an earlier action, owner in Shelly
+        g.beforeAgentAction(null) // the next action's read fails: the owner's position is unknown
+        g.onMainDisplayForeground(launcher, mainNow = listOf(home))
+        assertThat(g.userTouchedMainDisplay).isTrue()
+    }
+
+    @Test
+    fun `a launch that takes the reopened app from the foreground starts a new untouched cycle`() {
+        val g = guard()
+        displaceShelly(g)
+        g.onMainDisplayForeground(shelly.packageName) // the owner reopens Shelly and stays in it
+        displaceShelly(g) // the agent's open_app takes it from the foreground again
+        assertThat(g.userTouchedMainDisplay).isFalse()
+        assertThat(g.planOrDefer(vdNow = listOf(shelly), mainNow = listOf(home)))
+            .isEqualTo(MainDisplayRestorePlan(listOf(shelly.taskId), MainDisplayRefront.None))
+    }
+
     // ── Build 58: retry refront from the current top, post-release refront, fast refront ──
 
     /** Shelly displaced with Chrome revealed; the user then went Home (touched). */
@@ -778,6 +932,8 @@ class ShellyBackgroundRunTest {
         val failMoves = mutableSetOf<Int>()
         /** VD reads return null (a transient Shizuku read failure). */
         var failVdReads = false
+        /** The next N display-0 reads return null (a transient Shizuku read failure). */
+        var failMainReads = 0
         val log = mutableListOf<String>()
         var onMove: () -> Unit = {}
         var onMainRead: () -> Unit = {}
@@ -790,7 +946,10 @@ class ShellyBackgroundRunTest {
 
     private fun fakeShizuku(d: FakeDisplays): ShizukuClient {
         val s = mockk<ShizukuClient>(relaxed = true)
-        every { s.rootTasksOnDisplay(0) } answers { d.onMainRead(); d.main.toList() }
+        every { s.rootTasksOnDisplay(0) } answers {
+            d.onMainRead()
+            if (d.failMainReads > 0) { d.failMainReads--; null } else d.main.toList()
+        }
         every { s.rootTasksOnDisplay(vdId) } answers { if (d.failVdReads) null else d.vd.toList() }
         every { s.moveRootTaskToDisplay(any(), 0) } answers {
             val id = firstArg<Int>()
@@ -2247,6 +2406,166 @@ class ShellyBackgroundRunTest {
         assertThat(d.log).containsExactly("move ${shelly.taskId}", "refront ${mail.taskId}").inOrder()
         assertThat(d.main.first()).isEqualTo(mail)
         assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    // ── Build 61: owner present in (or returned to) the operated app ──
+
+    /** Run start displaces Shelly (Home revealed); mid-run the owner reopens it on display 0. */
+    private suspend fun displaceShellyOwnerReopensIt(r: MainDisplayTaskRestorer, d: FakeDisplays) {
+        launchShellyOnVd(r, d)
+        d.vd.remove(shelly) // singleTask reuse: the launcher tap pulls the task off the VD
+        d.front(shelly)
+        r.onMainDisplayForeground(shelly.packageName)
+    }
+
+    @Test
+    fun `owner present - the agent retaking the reopened app does not leave the owner on Home at run end`() = runTest {
+        val d = FakeDisplays(listOf(shelly, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyOwnerReopensIt(r, d)
+        // After the approval the agent taps Shelly on the VD's own screen: no launch snapshot. The
+        // platform reads display 0 right before dispatching the tap (owner still in Shelly); the
+        // task then leaves display 0 again and Home is revealed under the owner.
+        r.beforeAgentAction()
+        d.toVd(shelly)
+        r.onMainDisplayForeground(launcher)
+        r.restoreAtRunEnd(vdId)
+        // Before build 61: refront Home planned -> deferred, Shelly kept on the VD, owner on Home.
+        assertThat(d.log).containsExactly("move ${shelly.taskId}")
+        assertThat(d.main.first()).isEqualTo(shelly)
+        assertThat(d.vd).isEmpty()
+        assertThat(r.hasDeferredRestore()).isFalse()
+        assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    @Test
+    fun `owner present - a Home pressed before the agent's tap retake keeps the deferral even when read after it`() = runTest {
+        val d = FakeDisplays(listOf(shelly, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyOwnerReopensIt(r, d)
+        d.front(home) // the owner deliberately presses Home; its foreground event is generated...
+        r.beforeAgentAction() // ...the agent's next tap is dispatched first (display 0: Home, Shelly behind)
+        d.toVd(shelly) // the tap retakes Shelly from display 0's background
+        r.onMainDisplayForeground(launcher) // the Home event's display-0 read now misses Shelly
+        r.restoreAtRunEnd(vdId)
+        assertThat(d.log).isEmpty() // nothing restored over the owner's deliberate Home
+        assertThat(d.main.first()).isEqualTo(home)
+        assertThat(r.hasDeferredRestore()).isTrue()
+        assertThat(r.deferredTaskIds()).containsExactly(shelly.taskId)
+    }
+
+    @Test
+    fun `owner present - a failed pre-launch read clears the retake attribution and keeps the deferral`() = runTest {
+        val d = FakeDisplays(listOf(shelly, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyOwnerReopensIt(r, d)
+        r.beforeAgentAction() // an earlier agent action reads Shelly on top (owner in it)
+        d.front(home) // the owner deliberately presses Home; its foreground event is generated...
+        d.failMainReads = 1 // ...a launch's pre-launch display-0 read fails...
+        r.aroundLaunch(shelly.packageName!!, vdId) { d.toVd(shelly) } // ...and the launch retakes Shelly
+        r.onMainDisplayForeground(launcher) // the Home event's display-0 read now misses Shelly
+        r.restoreAtRunEnd(vdId)
+        assertThat(d.log).isEmpty() // nothing restored over the owner's deliberate Home
+        assertThat(d.main.first()).isEqualTo(home)
+        assertThat(r.hasDeferredRestore()).isTrue()
+        assertThat(r.deferredTaskIds()).containsExactly(shelly.taskId)
+    }
+
+    @Test
+    fun `owner present - an agent action read is skipped unless the owner's return is undecided`() = runTest {
+        val d = FakeDisplays(listOf(shelly, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        var mainReads = 0
+        d.onMainRead = { mainReads++ }
+        r.beforeAgentAction() // nothing displaced yet
+        launchShellyOnVd(r, d)
+        mainReads = 0
+        r.beforeAgentAction() // displaced, but the owner has not returned to it
+        assertThat(mainReads).isEqualTo(0)
+        d.vd.remove(shelly)
+        d.front(shelly)
+        r.onMainDisplayForeground(shelly.packageName) // the owner reopens Shelly
+        r.beforeAgentAction()
+        assertThat(mainReads).isEqualTo(1)
+    }
+
+    @Test
+    fun `owner present - an owner who left the reopened app for Home keeps the build-59 deferral`() = runTest {
+        val d = FakeDisplays(listOf(shelly, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        launchShellyOnVd(r, d) // Home revealed
+        d.main.add(0, chrome) // the owner opens Chrome...
+        r.onMainDisplayForeground(chrome.packageName)
+        d.vd.remove(shelly) // ...reopens Shelly (pulled off the VD)...
+        d.front(shelly)
+        r.onMainDisplayForeground(shelly.packageName)
+        d.front(home) // ...then deliberately goes Home; Shelly stays behind on display 0
+        r.onMainDisplayForeground(launcher)
+        d.toVd(shelly) // the agent takes Shelly back by a tap on the VD (no launch snapshot)
+        r.onMainDisplayForeground(launcher)
+        r.restoreAtRunEnd(vdId)
+        assertThat(d.log).isEmpty() // no move over the owner's Home: deferred (build 59)
+        assertThat(d.main.first()).isEqualTo(home)
+        assertThat(r.hasDeferredRestore()).isTrue()
+        assertThat(r.deferredTaskIds()).containsExactly(shelly.taskId)
+    }
+
+    @Test
+    fun `owner present - an owner still in the operated app at run end is left there through teardown`() = runTest {
+        val d = FakeDisplays(listOf(shelly, home))
+        val r = MainDisplayTaskRestorer(fakeShizuku(d), setOf(launcher))
+        displaceShellyOwnerReopensIt(r, d)
+        r.restoreAtRunEnd(vdId)
+        assertThat(d.log).isEmpty() // nothing to move, no refront over the owner's app
+        assertThat(r.hasDeferredRestore()).isFalse()
+        // Hot Idle teardown (stop): restore, then the release handover.
+        r.restore(vdId)
+        val handover = r.prepareHandover(vdId)
+        assertThat(handover).isEqualTo(MainDisplayHandover.NONE)
+        d.release()
+        r.refrontAfterHandover(handover)
+        assertThat(d.log).isEmpty()
+        assertThat(d.main.first()).isEqualTo(shelly)
+        assertThat(r.protectedTaskIds()).isEmpty()
+    }
+
+    // ── Build 61: VD focus isolation flags (keyboard on display 0) ──
+
+    @Test
+    fun `focus isolation flags are requested only for background runs on API 34 and later`() {
+        assertThat(VD_FOCUS_ISOLATION_FLAGS).isEqualTo(0x4000 or 0x10000)
+        assertThat(vdOptionalDisplayFlags(sdkInt = 34, backgroundRun = true)).isEqualTo(VD_FOCUS_ISOLATION_FLAGS)
+        assertThat(vdOptionalDisplayFlags(sdkInt = 36, backgroundRun = true)).isEqualTo(VD_FOCUS_ISOLATION_FLAGS)
+        assertThat(vdOptionalDisplayFlags(sdkInt = 33, backgroundRun = true)).isEqualTo(0)
+        assertThat(vdOptionalDisplayFlags(sdkInt = 31, backgroundRun = true)).isEqualTo(0)
+        assertThat(vdOptionalDisplayFlags(sdkInt = 34, backgroundRun = false)).isEqualTo(0)
+    }
+
+    @Test
+    fun `a VD creation that rejects the optional flags is retried without them`() {
+        val base = 0x1 or 0x8 or 0x40 or 0x200 or 0x400 or 0x800
+        val attempts = mutableListOf<Int>()
+        val rejected = mutableListOf<Int>()
+        val id = createWithOptionalFlags(base, VD_FOCUS_ISOLATION_FLAGS, onRejected = { rejected += it }) { flags ->
+            attempts += flags
+            if ((flags and VD_FOCUS_ISOLATION_FLAGS) != 0) -1 else 5
+        }
+        assertThat(id).isEqualTo(5)
+        assertThat(attempts).containsExactly(base or VD_FOCUS_ISOLATION_FLAGS, base).inOrder()
+        assertThat(rejected).containsExactly(VD_FOCUS_ISOLATION_FLAGS)
+    }
+
+    @Test
+    fun `VD creation with accepted optional flags or without any makes exactly one attempt`() {
+        val base = 0x1 or 0x400
+        val accepted = mutableListOf<Int>()
+        assertThat(createWithOptionalFlags(base, VD_FOCUS_ISOLATION_FLAGS) { accepted += it; 3 }).isEqualTo(3)
+        assertThat(accepted).containsExactly(base or VD_FOCUS_ISOLATION_FLAGS)
+        val plain = mutableListOf<Int>()
+        // API 31-33 / foreground sessions: no optional flags, one attempt with the base flags (a
+        // failure stays a failure, exactly as before build 61).
+        assertThat(createWithOptionalFlags(base, 0) { plain += it; -1 }).isEqualTo(-1)
+        assertThat(plain).containsExactly(base)
     }
 
     // ---- MCP intake: post-and-await with abandon/reconcile on timeout -------------------------

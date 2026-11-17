@@ -31,6 +31,28 @@ import kotlinx.coroutines.launch
 import rikka.shizuku.Shizuku
 
 /**
+ * VIRTUAL_DISPLAY_FLAG_OWN_FOCUS (1 shl 14) | VIRTUAL_DISPLAY_FLAG_STEAL_TOP_FOCUS_DISABLED
+ * (1 shl 16): hidden, API 34+, both require VIRTUAL_DISPLAY_FLAG_TRUSTED (and STEAL_TOP_FOCUS_
+ * DISABLED requires OWN_FOCUS). Without them only the top-focused display has a focused window
+ * (per-display focus is off on phones): every launch / injected tap on the VD moves it to the
+ * top, display 0 loses window focus, and the user's own display-0 app loses its IME connection
+ * (build 61, defect 1). With them the VD keeps its own focused window (agent key events still
+ * reach it) and never becomes the top-focused display, so the IME stays with display 0.
+ */
+internal const val VD_FOCUS_ISOLATION_FLAGS = (1 shl 14) or (1 shl 16)
+
+/**
+ * Optional creation flags for the VD (requested fail-open, see [createWithOptionalFlags]):
+ * the focus-isolation flags on API 34+ for background runs that must leave the user's display-0
+ * keyboard alone ([backgroundRun] = Shelly runs, SessionConfig.preserveMainDisplayTasks); 0
+ * otherwise, so API 31-33 and foreground (MainActivity) sessions create the VD exactly as before.
+ * Foreground sessions are excluded because a VD that can never take top focus cannot get an IME
+ * for viewer takeover typing, their main takeover path.
+ */
+internal fun vdOptionalDisplayFlags(sdkInt: Int, backgroundRun: Boolean): Int =
+        if (backgroundRun && sdkInt >= 34) VD_FOCUS_ISOLATION_FLAGS else 0
+
+/**
  * VirtualDisplayPlatform — AndroidPlatform running on a Shizuku virtual display.
  *
  * Lifecycle is serialized through [VdLifecycleArbiter]: start/stop take exclusive access,
@@ -235,7 +257,11 @@ class VirtualDisplayPlatform(
                                 densityDpi = config.densityDpi,
                                 surface = reader.surface,
                                 flags = DISPLAY_FLAGS,
-                                imePolicy = DISPLAY_IME_POLICY_HIDE
+                                imePolicy = DISPLAY_IME_POLICY_HIDE,
+                                optionalFlags = vdOptionalDisplayFlags(
+                                        android.os.Build.VERSION.SDK_INT,
+                                        backgroundRun = sessionConfig.preserveMainDisplayTasks,
+                                )
                         )
                     } catch (e: Exception) {
                         reader.close()
@@ -765,6 +791,8 @@ class VirtualDisplayPlatform(
                 if (suppressIme) setKeyboardHidden()
 
                 try {
+                    // Owner-present ordering signal (build 61): display 0 just before the action.
+                    mainDisplayTasks?.beforeAgentAction()
                     dispatchAction(action)
                 } finally {
                     if (suppressIme) setKeyboardAuto()
