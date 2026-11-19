@@ -170,6 +170,58 @@ class SaveDraftScriptsTest {
     }
 
     @Test
+    fun `a CDP-created tab has its identity before Chrome receives the request`() {
+        // Gate fix round 2, finding 6.
+        val create = browserFile.readText().substringAfter("override suspend fun createTab(").substringBefore("override suspend fun open(")
+        assertThat(create.indexOf("pendingMarkers += marker")).isAtLeast(0)
+        assertThat(create.indexOf("pendingMarkers += marker")).isLessThan(create.indexOf("Target.createTarget"))
+        assertThat(create).contains("put(\"url\", url + marker)")
+    }
+
+    @Test
+    fun `the clipboard is cleared only for a recorded, read-back match`() {
+        // Gate fix round 2, finding 1.
+        val source = browserFile.readText()
+        val clear = source.substringAfter("override suspend fun clearClipboard()").substringBefore("override suspend fun interceptFileChooser(")
+        assertThat(clear.indexOf("clip.releaseForClear(")).isLessThan(clear.indexOf("clearPrimaryClip()"))
+        assertThat(clear).doesNotContain("clipLabel ||")
+        val set = source.substringAfter("override suspend fun setClipboard(").substringBefore("override suspend fun clearClipboard()")
+        assertThat(set.indexOf("clip.recordWrite(clipLabel, html, plain)")).isAtLeast(0)
+        assertThat(set.indexOf("setPrimaryClip(data)")).isLessThan(set.indexOf("clip.recordWrite(clipLabel, html, plain)"))
+    }
+
+    @Test
+    fun `only closepaw's own clipboard write is ever recorded for cleanup`() {
+        // Gate fix round 3, finding 1: the page's write is never cleared.
+        val source = browserFile.readText()
+        assertThat(Regex("""clip\.recordWrite\(""").findAll(source).count()).isEqualTo(1)
+        val evaluate = source.substringAfter("override suspend fun evaluate(").substringBefore("override suspend fun bringToFront(")
+        assertThat(evaluate).doesNotContain("recordWrite")
+    }
+
+    @Test
+    fun `recording the run's tab keeps other tabs' pending markers`() {
+        // Gate fix round 3, finding 3.
+        val source = browserFile.readText()
+        val runTab = source.substringAfter("override fun runTab(").substringBefore("override fun launchMarker(")
+        assertThat(runTab).doesNotContain("pendingMarkers.clear()")
+        val create = source.substringAfter("override suspend fun createTab(").substringBefore("override suspend fun open(")
+        assertThat(create).doesNotContain("pendingMarkers.clear()")
+        assertThat(create).contains("pendingMarkers -= marker")
+        // Gate fix round 4, finding 1: the marker search is its own budgeted teardown step, not
+        // part of the named tab's close.
+        val stop = source.substringAfter("suspend fun stop()").substringBefore("private suspend fun recoverMarkerTabs()")
+        assertThat(stop).contains("closeTab = { close(it) }")
+        assertThat(stop).contains("recoverMarkerTabs()")
+        val recover = source.substringAfter("private suspend fun recoverMarkerTabs()").substringBefore("override suspend fun prepareChrome()")
+        // Polls while any marker is unresolved; a marker is dropped only after its tab closed.
+        assertThat(recover).contains("while (unresolved.isNotEmpty())")
+        assertThat(recover.indexOf("close(tab.id)")).isAtLeast(0)
+        assertThat(recover.indexOf("close(tab.id)")).isLessThan(recover.indexOf("pendingMarkers.removeAll(carried.toSet())"))
+        assertThat(recover).doesNotContain("pendingMarkers.removeAll(markers)")
+    }
+
+    @Test
     fun `the draft run never removes tasks from the display`() {
         val source = browserFile.readText()
         assertThat(source).contains("display?.stopKeepingTasks()")

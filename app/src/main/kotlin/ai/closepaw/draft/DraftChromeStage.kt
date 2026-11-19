@@ -1,6 +1,7 @@
 package ai.closepaw.draft
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** A root task on a display, as far as the draft run cares. */
 data class DraftRootTask(val id: Int, val chrome: Boolean)
@@ -63,21 +64,25 @@ class DraftChromeStage(
             log("chrome stage: run display tasks unreadable; not starting")
             return CHROME_TASKS_UNREADABLE
         }
-        prepared = true
+        val chrome = main.filter { it.chrome }.map { it.id }
+        // Ownership first, moves second: every task this run is about to move is recorded as the
+        // owner's BEFORE the first move. A cancellation between moves, or after a binder move
+        // landed but before its call returned, then still leaves each task marked as the owner's,
+        // so [restore] moves it back (it reconciles where each one actually is) and can never
+        // take it for a task the run created and remove it.
+        moved = chrome
         topBefore = top?.id
         runDisplayBefore = onRun
-        val chrome = main.filter { it.chrome }.map { it.id }
+        prepared = true
         val done = mutableListOf<Int>()
         for (id in chrome) {
             if (safely { control.moveToRunDisplay(id) } == true) {
                 done += id
             } else {
-                moved = done
                 log("chrome stage: moving task $id to the run display failed; moved=$done")
                 return CHROME_MOVE_FAILED
             }
         }
-        moved = done
         log("chrome stage: top=${top?.id} moved=$done alreadyOnRunDisplay=$onRun")
         return null
     }
@@ -93,7 +98,8 @@ class DraftChromeStage(
         val back = mutableListOf<Int>()
         val stuck = mutableListOf<Int>()
         for (id in moved) {
-            // A task the owner already took back to the main display is left where it is.
+            // Reconciled against where the task actually is: one the owner already took back to
+            // the main display, or one a cut-short [prepare] never got to move, is left alone.
             if (onRun != null && id !in onRun) continue
             if (safely { control.moveToMainDisplay(id) } == true) back += id else stuck += id
         }
@@ -132,25 +138,52 @@ class DraftChromeStage(
 
 /**
  * The draft run's last steps, in this order whatever the ending: close the run's tab, so nothing
- * of it reaches the owner's window, then put the owner's Chrome back. A failed close does not stop
- * the restore.
+ * of it reaches the owner's window, then close any tab known only by its pending marker
+ * ([recoverTabs]), then put the owner's Chrome back. A failed close does not stop the later steps.
+ *
+ * Each step has its own budget ([closeBudgetMs], [recoverBudgetMs], [restoreBudgetMs]): a close
+ * that hangs on a dead CDP connection can no longer eat the time the restore needs (gate fix
+ * round 1, finding 3), nor the time the marker recovery needs (gate fix round 4, finding 1). The
+ * caller runs this under NonCancellable, so a Stop or the service going away does not skip any
+ * step; the display release that follows is the caller's own, separate step.
  */
 internal suspend fun finishDraftChrome(
     tabId: String?,
     closeTab: suspend (String) -> Unit,
     restore: suspend () -> Unit,
     log: (String) -> Unit,
+    recoverTabs: (suspend () -> Unit)? = null,
+    closeBudgetMs: Long = DRAFT_CLOSE_BUDGET_MS,
+    recoverBudgetMs: Long = DRAFT_RECOVER_BUDGET_MS,
+    restoreBudgetMs: Long = DRAFT_RESTORE_BUDGET_MS,
 ) {
     if (tabId != null) {
-        val outcome = try {
-            closeTab(tabId)
+        log("draft tab " + budgeted(closeBudgetMs) { closeTab(tabId) })
+    }
+    if (recoverTabs != null) {
+        log("draft marker tabs " + budgeted(recoverBudgetMs) { recoverTabs() })
+    }
+    if (withTimeoutOrNull(restoreBudgetMs) { restore() } == null) log("chrome restore timed out")
+}
+
+/** Runs one teardown step under its own budget; the outcome is for the log only. */
+private suspend fun budgeted(budgetMs: Long, step: suspend () -> Unit): String =
+    withTimeoutOrNull(budgetMs) {
+        try {
+            step()
             "closed"
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             "failed-" + e.javaClass.simpleName
         }
-        log("draft tab $outcome")
-    }
-    restore()
-}
+    } ?: "timed-out"
+
+/**
+ * Budgets for [finishDraftChrome]; together with the display release they stay under the 30 s
+ * start barrier (6 + 4 + 15 s). The marker recovery's budget is its own, never shared with the
+ * named tab's close (gate fix round 4, finding 1).
+ */
+internal const val DRAFT_CLOSE_BUDGET_MS = 6_000L
+internal const val DRAFT_RECOVER_BUDGET_MS = 4_000L
+internal const val DRAFT_RESTORE_BUDGET_MS = 15_000L

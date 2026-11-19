@@ -2,6 +2,8 @@ package ai.closepaw.draft
 
 import com.google.common.truth.Truth.assertThat
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -183,5 +185,84 @@ class DraftChromeStageTest {
         val order = mutableListOf<String>()
         finishDraftChrome(tabId = null, closeTab = { order += "close" }, restore = { order += "restore" }, log = { order += it })
         assertThat(order).containsExactly("restore")
+    }
+
+    @Test
+    fun `a cancelled prepare never lets restore remove the owner's Chrome task`() = runTest {
+        // Task 43's move lands, but the call is cancelled before it returns.
+        val tasks = object : DraftTaskControl {
+            val inner = FakeTasks(
+                mutableListOf(DraftRootTask(maps, false), DraftRootTask(chrome, true), DraftRootTask(43, true)),
+            )
+            override suspend fun mainDisplayTasks() = inner.mainDisplayTasks()
+            override suspend fun chromeTasksOnRunDisplay() = inner.chromeTasksOnRunDisplay()
+            override suspend fun moveToRunDisplay(taskId: Int): Boolean {
+                val ok = inner.moveToRunDisplay(taskId)
+                if (taskId == 43) throw CancellationException("stopped")
+                return ok
+            }
+            override suspend fun moveToMainDisplay(taskId: Int) = inner.moveToMainDisplay(taskId)
+            override suspend fun moveToFront(taskId: Int) = inner.moveToFront(taskId)
+            override suspend fun remove(taskId: Int) = inner.remove(taskId)
+        }
+        val stage = DraftChromeStage(tasks) { logged += it }
+
+        try {
+            stage.prepare()
+        } catch (e: CancellationException) {
+            // expected
+        }
+        stage.restore()
+        assertThat(tasks.inner.calls).doesNotContain("remove:43")
+        assertThat(tasks.inner.calls).containsAtLeast("back:$chrome", "back:43")
+        assertThat(tasks.inner.run).isEmpty()
+    }
+
+    @Test
+    fun `a close that hangs does not use up the restore's time`() = runTest {
+        val order = mutableListOf<String>()
+        finishDraftChrome(
+            tabId = "t1",
+            closeTab = { order += "close"; awaitCancellation() },
+            restore = { order += "restore" },
+            log = { order += it },
+            closeBudgetMs = 1_000,
+            restoreBudgetMs = 1_000,
+        )
+        assertThat(order).containsExactly("close", "draft tab timed-out", "restore").inOrder()
+    }
+
+    @Test
+    fun `a close that hangs does not use up the marker recovery's time`() = runTest {
+        // Gate fix round 4, finding 1.
+        val order = mutableListOf<String>()
+        finishDraftChrome(
+            tabId = "t1",
+            closeTab = { order += "close"; awaitCancellation() },
+            recoverTabs = { order += "recover" },
+            restore = { order += "restore" },
+            log = { order += it },
+            closeBudgetMs = 1_000,
+            recoverBudgetMs = 1_000,
+            restoreBudgetMs = 1_000,
+        )
+        assertThat(order).containsExactly(
+            "close", "draft tab timed-out", "recover", "draft marker tabs closed", "restore",
+        ).inOrder()
+    }
+
+    @Test
+    fun `a marker recovery that never resolves does not use up the restore's time`() = runTest {
+        val order = mutableListOf<String>()
+        finishDraftChrome(
+            tabId = null,
+            closeTab = { order += "close" },
+            recoverTabs = { order += "recover"; awaitCancellation() },
+            restore = { order += "restore" },
+            log = { order += it },
+            recoverBudgetMs = 1_000,
+            restoreBudgetMs = 1_000,
+        )
+        assertThat(order).containsExactly("recover", "draft marker tabs timed-out", "restore").inOrder()
     }
 }

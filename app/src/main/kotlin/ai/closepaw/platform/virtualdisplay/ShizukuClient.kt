@@ -81,9 +81,14 @@ class ShizukuClient {
     private val inputTransport = ShizukuInputTransport(proxyProvider)
     private val activityTaskTransport = ShizukuActivityTaskTransport(proxyProvider)
     private val activityLauncher = ShizukuActivityLauncher()
+    private val windowTransport = ShizukuWindowTransport(proxyProvider)
 
     /**
      * Create a virtual display via IDisplayManager through Shizuku.
+     *
+     * [imePolicy] (WindowManager.DISPLAY_IME_POLICY_*): applied atomically at creation when the
+     * API 33+ VirtualDisplayConfig.Builder supports it (see [imePolicyAppliedAtCreation]);
+     * otherwise ignored here and left to [setDisplayImePolicy].
      *
      * @return displayId of the created virtual display, or -1 on failure
      */
@@ -93,9 +98,13 @@ class ShizukuClient {
             height: Int,
             densityDpi: Int,
             surface: Surface,
-            flags: Int
+            flags: Int,
+            imePolicy: Int? = null,
+            optionalFlags: Int = 0
     ): Int {
-        return displayTransport.createVirtualDisplay(name, width, height, densityDpi, surface, flags)
+        return displayTransport.createVirtualDisplay(
+                name, width, height, densityDpi, surface, flags, imePolicy, optionalFlags
+        )
     }
 
     /**
@@ -120,34 +129,54 @@ class ShizukuClient {
      *
      * @return number of root tasks removed, or -1 when the transport fails
      */
-    fun removeRootTasksOnDisplay(displayId: Int): Int {
-        return activityTaskTransport.removeRootTasksOnDisplay(displayId)
+    fun removeRootTasksOnDisplay(displayId: Int, keepTaskIds: Set<Int> = emptySet()): Int {
+        return activityTaskTransport.removeRootTasksOnDisplay(displayId, keepTaskIds)
     }
+
+    /** Root tasks on a display, top-most first; null when the query fails. */
+    internal fun rootTasksOnDisplay(displayId: Int): List<DisplayTask>? =
+            activityTaskTransport.rootTasksOnDisplay(displayId)
+
+    /** Move a root task to a display (it lands on top). */
+    fun moveRootTaskToDisplay(taskId: Int, displayId: Int): Boolean =
+            activityTaskTransport.moveRootTaskToDisplay(taskId, displayId)
+
+    /** Bring an existing non-home task to the front (Recents semantics); [options] = ActivityOptions bundle. */
+    fun startActivityFromRecents(taskId: Int, options: android.os.Bundle? = null): Boolean =
+            activityTaskTransport.startActivityFromRecents(taskId, options)
+
+    /** Start an intent as the shell over binder (what `am start` does, without a process spawn). */
+    fun startActivityAsShell(intent: Intent, options: android.os.Bundle?): Boolean =
+            activityTaskTransport.startActivity(intent, options)
+
+    // ── Window Manager ──────────────────────────────────────────
+
+    /**
+     * Set a display's IME policy (WindowManager.DISPLAY_IME_POLICY_*). Fail-open: returns false
+     * and logs when the hidden API is missing or the caller lacks permission.
+     */
+    fun setDisplayImePolicy(displayId: Int, imePolicy: Int): Boolean =
+            windowTransport.setDisplayImePolicy(displayId, imePolicy)
+
+    /** Whether the display was created with an IME policy already applied (API 33+ config builder). */
+    fun imePolicyAppliedAtCreation(displayId: Int): Boolean =
+            displayTransport.imePolicyAppliedAtCreation(displayId)
+
+    // ── Save-draft routine (owner's Chrome staging) ─────────────
 
     /** Removes one task by id. */
-    fun removeRootTask(taskId: Int): Boolean {
-        return activityTaskTransport.removeRootTask(taskId)
-    }
+    fun removeRootTask(taskId: Int): Boolean = activityTaskTransport.removeRootTask(taskId)
 
-    /** Root tasks on [displayId], front first; null when they cannot be read. */
-    internal fun rootTasksOnDisplay(displayId: Int): List<ShizukuActivityTaskTransport.RootTask>? {
-        return activityTaskTransport.rootTasksOnDisplay(displayId)
-    }
-
-    /** Moves a root task to [displayId]. */
-    fun moveRootTaskToDisplay(taskId: Int, displayId: Int): Boolean {
-        return activityTaskTransport.moveRootTaskToDisplay(taskId, displayId)
-    }
+    /** Root tasks on [displayId] with all their packages and visibility, front first; null when unreadable. */
+    internal fun rootTasksWithPackagesOnDisplay(displayId: Int): List<ShizukuActivityTaskTransport.RootTask>? =
+            activityTaskTransport.rootTasksWithPackagesOnDisplay(displayId)
 
     /** Puts a task in front on its display. */
-    fun moveTaskToFront(taskId: Int): Boolean {
-        return activityTaskTransport.moveTaskToFront(taskId)
-    }
+    fun moveTaskToFront(taskId: Int): Boolean = activityTaskTransport.moveTaskToFront(taskId)
 
     /** Root task ids of [packageName] on [displayId], or null when they cannot be read. */
-    fun rootTaskIdsOnDisplay(displayId: Int, packageName: String): Set<Int>? {
-        return activityTaskTransport.rootTaskIdsOnDisplay(displayId, packageName)
-    }
+    fun rootTaskIdsOnDisplay(displayId: Int, packageName: String): Set<Int>? =
+            activityTaskTransport.rootTaskIdsOnDisplay(displayId, packageName)
 
     // ── Input Injection ─────────────────────────────────────────
 

@@ -15,6 +15,7 @@
     <string name="shelly_paused_body_generic">Tap Resume to continue, or Stop.</string>
     <string name="shelly_done_title">ClosePaw finished</string>
     <string name="shelly_draft_saved">The draft was saved.</string>
+    <string name="shelly_draft_saved_missing_images">The draft was saved, but only %1$d of %2$d images were placed. Check the draft.</string>
     <string name="shelly_draft_exists">A draft with this title already exists. Nothing was added.</string>
     <string name="shelly_draft_uncertain">The draft may or may not have been saved. Check your drafts.</string>
     <string name="shelly_draft_failed">The draft was not saved.</string>

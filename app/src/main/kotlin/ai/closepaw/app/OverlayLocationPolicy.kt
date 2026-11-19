@@ -122,12 +122,124 @@ internal fun shouldFinishViewerOnIdle(
     !hasActiveTask &&
     mode is CapsuleMode.Hidden
 
+/**
+ * Capsule modes in which a Shelly-initiated virtual-display run may still surface the overlay on
+ * the main display: the agent needs the user (approval / input / action), failed, or the user
+ * paused it (takeover). Everything else (Running, Done, Hidden) stays invisible; the
+ * [ShellyRunNotifier] notification is the only surface for those.
+ */
+internal fun isShellyAttentionMode(mode: CapsuleMode): Boolean =
+    mode is CapsuleMode.WaitingForApproval ||
+        mode is CapsuleMode.WaitingForInput ||
+        mode is CapsuleMode.WaitingForAction ||
+        mode is CapsuleMode.Error ||
+        mode is CapsuleMode.Takeover ||
+        mode is CapsuleMode.TakeoverPending
+
+/**
+ * Whether the main-display overlays must be suppressed for a Shelly-initiated background run.
+ *
+ * True only when ALL hold: the run was started by Shelly ([shellyBackgroundRun]), it works on the
+ * virtual display (platform VD and not [shellyRunOnMainDisplay]), the user is on a main-display
+ * surface (MAIN_APP / OTHER_APP — never VD_VIEWER, where the user chose to watch), and the mode is
+ * not an attention mode ([isShellyAttentionMode]).
+ */
+internal fun shouldSuppressForShellyBackgroundRun(
+    platformMode: PlatformMode,
+    location: OverlayUserLocation,
+    mode: CapsuleMode,
+    shellyBackgroundRun: Boolean,
+    shellyRunOnMainDisplay: Boolean,
+): Boolean = shellyBackgroundRun &&
+    !shellyRunOnMainDisplay &&
+    platformMode == PlatformMode.VIRTUAL_DISPLAY &&
+    location != OverlayUserLocation.VD_VIEWER &&
+    !isShellyAttentionMode(mode)
+
+/**
+ * Lifecycle of the Shelly background-run inputs of [deriveOverlayVisibility], kept pure so the
+ * ordering rules are JVM-testable. Owned by [ServiceOverlayController]; main thread only.
+ *
+ * - [start]: a Shelly run was requested (resets any pending release).
+ * - [release]: the Shelly run finished. The overlay processes the terminal event AFTER the
+ *   tracker (so its Done must stay suppressed): the state is dropped only once the capsule is
+ *   Hidden ([onMode]) — immediately if it already is — or when a new task starts ([onTaskStarted]).
+ * - [clear]: a non-Shelly session took over / the start failed: drop immediately.
+ */
+internal class ShellyOverlayState {
+    var active: Boolean = false
+        private set
+    var onMainDisplay: Boolean = false
+        private set
+    var releasePending: Boolean = false
+        private set
+
+    fun start(onMainDisplay: Boolean) {
+        active = true
+        this.onMainDisplay = onMainDisplay
+        releasePending = false
+    }
+
+    /** Returns true if the visibility inputs changed. */
+    fun updateDisplay(onMainDisplay: Boolean): Boolean {
+        if (!active || this.onMainDisplay == onMainDisplay) return false
+        this.onMainDisplay = onMainDisplay
+        return true
+    }
+
+    /** Returns true if the state was dropped right away (visibility inputs changed). */
+    fun release(currentMode: CapsuleMode): Boolean {
+        if (!active) return false
+        if (currentMode is CapsuleMode.Hidden) {
+            reset()
+            return true
+        }
+        releasePending = true
+        return false
+    }
+
+    /** Returns true if anything was dropped. */
+    fun clear(): Boolean {
+        if (!active && !releasePending) return false
+        reset()
+        return true
+    }
+
+    /** A new task is starting: a finished Shelly run's session is no longer a Shelly run. */
+    fun onTaskStarted() {
+        if (releasePending) reset()
+    }
+
+    /** Capsule mode changed. Returns true if the state was dropped (pending release reached Hidden). */
+    fun onMode(mode: CapsuleMode): Boolean {
+        if (mode is CapsuleMode.Hidden && releasePending) {
+            reset()
+            return true
+        }
+        return false
+    }
+
+    private fun reset() {
+        active = false
+        onMainDisplay = false
+        releasePending = false
+    }
+}
+
+/**
+ * @param shellyBackgroundRun the current/last task was started by Shelly in the background
+ *   (default false: every non-Shelly caller gets the unchanged decisions).
+ * @param shellyRunOnMainDisplay that Shelly run is driving the real screen (accessibility
+ *   fallback); such runs are never suppressed.
+ */
 internal fun deriveOverlayVisibility(
     platformMode: PlatformMode,
     location: OverlayUserLocation,
     mode: CapsuleMode,
     hasActiveTask: Boolean,
     showPreference: ShowPreference,
+    shellyBackgroundRun: Boolean = false,
+    shellyRunOnMainDisplay: Boolean = false,
 ): OverlayVisibilityDecision {
     val isActive = hasActiveTask || mode is CapsuleMode.Done || mode is CapsuleMode.Error
     val normalizedShowPreference = when {
@@ -137,6 +249,24 @@ internal fun deriveOverlayVisibility(
             mode is CapsuleMode.WaitingForApproval ||
             mode is CapsuleMode.Error -> ShowPreference.CAPSULE
         else -> showPreference
+    }
+
+    if (shouldSuppressForShellyBackgroundRun(
+            platformMode = platformMode,
+            location = location,
+            mode = mode,
+            shellyBackgroundRun = shellyBackgroundRun,
+            shellyRunOnMainDisplay = shellyRunOnMainDisplay,
+        )
+    ) {
+        // Invisible background run: nothing on the main display. The preference is kept as-is
+        // so an attention mode or the viewer later shows the overlay exactly as it would today.
+        return OverlayVisibilityDecision(
+            showCapsule = false,
+            showIsland = false,
+            showGlow = false,
+            normalizedShowPreference = normalizedShowPreference,
+        )
     }
 
     return when (platformMode) {
@@ -185,36 +315,6 @@ internal fun deriveOverlayVisibility(
             }
         }
     }
-}
-
-/**
- * Quiet mode for Shelly-handed background runs on the virtual display: the user asked another
- * app (ChatGPT via Shelly) and wants their screen left alone. While they are in some other app
- * (OTHER_APP) no capsule / island / glow is shown on the main display — the ongoing notification
- * is the status surface and its Stop / Allow / Reject actions are the only controls. The capsule
- * still appears for states the notification cannot answer (typed input, "done" confirmation),
- * and whenever the user deliberately opens ClosePaw or the VD viewer. Terminal states (Done,
- * Error) stay hidden too: the run's outcome reaches the user through the result callback and the
- * notification, so the quiet flag must outlive the run and only be cleared when a user-started
- * session takes over (never at the moment the run finishes, or the Done/Error capsule would pop).
- *
- * Apart from the user's wish this also removes a large touchable accessibility overlay (with a
- * Stop button) from the screen the agent is NOT operating, so no stray touch can end the run.
- */
-internal fun applyQuietBackgroundRun(
-    decision: OverlayVisibilityDecision,
-    quiet: Boolean,
-    platformMode: PlatformMode,
-    location: OverlayUserLocation,
-    mode: CapsuleMode,
-): OverlayVisibilityDecision {
-    if (!quiet) return decision
-    if (platformMode != PlatformMode.VIRTUAL_DISPLAY) return decision
-    if (location != OverlayUserLocation.OTHER_APP) return decision
-    val needsCapsule = mode is CapsuleMode.WaitingForInput ||
-        mode is CapsuleMode.WaitingForAction
-    if (needsCapsule) return decision
-    return decision.copy(showCapsule = false, showIsland = false, showGlow = false)
 }
 
 /**

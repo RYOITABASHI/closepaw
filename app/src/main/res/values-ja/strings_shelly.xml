@@ -14,6 +14,7 @@
     <string name="shelly_paused_body_generic">続けるには「再開」、やめる場合は「停止」を押してください。</string>
     <string name="shelly_done_title">ClosePawの作業が完了しました</string>
     <string name="shelly_draft_saved">下書きを保存しました。</string>
+    <string name="shelly_draft_saved_missing_images">下書きを保存しましたが、画像は%2$d枚中%1$d枚しか配置できませんでした。下書きを確認してください。</string>
     <string name="shelly_draft_exists">同じタイトルの下書きがあります。追加していません。</string>
     <string name="shelly_draft_uncertain">下書きが保存されたか確認できませんでした。下書き一覧を確認してください。</string>
     <string name="shelly_draft_failed">下書きを保存できませんでした。</string>

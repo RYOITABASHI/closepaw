@@ -506,69 +506,266 @@ class OverlayLocationPolicyTest {
         ).isFalse()
     }
 
-    // ── Quiet mode for Shelly background runs on the virtual display ──
+    // ── Shelly-initiated background runs (invisible on the main display) ──
 
-    private val running = CapsuleMode.Running("working")
-
-    private fun vdDecision(mode: CapsuleMode, location: OverlayUserLocation) = deriveOverlayVisibility(
-        platformMode = PlatformMode.VIRTUAL_DISPLAY,
-        location = location,
-        mode = mode,
-        hasActiveTask = true,
-        showPreference = ShowPreference.CAPSULE,
+    private val approval = CapsuleMode.WaitingForApproval(
+        callId = "1",
+        description = "open Settings",
+        appLabel = "Settings",
+        packageName = "com.android.settings",
+        reason = "test",
     )
 
-    private fun quietVd(decision: OverlayVisibilityDecision, location: OverlayUserLocation, mode: CapsuleMode) =
-        applyQuietBackgroundRun(decision, true, PlatformMode.VIRTUAL_DISPLAY, location, mode)
+    private val shellyAttentionModes = listOf(
+        approval,
+        CapsuleMode.WaitingForInput(question = "q", callId = "1"),
+        CapsuleMode.WaitingForAction(instruction = "do", callId = "1"),
+        CapsuleMode.Error("error"),
+        CapsuleMode.Takeover("paused"),
+        CapsuleMode.TakeoverPending("handing over"),
+    )
+
+    private val allModes = shellyAttentionModes + listOf(
+        CapsuleMode.Running("thinking"),
+        CapsuleMode.Done("done"),
+        CapsuleMode.Hidden,
+    )
+
+    private val mainDisplayLocations = listOf(OverlayUserLocation.OTHER_APP, OverlayUserLocation.MAIN_APP)
+
+    private fun shellyVd(
+        location: OverlayUserLocation,
+        mode: CapsuleMode,
+        hasActiveTask: Boolean = mode !is CapsuleMode.Done && mode !is CapsuleMode.Error && mode !is CapsuleMode.Hidden,
+        showPreference: ShowPreference = ShowPreference.CAPSULE,
+        onMainDisplay: Boolean = false,
+        platformMode: PlatformMode = PlatformMode.VIRTUAL_DISPLAY,
+    ) = deriveOverlayVisibility(
+        platformMode = platformMode,
+        location = location,
+        mode = mode,
+        hasActiveTask = hasActiveTask,
+        showPreference = showPreference,
+        shellyBackgroundRun = true,
+        shellyRunOnMainDisplay = onMainDisplay,
+    )
 
     @Test
-    fun `quiet background run hides every main display overlay while running in another app`() {
-        val base = vdDecision(running, OverlayUserLocation.OTHER_APP)
-        assertThat(base.showCapsule).isTrue()
-        val quiet = quietVd(base, OverlayUserLocation.OTHER_APP, running)
-        assertThat(quiet.showCapsule).isFalse()
-        assertThat(quiet.showIsland).isFalse()
-        assertThat(quiet.showGlow).isFalse()
+    fun `shelly vd run shows nothing on the main display while running`() {
+        mainDisplayLocations.forEach { location ->
+            ShowPreference.entries.forEach { pref ->
+                val decision = shellyVd(location, CapsuleMode.Running("thinking"), showPreference = pref)
+                assertThat(decision.showCapsule).isFalse()
+                assertThat(decision.showIsland).isFalse()
+                assertThat(decision.showGlow).isFalse()
+            }
+        }
     }
 
     @Test
-    fun `quiet background run leaves approvals to the notification`() {
-        val mode = CapsuleMode.WaitingForApproval("c1", "open", "Spotify", "com.spotify.music", "policy")
-        val base = vdDecision(mode, OverlayUserLocation.OTHER_APP)
-        assertThat(base.showCapsule).isTrue()
-        assertThat(quietVd(base, OverlayUserLocation.OTHER_APP, mode).showCapsule).isFalse()
+    fun `shelly vd run in other app keeps the capsule for attention modes`() {
+        shellyAttentionModes.forEach { mode ->
+            val decision = shellyVd(OverlayUserLocation.OTHER_APP, mode)
+            assertThat(decision.showCapsule).isTrue()
+            assertThat(decision.showIsland).isFalse()
+        }
     }
 
     @Test
-    fun `quiet background run still shows the capsule for typed input and user actions`() {
-        val input = CapsuleMode.WaitingForInput("what name?", "c2")
-        assertThat(quietVd(vdDecision(input, OverlayUserLocation.OTHER_APP), OverlayUserLocation.OTHER_APP, input).showCapsule).isTrue()
-        val action = CapsuleMode.WaitingForAction("unlock", "c3")
-        assertThat(quietVd(vdDecision(action, OverlayUserLocation.OTHER_APP), OverlayUserLocation.OTHER_APP, action).showCapsule).isTrue()
+    fun `shelly vd run attention decisions equal the non-shelly decisions`() {
+        mainDisplayLocations.forEach { location ->
+            shellyAttentionModes.forEach { mode ->
+                ShowPreference.entries.forEach { pref ->
+                    listOf(true, false).forEach { active ->
+                        val legacy = deriveOverlayVisibility(
+                            platformMode = PlatformMode.VIRTUAL_DISPLAY,
+                            location = location,
+                            mode = mode,
+                            hasActiveTask = active,
+                            showPreference = pref,
+                        )
+                        assertThat(shellyVd(location, mode, hasActiveTask = active, showPreference = pref))
+                            .isEqualTo(legacy)
+                    }
+                }
+            }
+        }
     }
 
     @Test
-    fun `quiet background run keeps the end state off the main display`() {
-        val done = CapsuleMode.Done("Playlist created")
-        val doneBase = deriveOverlayVisibility(PlatformMode.VIRTUAL_DISPLAY, OverlayUserLocation.OTHER_APP, done, false, ShowPreference.CAPSULE)
-        assertThat(doneBase.showCapsule).isTrue()
-        val quietDone = quietVd(doneBase, OverlayUserLocation.OTHER_APP, done)
-        assertThat(quietDone.showCapsule).isFalse()
-        assertThat(quietDone.showIsland).isFalse()
-        assertThat(quietDone.showGlow).isFalse()
-        val error = CapsuleMode.Error("boom")
-        val errorBase = deriveOverlayVisibility(PlatformMode.VIRTUAL_DISPLAY, OverlayUserLocation.OTHER_APP, error, false, ShowPreference.CAPSULE)
-        assertThat(errorBase.showCapsule).isTrue()
-        assertThat(quietVd(errorBase, OverlayUserLocation.OTHER_APP, error).showCapsule).isFalse()
+    fun `shelly vd run approval in main app still forces the capsule`() {
+        val decision = shellyVd(OverlayUserLocation.MAIN_APP, approval, showPreference = ShowPreference.ISLAND)
+        assertThat(decision.showCapsule).isTrue()
     }
 
     @Test
-    fun `quiet background run does not apply in the viewer, on the main display platform, or when off`() {
-        val viewer = vdDecision(running, OverlayUserLocation.VD_VIEWER)
-        assertThat(quietVd(viewer, OverlayUserLocation.VD_VIEWER, running)).isEqualTo(viewer)
-        val a11y = deriveOverlayVisibility(PlatformMode.ACCESSIBILITY, OverlayUserLocation.OTHER_APP, running, true, ShowPreference.CAPSULE)
-        assertThat(applyQuietBackgroundRun(a11y, true, PlatformMode.ACCESSIBILITY, OverlayUserLocation.OTHER_APP, running)).isEqualTo(a11y)
-        val other = vdDecision(running, OverlayUserLocation.OTHER_APP)
-        assertThat(applyQuietBackgroundRun(other, false, PlatformMode.VIRTUAL_DISPLAY, OverlayUserLocation.OTHER_APP, running)).isEqualTo(other)
+    fun `shelly vd run suppresses done on the main display`() {
+        mainDisplayLocations.forEach { location ->
+            listOf(true, false).forEach { active ->
+                val decision = shellyVd(location, CapsuleMode.Done("done"), hasActiveTask = active)
+                assertThat(decision.showCapsule).isFalse()
+                assertThat(decision.showIsland).isFalse()
+                assertThat(decision.showGlow).isFalse()
+            }
+        }
+        // Sanity: without the Shelly flag, Done in OTHER_APP shows the capsule today.
+        assertThat(
+            deriveOverlayVisibility(
+                platformMode = PlatformMode.VIRTUAL_DISPLAY,
+                location = OverlayUserLocation.OTHER_APP,
+                mode = CapsuleMode.Done("done"),
+                hasActiveTask = false,
+                showPreference = ShowPreference.CAPSULE,
+            ).showCapsule
+        ).isTrue()
+    }
+
+    @Test
+    fun `shelly run on the main display is never suppressed`() {
+        PlatformMode.entries.forEach { platform ->
+            OverlayUserLocation.entries.forEach { location ->
+                allModes.forEach { mode ->
+                    ShowPreference.entries.forEach { pref ->
+                        listOf(true, false).forEach { active ->
+                            val legacy = deriveOverlayVisibility(
+                                platformMode = platform,
+                                location = location,
+                                mode = mode,
+                                hasActiveTask = active,
+                                showPreference = pref,
+                            )
+                            val shellyOnMain = shellyVd(
+                                location, mode, hasActiveTask = active, showPreference = pref,
+                                onMainDisplay = true, platformMode = platform,
+                            )
+                            assertThat(shellyOnMain).isEqualTo(legacy)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `shelly flag is ignored in accessibility platform mode`() {
+        OverlayUserLocation.entries.forEach { location ->
+            allModes.forEach { mode ->
+                val legacy = deriveOverlayVisibility(
+                    platformMode = PlatformMode.ACCESSIBILITY,
+                    location = location,
+                    mode = mode,
+                    hasActiveTask = true,
+                    showPreference = ShowPreference.CAPSULE,
+                )
+                assertThat(shellyVd(location, mode, hasActiveTask = true, platformMode = PlatformMode.ACCESSIBILITY))
+                    .isEqualTo(legacy)
+            }
+        }
+    }
+
+    @Test
+    fun `shelly flag off keeps the existing decisions`() {
+        PlatformMode.entries.forEach { platform ->
+            OverlayUserLocation.entries.forEach { location ->
+                allModes.forEach { mode ->
+                    ShowPreference.entries.forEach { pref ->
+                        listOf(true, false).forEach { active ->
+                            val defaults = deriveOverlayVisibility(
+                                platformMode = platform,
+                                location = location,
+                                mode = mode,
+                                hasActiveTask = active,
+                                showPreference = pref,
+                            )
+                            listOf(true, false).forEach { onMain ->
+                                val explicitOff = deriveOverlayVisibility(
+                                    platformMode = platform,
+                                    location = location,
+                                    mode = mode,
+                                    hasActiveTask = active,
+                                    showPreference = pref,
+                                    shellyBackgroundRun = false,
+                                    shellyRunOnMainDisplay = onMain,
+                                )
+                                assertThat(explicitOff).isEqualTo(defaults)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `shelly vd run in the vd viewer keeps the existing decisions`() {
+        allModes.forEach { mode ->
+            ShowPreference.entries.forEach { pref ->
+                listOf(true, false).forEach { active ->
+                    val legacy = deriveOverlayVisibility(
+                        platformMode = PlatformMode.VIRTUAL_DISPLAY,
+                        location = OverlayUserLocation.VD_VIEWER,
+                        mode = mode,
+                        hasActiveTask = active,
+                        showPreference = pref,
+                    )
+                    assertThat(
+                        shellyVd(OverlayUserLocation.VD_VIEWER, mode, hasActiveTask = active, showPreference = pref)
+                    ).isEqualTo(legacy)
+                }
+            }
+        }
+        // The viewer keeps its glow while a Shelly run is working.
+        assertThat(shellyVd(OverlayUserLocation.VD_VIEWER, CapsuleMode.Running("thinking")).showGlow).isTrue()
+    }
+
+    @Test
+    fun `shelly vd run only differs from legacy in suppressed cases`() {
+        OverlayUserLocation.entries.forEach { location ->
+            allModes.forEach { mode ->
+                ShowPreference.entries.forEach { pref ->
+                    listOf(true, false).forEach { active ->
+                        val legacy = deriveOverlayVisibility(
+                            platformMode = PlatformMode.VIRTUAL_DISPLAY,
+                            location = location,
+                            mode = mode,
+                            hasActiveTask = active,
+                            showPreference = pref,
+                        )
+                        val shelly = shellyVd(location, mode, hasActiveTask = active, showPreference = pref)
+                        val suppressed = location != OverlayUserLocation.VD_VIEWER && !isShellyAttentionMode(mode)
+                        if (suppressed) {
+                            assertThat(shelly).isEqualTo(
+                                OverlayVisibilityDecision(
+                                    showCapsule = false,
+                                    showIsland = false,
+                                    showGlow = false,
+                                    normalizedShowPreference = legacy.normalizedShowPreference,
+                                )
+                            )
+                        } else {
+                            assertThat(shelly).isEqualTo(legacy)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `shelly attention modes are exactly approval input action error and takeover`() {
+        assertThat(allModes.filter(::isShellyAttentionMode)).containsExactlyElementsIn(shellyAttentionModes)
+    }
+
+    @Test
+    fun `viewer auto-finish rule is unaffected by shelly runs`() {
+        // shouldFinishViewerOnIdle has no Shelly input; the viewer path is deliberately untouched.
+        assertThat(
+            shouldFinishViewerOnIdle(
+                platformMode = PlatformMode.VIRTUAL_DISPLAY,
+                location = OverlayUserLocation.VD_VIEWER,
+                mode = CapsuleMode.Hidden,
+                hasActiveTask = false,
+            )
+        ).isTrue()
     }
 }

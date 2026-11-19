@@ -1,9 +1,6 @@
 package ai.closepaw.agent
 
 import android.util.Log
-import ai.closepaw.agent.cognition.policy.GoalCompletionContract
-import ai.closepaw.agent.cognition.policy.ListVerification
-import ai.closepaw.agent.cognition.policy.UnattendedEvidence
 import ai.closepaw.agent.cognition.policy.TurnToolPolicy
 import ai.closepaw.history.CompactionOutcome
 import ai.closepaw.history.Compactor
@@ -55,21 +52,7 @@ class Agent(
                     cancellationSignal = cancellationSignal,
                     stopRequested = stopRequested,
                     trace = trace,
-                    turnPolicyEngine =
-                            TurnToolPolicy(
-                                    completionGate =
-                                            if (services.config.unattended) {
-                                                val goalGate = GoalCompletionContract.gateFor(config.goal) {
-                                                    (UnattendedEvidence.verification as? ListVerification.Verified)?.count
-                                                        ?: UnattendedEvidence.ledger.count
-                                                }
-                                                ({ status: String, answer: String ->
-                                                    // Screen verification (rows counted by ClosePaw) wins;
-                                                    // the toast ledger is only the fallback.
-                                                    UnattendedEvidence.verification?.rejection ?: goalGate(status, answer)
-                                                })
-                                            } else null
-                            ),
+                    turnPolicyEngine = TurnToolPolicy(),
                     compactor = compactor
             )
 
@@ -133,9 +116,9 @@ class Agent(
             // Eval-only safety net (production: config.evalTurnBudget = null).
             if (config.evalTurnBudget != null && turnCount >= config.evalTurnBudget) {
                 Log.w(TAG, "Eval turn budget (${config.evalTurnBudget}) reached")
-                eventDispatcher.status("⚠️ Turn budget reached")
+                eventDispatcher.status("⚠️ Eval turn budget reached")
                 stopReason = AgentStopReason.Error(
-                        "Turn budget reached (${config.evalTurnBudget} turns): stopped to avoid an endless run"
+                        "Eval turn budget reached (${config.evalTurnBudget})"
                 )
                 break
             }

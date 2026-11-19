@@ -48,6 +48,21 @@ interface DraftBrowser {
     fun runTab(tabId: String) {}
 
     /**
+     * The fragment the run is about to open its fallback tab with, told BEFORE the launch: a run
+     * cut short between the launch and finding the tab still has its tab closed on exit, by this
+     * marker. The default does nothing.
+     */
+    fun launchMarker(marker: String) {}
+
+    /**
+     * The fallback tab opened with [marker] was found and is now the run's tab ([runTab]): that
+     * marker no longer needs a search on exit. Any OTHER pending marker (a `Target.createTarget`
+     * whose answer was lost) stays pending, so its tab is still closed on exit. The default does
+     * nothing.
+     */
+    fun markerResolved(marker: String) {}
+
+    /**
      * Puts [html] on the Android clipboard, with a plain-text alternative, when the page could not
      * write it itself. False when that is not possible. The default does nothing.
      */
@@ -401,8 +416,12 @@ class SaveDraftRoutine(
         if (created != null) return DraftTab(created, url)
 
         val marker = "#" + newMarker()
+        browser.launchMarker(marker)
         browser.open(url + marker)
-        return findMarked(marker, timing.tabWaitMs)
+        val found = findMarked(marker, timing.tabWaitMs) ?: return null
+        // Resolves only this marker: an earlier createTarget marker stays pending (round 3, finding 3).
+        browser.markerResolved(marker)
+        return found
     }
 
     /**

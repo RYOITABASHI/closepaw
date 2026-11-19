@@ -270,6 +270,14 @@ class ShellySaveDraftTest {
         assertThat(Regex("decideAndStart\\(target").findAll(source).count()).isEqualTo(1)
         val inTime = source.substringAfter("Claim.IN_TIME -> {").substringBefore("}\n")
         assertThat(inTime).contains("respond { decideAndStart(target, checks!!)")
+        // A deadline that passes between the claim and the commit refuses as too slow.
+        assertThat(inTime).contains("?: tooSlow()")
+        val decide = source.substringAfter("private fun decideAndStart(")
+        assertThat(decide.substringBefore("REPLAY_GUARD.firstUse")).contains("checks.window.isExpired()")
+        // The slow accessibility + Shizuku query runs in gather (the worker), not on main.
+        assertThat(decide).doesNotContain("isChromeInFront()")
+        assertThat(source.substringAfter("private fun gather(").substringBefore("private fun decideAndStart"))
+            .contains("isChromeInFront()")
     }
 
     @Test
@@ -297,6 +305,65 @@ class ShellySaveDraftTest {
     }
 
     @Test
+    fun `verification runs inside the answer window, on the worker`() {
+        // Gate fix round 2, finding 4.
+        val source = java.io.File("src/main/kotlin/ai/closepaw/app/ShellySaveDraftReceiver.kt").readText()
+        val onReceive = source.substringAfter("override fun onReceive(").substringBefore("private fun admit(")
+        assertThat(onReceive.indexOf("ShellySaveDraft.AnswerWindow(")).isLessThan(onReceive.indexOf("goAsync()"))
+        assertThat(onReceive).doesNotContain("ShellyTrustedCaller.verify(")
+        assertThat(onReceive).doesNotContain("isShellyFile(")
+        val worker = onReceive.substringAfter("WORKER.execute {")
+        assertThat(worker.indexOf("admit(app, intent, sentFrom)")).isLessThan(worker.indexOf("gather(app, target, uri, window)"))
+        assertThat(source.substringAfter("private fun admit(")).contains("ShellyTrustedCaller.verify(intent, app.packageManager)")
+    }
+
+    @Test
+    fun `the draft start waits for prior teardown and reports independently of its notification`() {
+        // Gate fix round 2, findings 2-4.
+        val source = java.io.File("src/main/kotlin/ai/closepaw/app/AgentService.kt").readText()
+        val start = source.substringAfter("internal fun startShellySaveDraft(").substringBefore("private fun stopDraftForForegroundSession")
+        val beforeLaunch = start.substringBefore("serviceScope.launch(")
+        assertThat(beforeLaunch).doesNotContain("shellyNotifier.render(")
+        val body = start.substringAfter("serviceScope.launch(")
+        assertThat(body.indexOf("awaitClear(REPLACED_SESSION_SHUTDOWN_TIMEOUT_MS, exceptOwner = browser)"))
+            .isLessThan(body.indexOf("} else if (browser.start()) {"))
+        val report = body.substringAfter("if (!reported.get()) {")
+        assertThat(report.indexOf("renderDraftFinished(finalResult)")).isLessThan(report.indexOf("ShellyResultCallback.send("))
+        assertThat(report.substringBefore("ShellyResultCallback.send(")).contains("catch (e: Throwable)")
+        assertThat(report.indexOf("ShellyResultCallback.send(")).isLessThan(report.indexOf("reported.set(true)"))
+    }
+
+    @Test
+    fun `the draft fails closed on an unfinished or deferred display-0 restore`() {
+        // Gate fix round 3, finding 2.
+        val source = java.io.File("src/main/kotlin/ai/closepaw/app/AgentService.kt").readText()
+        val body = source.substringAfter("internal fun startShellySaveDraft(").substringBefore("private fun stopDraftForForegroundSession")
+            .substringAfter("serviceScope.launch(")
+        assertThat(body).contains("withTimeoutOrNull(REPLACED_SESSION_SHUTDOWN_TIMEOUT_MS) { restore.join() } != null")
+        assertThat(body.indexOf("restore.join()")).isLessThan(body.indexOf("displayZeroRestorePending()"))
+        // Anchored on the executable call, not the comment that names it (gate fix round 4, finding 2).
+        val startCall = "} else if (browser.start()) {"
+        assertThat(Regex(Regex.escape(startCall)).findAll(body).count()).isEqualTo(1)
+        assertThat(body.indexOf("attachedPlatform?.displayZeroRestorePending() == true")).isAtLeast(0)
+        assertThat(body.indexOf("attachedPlatform?.displayZeroRestorePending() == true")).isLessThan(body.indexOf(startCall))
+        assertThat(body.indexOf("val clear = barrierClear && !deferredPending")).isLessThan(body.indexOf(startCall))
+        assertThat(body).contains("val clear = barrierClear && !deferredPending")
+        val platform = java.io.File("src/main/kotlin/ai/closepaw/platform/virtualdisplay/VirtualDisplayPlatform.kt").readText()
+        // Every deferral launch is counted.
+        assertThat(Regex("deferralScope\\.launch").findAll(platform).count()).isEqualTo(1) // the helper's own
+        assertThat(Regex("launchDeferralWork\\b").findAll(platform).count()).isAtLeast(4) // helper + 3 sites
+    }
+
+    @Test
+    fun `a late admission rejection answers request-too-slow`() {
+        // Gate fix round 3, non-blocking: LATE takes Shelly's retry path, not its refusal path.
+        val source = java.io.File("src/main/kotlin/ai/closepaw/app/ShellySaveDraftReceiver.kt").readText()
+        val rejection = source.substringAfter("if (admitted == null) {").substringBefore("return@execute")
+        assertThat(rejection).contains("ShellySaveDraft.AnswerWindow.Claim.LATE -> respond(tooSlow)")
+        assertThat(rejection.indexOf("Claim.IN_TIME")).isLessThan(rejection.indexOf("RESULT_DATA_REJECTED"))
+    }
+
+    @Test
     fun `the receiver routes every path through the guarded answer`() {
         val source = java.io.File("src/main/kotlin/ai/closepaw/app/ShellySaveDraftReceiver.kt").readText()
         assertThat(source).contains("ShellySaveDraft.answer(")
@@ -319,5 +386,39 @@ class ShellySaveDraftTest {
         assertThat(guard.firstUse(reqId)).isTrue()
         assertThat(guard.firstUse(reqId)).isFalse()
         assertThat(guard.firstUse("1760500000001-0123abcd")).isTrue()
+    }
+
+    private val snapshot = listOf("device_share", "draft-0123456789abcdef0123456789abcdef", "request.json")
+
+    @Test
+    fun `below API 34 only an approved-draft snapshot without its own grant passes`() {
+        val authority = "dev.shelly.terminal.shelly.fileprovider"
+        fun ok(
+            sdk: Int = 33,
+            auth: String? = authority,
+            path: List<String> = snapshot,
+            grant: Boolean = false,
+            clip: Boolean = false,
+        ) = ShellySaveDraft.legacySenderProofOk(sdk, auth, path, grant, clip)
+
+        assertThat(ok()).isTrue()
+        assertThat(ok(sdk = 31)).isTrue()
+        // What shipped Shelly's share command can grant to third parties: <reqId> directories.
+        assertThat(ok(path = listOf("device_share", "1760500000000-0123abcd", "request.json"))).isFalse()
+        assertThat(ok(path = listOf("device_share", "draft-0123", "request.json"))).isFalse()
+        assertThat(ok(path = listOf("device_share", "draft-0123456789ABCDEF0123456789ABCDEF", "request.json"))).isFalse()
+        assertThat(ok(path = snapshot + "x")).isFalse()
+        assertThat(ok(path = listOf(snapshot[0], snapshot[1], "other.json"))).isFalse()
+        assertThat(ok(auth = "evil.provider")).isFalse()
+        assertThat(ok(auth = null)).isFalse()
+        // A broadcaster passing on a grant it holds is not Shelly's own per-send grant.
+        assertThat(ok(grant = true)).isFalse()
+        assertThat(ok(clip = true)).isFalse()
+    }
+
+    @Test
+    fun `from API 34 the named sender decides and the URI shape is not required`() {
+        assertThat(ShellySaveDraft.legacySenderProofOk(34, null, emptyList(), carriesUriGrant = true, hasClipData = true)).isTrue()
+        assertThat(ShellySaveDraft.legacySenderProofOk(37, "x", snapshot, carriesUriGrant = false, hasClipData = false)).isTrue()
     }
 }

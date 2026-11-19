@@ -53,6 +53,51 @@ object ShellySaveDraft {
     private const val MAX_REMEMBERED_REQUESTS = 32
     private val SHA256_RE = Regex("^[0-9a-f]{64}$")
 
+    /**
+     * Shelly's FileProvider (`${packageName}.shelly.fileprovider`) and the shape of the one URI
+     * its approved draft send produces: `device_share/draft-<32 hex>/request.json`, a snapshot in
+     * a fresh random directory, granted by Shelly to ClosePaw only, for that send only, and revoked
+     * after (Shelly ClosePawDrafts.serve / newSnapshotDir / SNAPSHOT_DIR_RE, shipped in build 3015).
+     */
+    const val SHELLY_FILE_AUTHORITY = "${ShellyTrustedCaller.SHELLY_PACKAGE}.shelly.fileprovider"
+    private const val SNAPSHOT_ROOT = "device_share"
+    private const val SNAPSHOT_FILE = "request.json"
+    private val SNAPSHOT_DIR_RE = Regex("^draft-[0-9a-f]{32}$")
+
+    /** The exact URI shape of an approved draft snapshot (see [SHELLY_FILE_AUTHORITY]). */
+    fun isDraftSnapshotUri(authority: String?, pathSegments: List<String>): Boolean =
+        authority == SHELLY_FILE_AUTHORITY &&
+            pathSegments.size == 3 &&
+            pathSegments[0] == SNAPSHOT_ROOT &&
+            SNAPSHOT_DIR_RE.matches(pathSegments[1]) &&
+            pathSegments[2] == SNAPSHOT_FILE
+
+    /**
+     * Sender proof below API 34, where the broadcaster cannot be named (gate fix round 1, finding
+     * 4). The caller token proves only that some Shelly-made PendingIntent was attached, and such
+     * tokens can leak. What a token holder cannot produce is a READABLE approved-draft snapshot:
+     * - its URI must have the snapshot shape. Shelly's other `device_share` files (the `share`
+     *   command, which does grant third parties) live in `<reqId>` directories, never `draft-*`;
+     * - the broadcast must carry no URI grant of its own (flags or ClipData). Shelly's draft send
+     *   grants with Context.grantUriPermission before sending and sets none, so the only way in is
+     *   Shelly's own per-send grant to ClosePaw, which no third party holds or can pass on;
+     * - the read then has to succeed and match the stated SHA-256, which needs those exact bytes.
+     * A third party would have to guess the 128-bit random directory of a send in flight and its
+     * content hash. On API 34+ the named sender already decides, so the shape is not required there
+     * (the device's verified behavior stays exactly as it was).
+     */
+    fun legacySenderProofOk(
+        sdkInt: Int,
+        authority: String?,
+        pathSegments: List<String>,
+        carriesUriGrant: Boolean,
+        hasClipData: Boolean,
+    ): Boolean {
+        if (sdkInt >= 34) return true
+        if (carriesUriGrant || hasClipData) return false
+        return isDraftSnapshotUri(authority, pathSegments)
+    }
+
     data class Target(
         val site: DraftSite,
         val correlation: ShellyBackgroundRun.ResultCorrelation,

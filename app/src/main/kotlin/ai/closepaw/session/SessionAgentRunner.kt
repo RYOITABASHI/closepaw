@@ -7,7 +7,6 @@ import android.util.Log
 import ai.closepaw.agent.Agent
 import ai.closepaw.agent.AgentEventDispatcher
 import ai.closepaw.agent.AgentExecutionConfig
-import ai.closepaw.agent.cognition.policy.ListGoalSpec
 import ai.closepaw.agent.AgentStopReason
 import ai.closepaw.agent.definition.AgentDefRegistry
 import ai.closepaw.agent.definition.ResolvedAgentRole
@@ -93,7 +92,6 @@ internal class SessionAgentRunner(
             agentRole = resolvedAgentDef.executionRole,
             modelName = modelName,
             evalTurnBudget = config.evalTurnBudget
-                ?: if (config.unattended) ListGoalSpec.turnBudget(ListGoalSpec.parse(taskInput)) else null
         )
 
         val compactor = buildCompactor(

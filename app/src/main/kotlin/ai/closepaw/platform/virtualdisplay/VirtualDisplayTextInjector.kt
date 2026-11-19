@@ -10,6 +10,7 @@ import ai.closepaw.platform.ActionResult
 import ai.closepaw.platform.NodeActionPerformer
 import ai.closepaw.platform.UIAction
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
@@ -41,6 +42,13 @@ class VirtualDisplayTextInjector(
         private val clipboardProvider: () -> ClipboardManager? = {
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         },
+        /**
+         * Whether the clipboard paste route may be used at all (gate fix round 1, finding 5).
+         * False for unattended runs (Shelly hand-offs): nobody is watching, the owner may be
+         * copying on display 0 at that very moment, and the previous clip cannot be read back from
+         * the background to restore it. Text that `input text` cannot carry then fails instead.
+         */
+        private val allowClipboardPaste: Boolean = true,
 ) {
     companion object {
         private const val TAG = "VDTextInjector"
@@ -53,6 +61,18 @@ class VirtualDisplayTextInjector(
         private const val KEYCODE_A = KeyEvent.KEYCODE_A
         private const val KEYCODE_DEL = KeyEvent.KEYCODE_DEL
         private const val KEYCODE_PASTE = 279 // KeyEvent.KEYCODE_PASTE (API 24+)
+
+        /**
+         * The paste's own clip, provably: read back ([current] non-null), carrying this paste's
+         * unique [label] AND exactly [text]. Anything else (unreadable, another label, other
+         * content) is not ClosePaw's to clear or replace.
+         */
+        internal fun isPasteClip(current: ClipData?, label: String, text: String): Boolean {
+            current ?: return false
+            if (current.description?.label?.toString() != label) return false
+            if (current.itemCount != 1) return false
+            return current.getItemAt(0)?.text?.toString() == text
+        }
 
         /**
          * True when [text] can be delivered verbatim through `input text`: printable ASCII only.
@@ -247,25 +267,52 @@ class VirtualDisplayTextInjector(
             trail: MutableList<String>,
             hasFocusedNode: Boolean
     ): Boolean {
+        if (!allowClipboardPaste) {
+            trail.add("paste:disabled-unattended")
+            return false
+        }
         val clipboard = withContext(Dispatchers.Main) { clipboardProvider() }
         if (clipboard == null) {
             trail.add("paste:no-clipboard")
             return false
         }
-        val set = withContext(Dispatchers.Main) {
+        // A label unique to this paste: the cleanup below empties the clipboard only while it
+        // still holds exactly this clip, never one the user copied in the meantime.
+        val label = CLIP_LABEL + "-" + java.util.UUID.randomUUID().toString()
+        // Gate fix round 2, finding 1: the clip the owner had before, when the platform lets
+        // ClosePaw read it (null when it is withheld or there is none), so the cleanup can put it
+        // back instead of discarding it.
+        val previous: ClipData? = withContext(Dispatchers.Main) {
             try {
-                clipboard.setPrimaryClip(ClipData.newPlainText(CLIP_LABEL, text))
-                true
+                clipboard.primaryClip
             } catch (e: Exception) {
-                Log.w(TAG, "setPrimaryClip failed", e)
-                false
+                null
             }
         }
-        if (!set) {
-            trail.add("paste:clip-set-failed")
-            return false
-        }
+        // The cleanup's try starts BEFORE the clip is set: a cancellation as the set returns
+        // (withContext can throw after its block ran) must not skip it. The ownership check makes
+        // the cleanup a no-op when the clip was never set.
         try {
+            val set = withContext(Dispatchers.Main) {
+                try {
+                    val clip = ClipData.newPlainText(label, text)
+                    if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        // Keeps the agent's text out of the system clipboard preview.
+                        clip.description.extras = android.os.PersistableBundle().apply {
+                            putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+                        }
+                    }
+                    clipboard.setPrimaryClip(clip)
+                    true
+                } catch (e: Exception) {
+                    Log.w(TAG, "setPrimaryClip failed", e)
+                    false
+                }
+            }
+            if (!set) {
+                trail.add("paste:clip-set-failed")
+                return false
+            }
             if (hasFocusedNode) {
                 val a11y = nodeActionPerformer.performPasteOnFocused()
                 if (a11y is ActionResult.Success) {
@@ -279,15 +326,29 @@ class VirtualDisplayTextInjector(
         } finally {
             // Do not leave agent text in the user's clipboard. The paste target already
             // consumed it; a tiny delay lets the paste actually read the clip first.
-            delay(PASTE_SETTLE_MS)
-            withContext(Dispatchers.Main) {
-                try {
-                    if (android.os.Build.VERSION.SDK_INT >= 28) {
-                        val current = clipboard.primaryClipDescription
-                        if (current?.label == CLIP_LABEL) clipboard.clearPrimaryClip()
+            // NonCancellable: a run stopped during the settle still gets this cleanup.
+            withContext(NonCancellable) {
+                delay(PASTE_SETTLE_MS)
+                withContext(Dispatchers.Main) {
+                    try {
+                        // Provable ownership only (gate fix round 2, finding 1): the clip read
+                        // back must carry this paste's unique label AND exactly this text. An
+                        // unreadable or different clip is someone else's and is left alone.
+                        val current = try {
+                            clipboard.primaryClip
+                        } catch (e: Exception) {
+                            null
+                        }
+                        if (isPasteClip(current, label, text)) {
+                            if (previous != null) {
+                                clipboard.setPrimaryClip(previous)
+                            } else if (android.os.Build.VERSION.SDK_INT >= 28) {
+                                clipboard.clearPrimaryClip()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "clipboard cleanup failed", e)
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "clearPrimaryClip failed", e)
                 }
             }
         }
@@ -298,9 +359,10 @@ class VirtualDisplayTextInjector(
         val displayArg = command.getOrNull(2)?.toIntOrNull()
         if (command.getOrNull(0) != "input" || command.getOrNull(1) != "-d" ||
                 displayArg == null || displayArg <= Display.DEFAULT_DISPLAY) {
-            Log.e(TAG, "Refusing shell input not targeted at a virtual display: ${command.joinToString(" ")}")
+            Log.e(TAG, "Refusing shell input not targeted at a virtual display: ${command.take(3).joinToString(" ")}")
             return -1
         }
-        return withContext(Dispatchers.IO) { shizuku.executeShellCommand(arrayOf(*command)) }
+        // Quiet: the command carries the typed text, which must not reach logcat.
+        return withContext(Dispatchers.IO) { shizuku.executeQuietShellCommand(arrayOf(*command)) }
     }
 }

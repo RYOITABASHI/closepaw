@@ -183,6 +183,17 @@ class SaveDraftRoutineTest {
             runTabs += tabId
         }
 
+        val launchMarkers = mutableListOf<String>()
+        val resolvedMarkers = mutableListOf<String>()
+
+        override fun launchMarker(marker: String) {
+            launchMarkers += marker
+        }
+
+        override fun markerResolved(marker: String) {
+            resolvedMarkers += marker
+        }
+
         override suspend fun setClipboard(html: String): Boolean {
             androidClips++
             if (androidClipboardWorks) clip = true
@@ -827,6 +838,29 @@ class SaveDraftRoutineTest {
         assertThat(browser.opened).containsExactly(substack.draftListUrl + "#closepaw-test")
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
         assertThat(browser.tabsTouched).containsExactly(FakeBrowser.OURS)
+    }
+
+    @Test
+    fun `a found fallback tab resolves only its own marker`() = runTest {
+        // Gate fix round 3, finding 3: a lost createTarget's marker must stay pending.
+        val browser = FakeBrowser(substack.draftListUrl, substackEditor).apply { createTargetWorks = false }
+        routine(browser, substack).run()
+
+        assertThat(browser.launchMarkers).containsExactly("#closepaw-test")
+        assertThat(browser.resolvedMarkers).containsExactly("#closepaw-test")
+    }
+
+    @Test
+    fun `an unfound fallback tab resolves no marker`() = runTest {
+        val inner = FakeBrowser(substack.draftListUrl, substackEditor).apply { createTargetWorks = false }
+        val browser = object : DraftBrowser by inner {
+            override suspend fun open(url: String) {
+                inner.opened += url
+            }
+        }
+        routine(browser, substack).run()
+
+        assertThat(inner.resolvedMarkers).isEmpty()
     }
 
     @Test

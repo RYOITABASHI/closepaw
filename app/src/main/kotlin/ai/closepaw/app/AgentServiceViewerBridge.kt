@@ -13,6 +13,8 @@ internal class AgentServiceViewerBridge(
     private val finishViewerActivity: () -> Unit,
 ) {
     fun onViewerOpened() {
+        // VD IME policy: FALLBACK while the viewer is open (takeover typing), HIDE otherwise.
+        platformProvider()?.onViewerVisibilityChanged(open = true)
         val overlay = overlayControllerProvider()
         if (overlay == null) {
             Log.w(logTag, "onViewerOpened: overlay controller not initialized")
@@ -23,6 +25,9 @@ internal class AgentServiceViewerBridge(
 
     fun onViewerClosed() {
         overlayControllerProvider()?.onViewerClosed()
+        platformProvider()?.onViewerVisibilityChanged(open = false)
+        // A deferred display-0 restore is re-evaluated on close (never on open).
+        platformProvider()?.onViewerClosedRecheckDeferral()
     }
 
     fun onMainAppVisible() {

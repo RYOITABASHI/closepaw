@@ -70,7 +70,7 @@ class VirtualDisplayPlatformStopTest {
 
         platform.stopKeepingTasks()
 
-        verify(exactly = 0) { shizuku.removeRootTasksOnDisplay(any()) }
+        verify(exactly = 0) { shizuku.removeRootTasksOnDisplay(any(), any()) }
         verify(exactly = 1) { shizuku.releaseVirtualDisplay(displayId) }
         verify(exactly = 1) { imageReader.close() }
     }
@@ -86,7 +86,7 @@ class VirtualDisplayPlatformStopTest {
 
         platform.stopKeepingTasks()
 
-        verify(exactly = 0) { shizuku.removeRootTasksOnDisplay(any()) }
+        verify(exactly = 0) { shizuku.removeRootTasksOnDisplay(any(), any()) }
         verify(exactly = 1) { shizuku.releaseVirtualDisplay(displayId) }
     }
 

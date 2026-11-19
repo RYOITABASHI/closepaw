@@ -19,14 +19,19 @@ import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.protocol.SessionConfig
 import ai.closepaw.trace.NoopTraceRecorder
 import java.io.IOException
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -58,18 +63,33 @@ internal class ChromeDraftBrowser(
     @Volatile private var runTabId: String? = null
     @Volatile private var stage: DraftChromeStage? = null
 
-    /** True once this run may have put the article on the clipboard; only then is it emptied. */
-    @Volatile private var clipboardTouched = false
+    /**
+     * Fragments of tabs this run asked Chrome for and has not identified by id yet: recorded BEFORE
+     * Chrome receives the request, on both creation paths ([createTab] and the activity-launch
+     * fallback, [DraftBrowser.launchMarker]). A run cut short between the request and its answer
+     * still finds and closes its tab on exit by these (gate fix round 2, finding 6).
+     */
+    private val pendingMarkers = CopyOnWriteArraySet<String>()
+
+    /** The run's successful clipboard writes; only a provably own clip is emptied ([DraftClipOwnership]). */
+    private val clip = DraftClipOwnership()
+
+    /** This run's label for the clip [setClipboard] writes: identifies it as the run's. */
+    private val clipLabel = "closepaw-draft-" + java.util.UUID.randomUUID().toString()
 
     /** False when the virtual display cannot be had. Never falls back to the main display. */
     suspend fun start(): Boolean {
         val platform = PlatformFactory.create(
-            config = SessionConfig(platformMode = PlatformMode.VIRTUAL_DISPLAY, unattended = true),
+            // isolateFocus: build 61's background focus policy (API 34+ OWN_FOCUS +
+            // STEAL_TOP_FOCUS_DISABLED), so launching Chrome here cannot take the focus or the IME
+            // from the owner's display 0. Not preserveMainDisplayTasks: the draft's Chrome task
+            // moves are DraftChromeStage's, and the restorer must not move them too.
+            config = SessionConfig(platformMode = PlatformMode.VIRTUAL_DISPLAY, unattended = true, isolateFocus = true),
             service = service,
             traceRecorder = NoopTraceRecorder,
         ) as? VirtualDisplayPlatform ?: return false
-        platform.start()
         display = platform
+        platform.start()
         return true
     }
 
@@ -81,18 +101,27 @@ internal class ChromeDraftBrowser(
      * The display is released without removing its tasks: if putting Chrome back failed, Android
      * moves what is left to the main display behind what is in front there, rather than closing
      * the owner's Chrome.
+     *
+     * Non-cancellable, and every step is independent (gate fix round 1, finding 3): the tab close
+     * and the restore have their own budgets ([finishDraftChrome]), and the release runs whatever
+     * happened before it. Never throws.
      */
-    suspend fun stop() {
-        val done = withTimeoutOrNull(FINISH_TIMEOUT_MS) {
+    suspend fun stop(): Unit = withContext(NonCancellable) {
+        try {
             finishDraftChrome(
                 tabId = runTabId,
                 closeTab = { close(it) },
+                // The marker search is a separate step with its own budget, so a stalled close of
+                // the named tab cannot use up its time (gate fix round 4, finding 1).
+                recoverTabs = if (pendingMarkers.isEmpty()) null else ({ recoverMarkerTabs() }),
                 restore = { stage?.restore() },
                 log = { Log.i(TAG, it) },
             )
+        } catch (e: Exception) {
+            Log.w(TAG, "draft chrome finish failed: ${e.javaClass.simpleName}")
         }
-        if (done == null) Log.w(TAG, "draft chrome finish timed out")
         runTabId = null
+        pendingMarkers.clear()
         // The article may still be on the clipboard after a run that was cut short.
         try {
             clearClipboard()
@@ -100,9 +129,59 @@ internal class ChromeDraftBrowser(
             Log.w(TAG, "clipboard not cleared: ${e.javaClass.simpleName}")
         }
         stage = null
-        sessions.close()
-        display?.stopKeepingTasks()
+        try {
+            sessions.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "CDP sessions not closed: ${e.javaClass.simpleName}")
+        }
+        try {
+            display?.stopKeepingTasks()
+        } catch (e: Exception) {
+            Log.w(TAG, "draft display release failed: ${e.javaClass.simpleName}")
+        }
         display = null
+    }
+
+    /**
+     * Closes every tab still carrying an unresolved pending marker (`#` fragment). Needed beside the
+     * named tab's close (gate fix round 3, finding 3): when `Target.createTarget` opened a tab but
+     * its answer was lost, the activity fallback's tab becomes [runTabId] while the first tab is
+     * known only by its marker. Runs as its own [finishDraftChrome] step with its own budget, after
+     * the named close and never sharing its time (gate fix round 4, finding 1).
+     *
+     * Each marker is tracked on its own: it is dropped only once a tab carrying it was found and
+     * closed. A tab requested just before a cut may not be listed yet, so the search keeps polling
+     * while any marker is unresolved, until the step's budget ends it (round 4, finding 1). A
+     * failed close leaves that marker unresolved and is retried on the next poll. Returns once
+     * every marker is resolved; otherwise the step's budget cancels it (logged as timed-out).
+     */
+    private suspend fun recoverMarkerTabs() {
+        val unresolved = pendingMarkers.toMutableSet()
+        while (unresolved.isNotEmpty()) {
+            val listed = try {
+                tabs()
+            } catch (e: IOException) {
+                emptyList()
+            }
+            for (tab in listed) {
+                val carried = unresolved.filter { tab.url.contains(it) }
+                if (carried.isEmpty()) continue
+                val closed = try {
+                    close(tab.id)
+                    true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
+                }
+                if (closed) {
+                    unresolved.removeAll(carried.toSet())
+                    pendingMarkers.removeAll(carried.toSet())
+                }
+            }
+            if (unresolved.isEmpty()) break
+            delay(MARKER_POLL_MS)
+        }
     }
 
     override suspend fun prepareChrome(): String? {
@@ -138,8 +217,22 @@ internal class ChromeDraftBrowser(
 
     override fun dialogsAnswered(): Int = dialogs.get()
 
+    /**
+     * Records the run's tab. Does NOT clear the pending markers (gate fix round 3, finding 3): a
+     * marker whose tab was never identified (a lost `Target.createTarget` answer) stays pending, so
+     * teardown still searches for it. Each marker is resolved only by its own tab: [createTab] on
+     * Chrome's answer, [markerResolved] when the routine found the fallback's tab by it.
+     */
     override fun runTab(tabId: String) {
         runTabId = tabId
+    }
+
+    override fun launchMarker(marker: String) {
+        pendingMarkers += marker
+    }
+
+    override fun markerResolved(marker: String) {
+        pendingMarkers -= marker
     }
 
     /** The session's CDP client, with this run's dialog answer installed (it may be rebuilt). */
@@ -154,12 +247,26 @@ internal class ChromeDraftBrowser(
             block(client)
         }
 
+    /**
+     * The tab's identity exists before Chrome receives the request (gate fix round 2, finding 6):
+     * the URL carries a fresh random fragment, recorded first. Should the answer never arrive
+     * (cancellation, a dropped connection), the exit path finds the tab by that fragment. The
+     * fragment never leaves the device: browsers do not send it to the server.
+     */
     override suspend fun createTab(url: String): String {
+        val marker = "#cpd-" + java.util.UUID.randomUUID().toString().replace("-", "")
+        pendingMarkers += marker
         val response = cdp { client ->
-            client.send("Target.createTarget", buildJsonObject { put("url", url) })
+            client.send("Target.createTarget", buildJsonObject { put("url", url + marker) })
         }
-        return response.jsonObject["targetId"]?.jsonPrimitive?.content
+        val id = response.jsonObject["targetId"]?.jsonPrimitive?.content
             ?: throw IOException("no target id")
+        // Owned from the moment Chrome names it, not only once the routine records it: a run cut
+        // short in between still closes this tab on exit.
+        runTabId = id
+        // Only this request's marker is resolved; any other stays pending (round 3, finding 3).
+        pendingMarkers -= marker
+        return id
     }
 
     override suspend fun open(url: String) {
@@ -181,12 +288,14 @@ internal class ChromeDraftBrowser(
      * gives up as an [IOException], not a cancellation, so the routine counts it as a miss.
      */
     override suspend fun evaluate(tabId: String, script: DraftScript, args: JsonObject): JsonObject {
-        if (script == DraftScript.CLIPBOARD_WRITE) clipboardTouched = true
         val response = withTimeoutOrNull(EVALUATE_TIMEOUT_MS) {
             cdp { client ->
                 client.send("Runtime.evaluate", draftEvaluateParams(script, args), CdpOptions(targetId = tabId))
             }
         } ?: throw DraftEvaluateTimeoutException(script)
+        // The page's own clipboard write (CLIPBOARD_WRITE) is deliberately NOT recorded for
+        // cleanup (gate fix round 3, finding 1): nothing read back can tell it from an identical
+        // owner copy, so it is never cleared. It is what the page itself put there.
         return draftEvaluateResult(script, response)
     }
 
@@ -205,14 +314,16 @@ internal class ChromeDraftBrowser(
             val clipboard = service.getSystemService(ClipboardManager::class.java)
                 ?: return@withContext false
             val plain = Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY).toString()
-            val clip = ClipData.newHtmlText("draft", plain, html)
+            val data = ClipData.newHtmlText(clipLabel, plain, html)
             if (Build.VERSION.SDK_INT >= 33) {
-                clip.description.extras = PersistableBundle().apply {
+                data.description.extras = PersistableBundle().apply {
                     putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
                 }
             }
-            clipboardTouched = true
-            clipboard.setPrimaryClip(clip)
+            clipboard.setPrimaryClip(data)
+            // Recorded only after the set returned (round 1 claimed ownership before it), with the
+            // exact text written: cleanup compares it unnormalized (gate fix round 3, finding 1).
+            clip.recordWrite(clipLabel, html, plain)
             Log.i(TAG, "draft clipboard set by ClosePaw")
             true
         } catch (e: Exception) {
@@ -222,14 +333,35 @@ internal class ChromeDraftBrowser(
     }
 
     /**
-     * Empties the clipboard, if this run used it. The owner's earlier clip is not read back to restore it: reading the
-     * clipboard from the background is refused, or announced on screen, on current Android.
+     * Empties the clipboard only when the clip on it now is provably ClosePaw's own write: read
+     * back as a single item under this run's unique label with exactly the content written
+     * ([DraftClipOwnership], gate fix rounds 2 and 3, finding 1). The page's own write is never
+     * cleared. A clip that cannot be read, or is anyone else's, is left alone. The owner's earlier
+     * clip is not restored: reading
+     * the clipboard from the background is refused, or announced on screen, on current Android.
+     * Runs to the end even when the run was cancelled.
      */
     override suspend fun clearClipboard() {
-        if (!clipboardTouched) return
-        clipboardTouched = false
-        withContext(Dispatchers.Main) {
+        withContext(NonCancellable + Dispatchers.Main) {
             val clipboard = service.getSystemService(ClipboardManager::class.java) ?: return@withContext
+            val current = try {
+                clipboard.primaryClip
+            } catch (e: Exception) {
+                null
+            }
+            val itemCount = current?.itemCount ?: 0
+            // Only a single-item clip can be fully inspected; releaseForClear refuses any other.
+            val item = current?.takeIf { itemCount == 1 }?.getItemAt(0)
+            val mine = clip.releaseForClear(
+                label = current?.description?.label?.toString(),
+                itemCount = itemCount,
+                text = item?.text?.toString(),
+                htmlText = item?.htmlText,
+            )
+            if (!mine) {
+                if (current == null) Log.i(TAG, "draft clipboard not readable; left as is")
+                return@withContext
+            }
             if (Build.VERSION.SDK_INT >= 28) clipboard.clearPrimaryClip()
             Log.i(TAG, "draft clipboard cleared")
         }
@@ -343,9 +475,13 @@ internal class ChromeDraftBrowser(
     }
 
     override suspend fun close(tabId: String) {
-        cdp { client ->
+        val response = cdp { client ->
             client.send("Target.closeTarget", buildJsonObject { put("targetId", tabId) }, CdpOptions(targetId = tabId))
         }
+        // Older Chrome answers {success}; a false one means the tab is still open, so it stays
+        // the run's and the exit path tries again. Newer Chrome answers {} on success.
+        val success = (response as? JsonObject)?.get("success")?.jsonPrimitive?.booleanOrNull
+        if (success == false) throw IOException("chrome refused to close the tab")
         if (runTabId == tabId) runTabId = null
     }
 }
@@ -354,7 +490,9 @@ class DraftEvaluateTimeoutException(script: DraftScript) : IOException("draft sc
 
 private const val TAG = "ChromeDraftBrowser"
 private const val EVALUATE_TIMEOUT_MS = 10_000L
-private const val FINISH_TIMEOUT_MS = 20_000L
+
+/** How often the exit path looks again for tabs known only by their markers ([DRAFT_RECOVER_BUDGET_MS]). */
+private const val MARKER_POLL_MS = 250L
 
 private const val FILE_CHOOSER_OPENED = "Page.fileChooserOpened"
 

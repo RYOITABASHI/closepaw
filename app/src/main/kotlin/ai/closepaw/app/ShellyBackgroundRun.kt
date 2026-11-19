@@ -13,6 +13,7 @@ import ai.closepaw.protocol.SessionTakeover
 import ai.closepaw.protocol.TaskCompleted
 import ai.closepaw.protocol.TaskOutcome
 import ai.closepaw.protocol.TurnPhaseChanged
+import kotlinx.coroutines.launch
 
 /**
  * Background ("headless") runs requested by a verified Shelly caller.
@@ -65,6 +66,23 @@ object ShellyBackgroundRun {
      * started run without it as "no result will come" instead of waiting forever.
      */
     const val RESULT_EXTRA_RESULT_CALLBACK = "result_callback"
+
+    /**
+     * Replacing a session: must the new session wait until the replaced session's shutdown has
+     * COMPLETED before it starts? Yes whenever the old teardown may still move tasks on display 0
+     * (Android task ids and display 0 are global, a separate VD does not isolate them):
+     * - [returnsMainDisplayTasks]: the old platform restores / hands over display-0 tasks in its
+     *   teardown (Shelly background runs), whether or not anything is recorded yet;
+     * - [runEndRestoreInFlight]: its run-end restore was launched and has not finished, so a
+     *   deferral may be recorded (and then executed by the teardown) after this check;
+     * - [deferredWork]: a deferred display-0 restore is recorded.
+     * The wait has no give-up: a bound may only fail the new start, never let it run concurrently.
+     */
+    fun mustAwaitReplacedShutdown(
+        returnsMainDisplayTasks: Boolean,
+        runEndRestoreInFlight: Boolean,
+        deferredWork: Boolean,
+    ): Boolean = returnsMainDisplayTasks || runEndRestoreInFlight || deferredWork
 
     /** True when a started run carries a result correlation (so the callback will be sent). */
     fun reportsResult(resultCode: Int, correlation: ResultCorrelation?): Boolean =
@@ -130,41 +148,6 @@ object ShellyBackgroundRun {
     }
 }
 
-/**
- * Main-display runs take over the user's screen; when they end, ClosePaw brings back the app
- * that was in front when the hand-off arrived (in practice the chat app that asked Shelly, so
- * the user lands where the result is reported). Pure decision logic, see [AgentService] for the
- * Android side (launch intent started from the accessibility service, which keeps the existing
- * task and its state instead of restarting the app).
- */
-object ShellyForegroundReturn {
-    /**
-     * Which package to bring back to the front after the run, or null for "nothing to do".
-     *
-     * @param foregroundPackage the app observed in the foreground of the DEFAULT display when the
-     *   run started (never a caller-supplied value).
-     * @param onMainDisplay false = virtual-display run, the user's screen was never touched.
-     * @param selfPackage ClosePaw itself.
-     * @param systemSurfaces launchers / System UI (see [ai.closepaw.session.SystemSurfaces]).
-     */
-    fun choose(
-        foregroundPackage: String?,
-        onMainDisplay: Boolean,
-        selfPackage: String,
-        systemSurfaces: Set<String>,
-    ): String? {
-        if (!onMainDisplay) return null
-        val pkg = foregroundPackage?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        if (pkg == selfPackage) return null
-        if (pkg in systemSurfaces) return null
-        if (pkg == "android" || pkg.startsWith("com.android.systemui")) return null
-        return pkg
-    }
-
-    /** Only task endings the user did not cause by starting something else restore the app. */
-    fun shouldRestore(state: ShellyRunState): Boolean = state is ShellyRunState.Finished
-}
-
 /** What the user should be told about a running Shelly background run. */
 sealed interface ShellyRunState {
     /** Agent is working. [onMainDisplay] = it is driving the real screen (do not touch). */
@@ -196,16 +179,24 @@ class ShellyRunTracker(
     /** Where to report the final state (null: the caller did not ask for a result). */
     val correlation: ShellyBackgroundRun.ResultCorrelation? = null,
     /**
-     * Main-display runs only: the app to bring back to the front when the run ends (see
-     * [ShellyForegroundReturn.choose]). Null = nothing to restore.
+     * The start's shared report-once guard (see [ShellyPendingResult]). AgentService passes the
+     * guard it created when it accepted the start, so the tracker and the pre-tracker paths
+     * (startup failure / cancellation / destroy) can never both report.
      */
-    val returnToPackage: String? = null,
+    val result: ShellyPendingResult = ShellyPendingResult(correlation),
 ) {
-    /** Set once the final state was reported to Shelly, so it is sent at most once. */
-    var resultReported: Boolean = false
+    /** True once the final state was reported to Shelly (by any path of this start). */
+    val resultReported: Boolean get() = result.isClaimed
 
-    /** Set once the foreground app was restored, so it happens at most once. */
-    var foregroundRestored: Boolean = false
+    /**
+     * Claims this run's result once it is finished: the payload for the first claim, null when
+     * still running, already claimed (by any path of this start), or no result was requested.
+     */
+    fun claimResult(nowMs: Long): ShellyResultCallback.Payload? {
+        if (!isFinished) return null
+        if (!result.claim()) return null
+        return ShellyResultCallback.payloadFor(this, nowMs)
+    }
 
     private val vdPackages = LinkedHashSet<String>()
 
@@ -395,4 +386,195 @@ class ShellyRunText(private val res: (id: Int, args: Array<out Any>) -> String) 
     val lockScreenSummary get() = s(R.string.shelly_lock_screen_summary)
     val channelStatus get() = s(R.string.shelly_channel_status)
     val channelAttention get() = s(R.string.shelly_channel_attention)
+}
+
+/**
+ * Shut a replaced session down so that the barrier's view of it is truthful (gate round 3).
+ *
+ * Returns the RECONCILED signal to register in [ReplacedSessionShutdownBarrier]: a parentless
+ * job that completes normally only once the teardown has actually run ([shutdown] returned and
+ * [isTornDown] holds afterwards), and completes exceptionally otherwise. It is never a child of
+ * [scope], so cancelling [scope] cannot complete it "successfully".
+ *
+ * The teardown-critical path (join the run-end restore, then [shutdown]) runs under
+ * NonCancellable: once started, cancellation of [scope] cannot skip it. Production passes a
+ * process-lifetime scope that nothing cancels (AgentService.replacedTeardownScope), so the
+ * body always starts; should it ever be cancelled before starting anyway, the launched job's
+ * completion fails [reconciled] (the barrier keeps the entry and starts fail) instead of letting
+ * it look reconciled.
+ *
+ * [shutdown] may return without the teardown having run (the session was already claimed by an
+ * earlier shutdown that did not reach platform stop): then [stopPlatform] (idempotent) runs once
+ * and [isTornDown] is checked again. Any failure goes to [onFailure] (logging) and fails
+ * [reconciled].
+ */
+internal fun launchReplacedSessionTeardown(
+        scope: kotlinx.coroutines.CoroutineScope,
+        runEndRestore: kotlinx.coroutines.Job?,
+        shutdown: suspend () -> Unit,
+        isTornDown: () -> Boolean,
+        stopPlatform: suspend () -> Unit,
+        onFailure: (Throwable) -> Unit = {},
+): kotlinx.coroutines.Job {
+    val reconciled = kotlinx.coroutines.Job()
+    val body = scope.launch {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            try {
+                // Its deferral decision is recorded before the teardown executes / hands it over.
+                runEndRestore?.join()
+                shutdown()
+                if (!isTornDown()) stopPlatform()
+                check(isTornDown()) { "the replaced session's platform did not stop" }
+                reconciled.complete()
+            } catch (e: Throwable) {
+                onFailure(e)
+                reconciled.completeExceptionally(e)
+            }
+        }
+    }
+    // Cancelled before the body started (or anything else that ends it without a verdict).
+    body.invokeOnCompletion { cause ->
+        if (!reconciled.isCompleted) {
+            val failure = cause ?: IllegalStateException("replaced-session teardown ended without running")
+            onFailure(failure)
+            reconciled.completeExceptionally(failure)
+        }
+    }
+    return reconciled
+}
+
+/**
+ * The one way AgentService tears a session down while a later session may start (gate round 4):
+ * used for a REPLACED session and for the session still attached when the service is DESTROYED
+ * (a service restart in the same process starts its next session against the same process-wide
+ * [barrier]). Launches [launchReplacedSessionTeardown] on [scope] and, when [mustAwait]
+ * ([ShellyBackgroundRun.mustAwaitReplacedShutdown]), registers its reconciled signal in [barrier]
+ * under [owner] BEFORE returning, i.e. before the caller detaches the session. The entry is removed
+ * only when the teardown verifiably completed (shutdown returned + platform torn down); failure or
+ * cancellation before the body started leaves it, and waiting starts fail closed.
+ */
+internal fun launchRegisteredSessionTeardown(
+        barrier: ReplacedSessionShutdownBarrier,
+        scope: kotlinx.coroutines.CoroutineScope,
+        mustAwait: Boolean,
+        owner: Any?,
+        runEndRestore: kotlinx.coroutines.Job?,
+        shutdown: suspend () -> Unit,
+        isTornDown: () -> Boolean,
+        stopPlatform: suspend () -> Unit,
+        onFailure: (Throwable) -> Unit = {},
+): kotlinx.coroutines.Job {
+    val reconciled = launchReplacedSessionTeardown(
+            scope = scope,
+            runEndRestore = runEndRestore,
+            shutdown = shutdown,
+            isTornDown = isTornDown,
+            stopPlatform = stopPlatform,
+            onFailure = onFailure,
+    )
+    if (mustAwait) barrier.add(reconciled, owner = owner)
+    return reconciled
+}
+
+/**
+ * onDestroy's bounded wait, observe-only (gate round 4): logs via [onTimeout] when [teardown] has
+ * not completed within [timeoutMs]. It only JOINS [teardown]; the timeout cancels the join, never
+ * the teardown, so the bound can no longer abandon a teardown (before or after it started) — the
+ * teardown and its barrier entry continue independently of this watcher and of [scope].
+ */
+internal fun watchSessionTeardown(
+        scope: kotlinx.coroutines.CoroutineScope,
+        teardown: kotlinx.coroutines.Job,
+        timeoutMs: Long,
+        onTimeout: () -> Unit,
+): kotlinx.coroutines.Job = scope.launch {
+    val finished = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+        teardown.join()
+        true
+    }
+    if (finished != true) onTimeout()
+}
+
+/**
+ * Barrier for shutdowns of replaced sessions that a new run must not overlap
+ * ([ShellyBackgroundRun.mustAwaitReplacedShutdown]). A shutdown stays registered until it
+ * completes SUCCESSFULLY ([launchReplacedSessionTeardown]'s reconciled signal), independent of
+ * who waits for it: a start that gives up waiting (and fails) leaves it in place, so every later
+ * start waits for it as well. A shutdown that completes UNSUCCESSFULLY (cancelled or failed:
+ * the teardown did not verifiably run) is never treated as reconciled: it stays registered and
+ * every start that would wait for it fails right away (the old platform may still act on the
+ * global tasks; failing the start is the safe side).
+ *
+ * Android tasks and display 0 are global, so the production barrier is process-wide
+ * ([process]): AgentService registers every replaced session's shutdown in it, and EVERY
+ * session waits for it right before its platform starts a task (AgentSession's first-task and
+ * Hot Idle follow-up platform start), whoever created the session (AgentService, MainActivity,
+ * onboarding) and whoever submitted the task.
+ */
+internal class ReplacedSessionShutdownBarrier {
+    companion object {
+        /** The process-wide barrier (see the class doc). */
+        val process = ReplacedSessionShutdownBarrier()
+
+        /** Liveness bound for a session start waiting on [process]; past it the start fails. */
+        const val START_TIMEOUT_MS = 30_000L
+
+        private val NO_OWNER = Any()
+    }
+
+    /**
+     * Registered shutdown -> its owner (the replaced session's platform), [NO_OWNER] when unknown.
+     * Holds running shutdowns and ones that completed unsuccessfully (never removed).
+     */
+    private val pending = java.util.concurrent.ConcurrentHashMap<kotlinx.coroutines.Job, Any>()
+
+    /**
+     * Register [shutdown]; [owner] identifies whose teardown it is (see [awaitClear]'s exceptOwner).
+     * Only a NORMAL completion deregisters it: cancellation or failure leaves it registered.
+     */
+    fun add(shutdown: kotlinx.coroutines.Job, owner: Any? = null) {
+        pending[shutdown] = owner ?: NO_OWNER
+        // Fires immediately when already complete.
+        shutdown.invokeOnCompletion { cause -> if (cause == null) pending.remove(shutdown) }
+    }
+
+    /** Shutdowns still registered: running, or ended without reconciling (for tests and logs). */
+    val outstanding: Int get() = pending.size
+
+    /** Tests only: drop [shutdown] (a deliberately failed entry must not leak into other tests via [process]). */
+    internal fun discardForTest(shutdown: kotlinx.coroutines.Job) {
+        pending.remove(shutdown)
+    }
+
+    /**
+     * Wait until every registered shutdown has completed successfully, including ones registered
+     * while waiting. Shutdowns owned by [exceptOwner] are not waited for: a session never waits
+     * for its own teardown (that teardown needs the session's lifecycle lock, which the waiting
+     * start holds). False when [timeoutMs] elapsed first, or right away when a shutdown ended
+     * unsuccessfully (it can never reconcile); the barrier itself is left intact either way.
+     */
+    suspend fun awaitClear(timeoutMs: Long, exceptOwner: Any? = null): Boolean =
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            while (true) {
+                val relevant = pending.entries
+                    .filter { exceptOwner == null || it.value !== exceptOwner }
+                    .map { it.key }
+                val running = ArrayList<kotlinx.coroutines.Job>()
+                for (job in relevant) {
+                    // Read completion FIRST: once completed, the outcome is final, so a job that
+                    // fails between two reads is either still "running" here (joined, then
+                    // re-classified on the next pass) or seen completed with its final outcome.
+                    if (!job.isCompleted) {
+                        running += job
+                    } else if (job.isCancelled) {
+                        // Cancelled / failed: the teardown did not verifiably run. Never "reconciled".
+                        return@withTimeoutOrNull false
+                    }
+                    // Completed normally but not deregistered yet: it counts as clear.
+                }
+                if (running.isEmpty()) break
+                running.forEach { it.join() }
+            }
+            true
+        } == true
 }

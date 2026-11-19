@@ -103,7 +103,7 @@ When `(platform=VIRTUAL_DISPLAY ∧ location=VD_VIEWER ∧ !hasActiveTask ∧ mo
 
 Single authority: `ServiceOverlayController.applyVisibility()`.
 
-**Inputs:** `platformMode`, `userLocation`, `mode` (from CapsuleStateHolder), `hasActiveTask`, `showPreference`
+**Inputs:** `platformMode`, `userLocation`, `mode` (from CapsuleStateHolder), `hasActiveTask`, `showPreference`, `shellyBackgroundRun`, `shellyRunOnMainDisplay`
 
 Derived:
 - `isActive = hasActiveTask || mode is Done || mode is Error`
@@ -118,6 +118,12 @@ Derived:
 - `MAIN_APP` or inactive: all overlays hidden; compose capsule shows input bar only (no input-bar viewer icon)
 - non-main + active: capsule/island by preference (mutually exclusive)
 - glow only when `location=VD_VIEWER && hasActiveTask=true`
+
+### Background runs started by Shelly
+
+Extra inputs `shellyBackgroundRun` / `shellyRunOnMainDisplay` (both default `false`, so sessions started from MainActivity or onboarding are unaffected). `ServiceOverlayController.onBackgroundRunRequested` sets them for a run started through `AgentService.startShellyRun`. The pure class `ShellyOverlayState` tracks their lifecycle. When the run finishes, they are released once the capsule settles to `Hidden` (or right away if a new task starts). A session started from MainActivity, onboarding or `runAgent` clears them immediately.
+
+Pure rule `shouldSuppressForShellyBackgroundRun`: if the run works on the virtual display (`platform=VIRTUAL_DISPLAY ∧ !shellyRunOnMainDisplay`) and the user is at `MAIN_APP` or `OTHER_APP`, capsule, island and glow are all hidden on the main display. The notification is then the only surface. This does not apply in the attention modes `WaitingForApproval`, `WaitingForInput`, `WaitingForAction`, `Error`, `Takeover` and `TakeoverPending`, which use the normal VD rules above. `Running` and `Done` are hidden. `VD_VIEWER` and runs on the main display (accessibility fallback) always use the normal rules.
 
 ### Invariants
 

@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Reports the final state of a Shelly background run back to Shelly, so the caller that issued
@@ -101,6 +102,25 @@ object ShellyResultCallback {
         return Payload(correlation.reqId, correlation.nonce, STATUS_FAILED, truncateSummary(message), nowMs, null)
     }
 
+    /** Summary sent when an accepted start is cancelled (e.g. the service died) before it ran. */
+    const val CANCELLED_DURING_START_MESSAGE = "ClosePaw was stopped while starting the task"
+
+    /** Payload for an accepted start that was cancelled before a tracker existed. */
+    fun cancelledPayload(
+        correlation: ShellyBackgroundRun.ResultCorrelation?,
+        nowMs: Long,
+    ): Payload? {
+        correlation ?: return null
+        return Payload(
+            correlation.reqId,
+            correlation.nonce,
+            STATUS_CANCELLED,
+            truncateSummary(CANCELLED_DURING_START_MESSAGE),
+            nowMs,
+            null,
+        )
+    }
+
     /** True when the installed Shelly is signed by a pinned certificate. */
     fun isShellyTrusted(packageManager: PackageManager): Boolean =
         ShellyTrustedCaller.isTrusted(SHELLY_PACKAGE, ShellyTrustedCaller.PINNED_SHELLY_CERT_SHA256) { pkg, cert ->
@@ -149,4 +169,33 @@ object ShellyResultCallback {
             Log.w(TAG, "failed to send Shelly result: ${e.javaClass.simpleName}")
         }
     }
+}
+
+/**
+ * The single "result already reported" guard of ONE accepted Shelly start. Created when
+ * [AgentService.startShellyRun] accepts a start (before any async work), adopted by the
+ * [ShellyRunTracker] once the session exists, and claimed by every terminal reporting path of that
+ * start: tracker finished / stopped / replaced, start failure, startup cancellation, service
+ * destroy. The first claim wins and gets the payload; every later claim returns null, so Shelly
+ * gets exactly one result per start that advertised `result_callback=1`.
+ *
+ * A claim is consumed even when [correlation] is null (no result was requested): the start still
+ * reached its terminal state, and nothing is sent.
+ */
+class ShellyPendingResult(val correlation: ShellyBackgroundRun.ResultCorrelation?) {
+    private val claimed = AtomicBoolean(false)
+
+    /** True once some terminal path claimed this start's result. */
+    val isClaimed: Boolean get() = claimed.get()
+
+    /** Claims the result; true only for the first caller. */
+    fun claim(): Boolean = claimed.compareAndSet(false, true)
+
+    /** The start failed before it ran (refusal inside startup, exception). */
+    fun claimFailed(message: String?, nowMs: Long): ShellyResultCallback.Payload? =
+        if (claim()) ShellyResultCallback.failurePayload(correlation, message, nowMs) else null
+
+    /** The start was cancelled (service destroyed / scope cancelled) before a tracker existed. */
+    fun claimCancelled(nowMs: Long): ShellyResultCallback.Payload? =
+        if (claim()) ShellyResultCallback.cancelledPayload(correlation, nowMs) else null
 }
