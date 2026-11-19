@@ -44,7 +44,8 @@ internal const val VD_FOCUS_ISOLATION_FLAGS = (1 shl 14) or (1 shl 16)
 /**
  * Optional creation flags for the VD (requested fail-open, see [createWithOptionalFlags]):
  * the focus-isolation flags on API 34+ for background runs that must leave the user's display-0
- * keyboard alone ([backgroundRun] = Shelly runs, SessionConfig.preserveMainDisplayTasks); 0
+ * keyboard alone ([backgroundRun] = Shelly runs, SessionConfig.preserveMainDisplayTasks, and the
+ * save-draft routine, SessionConfig.isolateFocus); 0
  * otherwise, so API 31-33 and foreground (MainActivity) sessions create the VD exactly as before.
  * Foreground sessions are excluded because a VD that can never take top focus cannot get an IME
  * for viewer takeover typing, their main takeover path.
@@ -125,8 +126,14 @@ class VirtualDisplayPlatform(
     /** Runs deferred-restore triggers off the caller's thread; never cancelled (jobs are short). */
     private val deferralScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    /** Deferral work launched and not yet ended (see [launchDeferralWork]). */
+    private val deferralWorkRunning = java.util.concurrent.atomic.AtomicInteger(0)
+
     /** Records / orders the run-end display-0 return ([onTaskEnded]); a follow-up [start] waits for it. */
     private val runEnd = RunEndRestoreSequencer(deferralScope)
+
+    /** Save-draft routine: set by [stopKeepingTasks]; read during the stop it starts. */
+    @Volatile private var keepTasksOnStop = false
 
     // ── Component Wiring ─────────────────────────────────────────
 
@@ -151,6 +158,16 @@ class VirtualDisplayPlatform(
             NodeActionPerformer(rootProvider = { windowAccessor.getRootOnDisplay() })
 
     private val inputInjector = VirtualDisplayInputInjector(shizuku, displayIdProvider)
+    private val textInjector =
+            VirtualDisplayTextInjector(
+                    context = service,
+                    shizuku = shizuku,
+                    displayIdProvider = displayIdProvider,
+                    nodeActionPerformer = nodeActionPerformer,
+                    inputInjector = inputInjector,
+                    // Unattended runs never use the clipboard (gate fix round 1, finding 5).
+                    allowClipboardPaste = !sessionConfig.unattended,
+            )
     private val screenshotProcessor =
             VirtualDisplayScreenshotProcessor(
                     service = service,
@@ -260,7 +277,8 @@ class VirtualDisplayPlatform(
                                 imePolicy = DISPLAY_IME_POLICY_HIDE,
                                 optionalFlags = vdOptionalDisplayFlags(
                                         android.os.Build.VERSION.SDK_INT,
-                                        backgroundRun = sessionConfig.preserveMainDisplayTasks,
+                                        backgroundRun = sessionConfig.preserveMainDisplayTasks ||
+                                                sessionConfig.isolateFocus,
                                 )
                         )
                     } catch (e: Exception) {
@@ -401,7 +419,17 @@ class VirtualDisplayPlatform(
         imageReader.close()
     }
 
+    /**
+     * [stop] for a run that may have pulled the user's own task onto this display: the tasks are
+     * left alone, and releasing the display moves them to the main display.
+     */
+    suspend fun stopKeepingTasks() {
+        keepTasksOnStop = true
+        stop()
+    }
+
     private fun removeRootTasksBeforeRelease(displayId: Int) {
+        if (keepTasksOnStop) return
         try {
             // Displaced user tasks that could not be moved back are kept: releasing the display
             // then hands them to display 0 instead of destroying them.
@@ -494,7 +522,7 @@ class VirtualDisplayPlatform(
      */
     fun onViewerClosedRecheckDeferral() {
         if (mainDisplayTasks?.hasDeferredRestore() != true) return
-        deferralScope.launch {
+        launchDeferralWork {
             runDeferredTrigger("viewer closed") { restorer, displayId ->
                 if (isScreenInteractive()) restorer.recheckDeferred(displayId) else restorer.restoreDeferred(displayId)
             }
@@ -503,10 +531,36 @@ class VirtualDisplayPlatform(
 
     /** Screen turned off: execute the deferred restore (nobody sees the moves now). */
     private fun onScreenOff() {
-        deferralScope.launch {
+        launchDeferralWork {
             runDeferredTrigger("screen off") { restorer, displayId -> restorer.restoreDeferred(displayId) }
         }
     }
+
+    /**
+     * Launches deferral work (a trigger, or the no-deferral fallback restore) counted in
+     * [deferralWorkRunning] from BEFORE the launch (and before [before]) to the job's completion,
+     * whether it ran, failed or was cancelled: there is no gap in which the deferral flag is
+     * already clear but its moves have not ended ([displayZeroRestorePending]).
+     */
+    private fun launchDeferralWork(before: () -> Unit = {}, block: suspend () -> Unit) {
+        deferralWorkRunning.incrementAndGet()
+        try {
+            before()
+            deferralScope.launch { block() }.invokeOnCompletion { deferralWorkRunning.decrementAndGet() }
+        } catch (e: Exception) {
+            deferralWorkRunning.decrementAndGet()
+            throw e
+        }
+    }
+
+    /**
+     * This platform may still move display-0 tasks outside any process barrier: a deferred
+     * restore is pending (it can fire on screen off / viewer close), or deferral work is running.
+     * A save-draft run taking Chrome's tasks refuses to start while this is true (gate fix round
+     * 3, finding 2). The run-end restore itself is [runEndRestoreInFlight]; check that first, since
+     * its completion can create a deferral.
+     */
+    fun displayZeroRestorePending(): Boolean = hasDeferredWork() || deferralWorkRunning.get() > 0
 
     /**
      * Run a deferral trigger under a Running lease ([stop] drains it before releasing the VD),
@@ -575,8 +629,8 @@ class VirtualDisplayPlatform(
     /** No deferral trigger is available: degrade to a build-58 restore right away (one attempt). */
     private fun restoreNowWithoutDeferral() {
         val restorer = mainDisplayTasks ?: return
-        restorer.dropDeferral()
-        deferralScope.launch {
+        // The deferral flag clears only once the work is counted: no gap for displayZeroRestorePending.
+        launchDeferralWork(before = { restorer.dropDeferral() }) {
             try {
                 arbiter.withRunningLease { running -> restorer.restore(running.displayId) }
             } catch (e: PlatformNotRunningException) {
@@ -822,6 +876,10 @@ class VirtualDisplayPlatform(
                         )
                 is UIAction.SetTextOnFocused ->
                         nodeActionPerformer.performSetTextOnFocused(action.text, action.clear)
+                is UIAction.InjectText -> {
+                        action.focusX?.let { x -> action.focusY?.let { y -> showClick(x, y) } }
+                        textInjector.inject(action)
+                }
                 is UIAction.TapAt -> {
                         showClick(action.x, action.y)
                         inputInjector.injectTap(action.x, action.y)
@@ -920,6 +978,63 @@ class VirtualDisplayPlatform(
         }
     }
 
+    /** Brings Chrome onto this virtual display without opening a tab. */
+    suspend fun showChrome(): ActionResult {
+        return try {
+            arbiter.withRunningLease { appController.showChrome() }
+        } catch (e: PlatformNotRunningException) {
+            ActionResult.Failure("Virtual display not running (${e.message})")
+        }
+    }
+
+    /** Chrome's root task ids on this display; null when not running or unreadable. */
+    internal suspend fun chromeTaskIds(): Set<Int>? {
+        return try {
+            arbiter.withRunningLease { appController.chromeTaskIds() }
+        } catch (e: PlatformNotRunningException) {
+            null
+        }
+    }
+
+    /** Removes one task by id. Callers pass only a task they created on this display. */
+    internal suspend fun removeTask(taskId: Int): Boolean {
+        return try {
+            arbiter.withRunningLease { appController.removeTask(taskId) }
+        } catch (e: PlatformNotRunningException) {
+            false
+        }
+    }
+
+    /** Root tasks on the main display, front first; null when unreadable. */
+    internal suspend fun mainDisplayTasks(): List<ShizukuActivityTaskTransport.RootTask>? =
+            appController.mainDisplayTasks()
+
+    /** Moves a root task onto this virtual display. False when it is not running. */
+    internal suspend fun moveTaskHere(taskId: Int): Boolean {
+        return try {
+            arbiter.withRunningLease { appController.moveTaskHere(taskId) }
+        } catch (e: PlatformNotRunningException) {
+            false
+        }
+    }
+
+    /** Moves a root task to the main display. Works while this display is still up. */
+    internal suspend fun moveTaskToMainDisplay(taskId: Int): Boolean =
+            appController.moveTaskToMainDisplay(taskId)
+
+    /** Puts a task in front on its display. */
+    internal suspend fun moveTaskToFront(taskId: Int): Boolean =
+            appController.moveTaskToFront(taskId)
+
+    /** Opens a URL in Chrome on this virtual display. */
+    suspend fun openUrlInChrome(url: String): ActionResult {
+        return try {
+            arbiter.withRunningLease { appController.openUrlInChrome(url) }
+        } catch (e: PlatformNotRunningException) {
+            ActionResult.Failure("Virtual display not running (${e.message})")
+        }
+    }
+
     // ── IME Suppression ──────────────────────────────────────────
 
     /** Actions that can trigger IME on the wrong display. */
@@ -929,7 +1044,8 @@ class VirtualDisplayPlatform(
                     this is UIAction.LongClickNodeAt ||
                     this is UIAction.LongPressAt ||
                     this is UIAction.SetTextOnNodeAt ||
-                    this is UIAction.SetTextOnFocused
+                    this is UIAction.SetTextOnFocused ||
+                    this is UIAction.InjectText
 
     /** Set SHOW_MODE_HIDDEN to prevent VD-triggered IME from appearing on display 0. */
     private fun setKeyboardHidden() {

@@ -55,7 +55,15 @@ data class SessionConfig(
          * moved by the run (see ai.closepaw.platform.virtualdisplay.MainDisplayTaskGuard).
          * Default false keeps MainActivity-initiated sessions unchanged.
          */
-        val preserveMainDisplayTasks: Boolean = false
+        val preserveMainDisplayTasks: Boolean = false,
+        /**
+         * Background focus policy only (API 34+ VD focus-isolation flags, see
+         * VirtualDisplayPlatform.vdOptionalDisplayFlags), WITHOUT [preserveMainDisplayTasks]'
+         * display-0 task restorer. For the save-draft routine, which runs unattended and must
+         * leave the user's display-0 focus / IME alone, but owns its own Chrome task moves
+         * (ai.closepaw.draft.DraftChromeStage). [preserveMainDisplayTasks] implies it.
+         */
+        val isolateFocus: Boolean = false
 )
 
 /** Canonical LLM routing config used at runtime. */

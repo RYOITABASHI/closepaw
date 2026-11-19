@@ -140,6 +140,142 @@ class NodeActionPerformer(
         }
     }
 
+    /** Text of the focused editable field, as the accessibility tree reports it. */
+    data class FocusedTextState(val text: String)
+
+    /**
+     * Give input focus to the text field at (x, y) without touching the IME: ACTION_FOCUS first,
+     * then ACTION_CLICK (Compose text fields request focus from their click semantics).
+     */
+    @Suppress("DEPRECATION")
+    suspend fun performFocusNodeAt(x: Int, y: Int): ActionResult {
+        return onMain {
+            withRoot { root ->
+                val node = AccessibilityNodeFinder.findNodeAtLocation(root, x, y)
+                        ?: return@withRoot ActionResult.Failure("No text-input node at ($x,$y)")
+                try {
+                    if (node.isFocused) return@withRoot ActionResult.Success("Already focused at ($x,$y)")
+                    if (node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) {
+                        return@withRoot ActionResult.Success("ACTION_FOCUS at ($x,$y)")
+                    }
+                    if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                        return@withRoot ActionResult.Success("ACTION_CLICK (focus) at ($x,$y)")
+                    }
+                    ActionResult.Failure("ACTION_FOCUS/ACTION_CLICK returned false at ($x,$y)")
+                } finally {
+                    if (node !== root) node.recycleCompat()
+                }
+            }
+        }
+    }
+
+    /** Null when no editable node has input focus. Hint text counts as empty. */
+    suspend fun readFocusedEditableText(): FocusedTextState? {
+        return withContext(Dispatchers.Main) {
+            val root = rootProvider() ?: return@withContext null
+            try {
+                val node = AccessibilityNodeFinder.findFocusedEditableNode(root) ?: return@withContext null
+                try {
+                    val text = if (node.isShowingHintText) "" else (node.text?.toString() ?: "")
+                    FocusedTextState(text)
+                } finally {
+                    if (node !== root) node.recycleCompat()
+                }
+            } finally {
+                root.recycleCompat()
+            }
+        }
+    }
+
+    /**
+     * True when any node in the current root's tree shows [text] (text or contentDescription,
+     * case-sensitive substring). Used to verify blind keyboard injection on fields that do not
+     * expose themselves as editable.
+     */
+    suspend fun treeContainsText(text: String): Boolean {
+        if (text.isEmpty()) return false
+        return withContext(Dispatchers.Main) {
+            val root = rootProvider() ?: return@withContext false
+            try {
+                fun search(node: AccessibilityNodeInfo, recycle: Boolean): Boolean {
+                    try {
+                        if (node.text?.contains(text) == true) return true
+                        if (node.contentDescription?.contains(text) == true) return true
+                        for (i in 0 until node.childCount) {
+                            val child = node.getChild(i) ?: continue
+                            if (search(child, recycle = true)) return true
+                        }
+                        return false
+                    } finally {
+                        if (recycle) node.recycleCompat()
+                    }
+                }
+                search(root, recycle = false)
+            } catch (e: Exception) {
+                Log.w("NodeActionPerformer", "treeContainsText failed", e)
+                false
+            } finally {
+                root.recycleCompat()
+            }
+        }
+    }
+
+    /**
+     * Cheap signature of the current root's tree (node count + text/contentDescription hashes).
+     * Two equal signatures mean "nothing observable changed"; a different one means the window
+     * content moved after an action (used to accept blind keyboard injection on fields whose
+     * text is not exposed, e.g. a search box that immediately swaps in results).
+     */
+    suspend fun treeSignature(): Int {
+        return withContext(Dispatchers.Main) {
+            val root = rootProvider() ?: return@withContext 0
+            try {
+                var hash = 17
+                var count = 0
+                fun walk(node: AccessibilityNodeInfo, recycle: Boolean) {
+                    try {
+                        count++
+                        hash = hash * 31 + (node.text?.toString()?.hashCode() ?: 0)
+                        hash = hash * 31 + (node.contentDescription?.toString()?.hashCode() ?: 0)
+                        for (i in 0 until node.childCount) {
+                            val child = node.getChild(i) ?: continue
+                            walk(child, recycle = true)
+                        }
+                    } finally {
+                        if (recycle) node.recycleCompat()
+                    }
+                }
+                walk(root, recycle = false)
+                hash * 31 + count
+            } catch (e: Exception) {
+                Log.w("NodeActionPerformer", "treeSignature failed", e)
+                0
+            } finally {
+                root.recycleCompat()
+            }
+        }
+    }
+
+    /** ACTION_PASTE on the focused editable node (the clipboard must already hold the text). */
+    @Suppress("DEPRECATION")
+    suspend fun performPasteOnFocused(): ActionResult {
+        return onMain {
+            withRoot { root ->
+                val node = AccessibilityNodeFinder.findFocusedEditableNode(root)
+                        ?: return@withRoot ActionResult.Failure("No focused editable element to paste into")
+                try {
+                    if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
+                        ActionResult.Success("ACTION_PASTE on focused field")
+                    } else {
+                        ActionResult.Failure("ACTION_PASTE returned false")
+                    }
+                } finally {
+                    if (node !== root) node.recycleCompat()
+                }
+            }
+        }
+    }
+
     @Suppress("DEPRECATION")
     suspend fun performEnterKey(): ActionResult {
         return onMain {

@@ -162,6 +162,22 @@ class ShizukuClient {
     fun imePolicyAppliedAtCreation(displayId: Int): Boolean =
             displayTransport.imePolicyAppliedAtCreation(displayId)
 
+    // ── Save-draft routine (owner's Chrome staging) ─────────────
+
+    /** Removes one task by id. */
+    fun removeRootTask(taskId: Int): Boolean = activityTaskTransport.removeRootTask(taskId)
+
+    /** Root tasks on [displayId] with all their packages and visibility, front first; null when unreadable. */
+    internal fun rootTasksWithPackagesOnDisplay(displayId: Int): List<ShizukuActivityTaskTransport.RootTask>? =
+            activityTaskTransport.rootTasksWithPackagesOnDisplay(displayId)
+
+    /** Puts a task in front on its display. */
+    fun moveTaskToFront(taskId: Int): Boolean = activityTaskTransport.moveTaskToFront(taskId)
+
+    /** Root task ids of [packageName] on [displayId], or null when they cannot be read. */
+    fun rootTaskIdsOnDisplay(displayId: Int, packageName: String): Set<Int>? =
+            activityTaskTransport.rootTaskIdsOnDisplay(displayId, packageName)
+
     // ── Input Injection ─────────────────────────────────────────
 
     /**
@@ -198,6 +214,11 @@ class ShizukuClient {
      */
     fun executeShellCommand(command: Array<String>): Int {
         return shellExecutor.execute(command)
+    }
+
+    /** [executeShellCommand] for a command that must not reach logcat. */
+    fun executeQuietShellCommand(command: Array<String>): Int {
+        return shellExecutor.execute(command, quiet = true)
     }
 
     // ── Proxy Lifecycle ──────────────────────────────────────────

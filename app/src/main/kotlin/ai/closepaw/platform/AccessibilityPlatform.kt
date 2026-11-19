@@ -339,6 +339,11 @@ class AccessibilityPlatform(
                             text = action.text,
                             clear = action.clear
                     )
+            is UIAction.InjectText ->
+                    ActionResult.Failure(
+                            "Keyboard injection is only available on the virtual display; " +
+                                    "use tap-to-focus + set text on the main display"
+                    )
             is UIAction.ScrollNodeAt -> {
                 recordOutOfBoundsActionTarget("scroll_node", action.x, action.y)
                 nodeActionPerformer.performScrollAt(action.x, action.y, action.direction)

@@ -79,6 +79,77 @@ class DialogStateTrackerTest {
 
 class ChromeCdpDialogTrackingTest {
 
+    private fun alert(type: String = "alert") = buildJsonObject {
+        put("type", type)
+        put("message", "画像アップロード中です")
+        put("hasBrowserHandler", false)
+    }
+
+    @Test
+    fun `an installed answer accepts the dialog on the session it came from`() = runTest {
+        val conn = FakeCdpConnection()
+        val client = ChromeCdpClient(conn.factory())
+        client.connect("ws://test")
+        attachSession(client, conn, sessionId = "session-1", targetId = "page-1")
+        val seen = mutableListOf<String>()
+        client.dialogAnswer = { state -> seen += state.type; true }
+
+        conn.injectEvent("Page.javascriptDialogOpening", alert(), sessionId = "session-1")
+
+        val answer = conn.lastSent()
+        assertThat(answer["method"]!!.jsonPrimitive.content).isEqualTo("Page.handleJavaScriptDialog")
+        assertThat(answer["params"]!!.jsonObject["accept"]!!.jsonPrimitive.boolean).isTrue()
+        assertThat(answer["sessionId"]!!.jsonPrimitive.content).isEqualTo("session-1")
+        assertThat(seen).containsExactly("alert")
+        // The tracker still records it until Chrome reports it closed.
+        assertThat(client.eventBuffer.dialogTracker.get("session-1")).isNotNull()
+    }
+
+    @Test
+    fun `an answer of false dismisses the dialog`() = runTest {
+        val conn = FakeCdpConnection()
+        val client = ChromeCdpClient(conn.factory())
+        client.connect("ws://test")
+        attachSession(client, conn, sessionId = "session-1", targetId = "page-1")
+        client.dialogAnswer = { false }
+
+        conn.injectEvent("Page.javascriptDialogOpening", alert("confirm"), sessionId = "session-1")
+
+        val answer = conn.lastSent()
+        assertThat(answer["method"]!!.jsonPrimitive.content).isEqualTo("Page.handleJavaScriptDialog")
+        assertThat(answer["params"]!!.jsonObject["accept"]!!.jsonPrimitive.boolean).isFalse()
+    }
+
+    @Test
+    fun `without an answer nothing is sent`() = runTest {
+        val conn = FakeCdpConnection()
+        val client = ChromeCdpClient(conn.factory())
+        client.connect("ws://test")
+        attachSession(client, conn, sessionId = "session-1", targetId = "page-1")
+        val before = conn.sent.size
+
+        conn.injectEvent("Page.javascriptDialogOpening", alert(), sessionId = "session-1")
+        client.dialogAnswer = { null }
+        conn.injectEvent("Page.javascriptDialogOpening", alert(), sessionId = "session-1")
+
+        assertThat(conn.sent.size).isEqualTo(before)
+    }
+
+    @Test
+    fun `a direct page connection answers without a session id`() = runTest {
+        val conn = FakeCdpConnection()
+        val client = ChromeCdpClient(conn.factory())
+        client.connect("ws://127.0.0.1:9222/devtools/page/page-1")
+        client.useDirectPageTarget("page-1", "ws://127.0.0.1:9222/devtools/page/page-1")
+        client.dialogAnswer = { true }
+
+        conn.injectEvent("Page.javascriptDialogOpening", alert())
+
+        val answer = conn.lastSent()
+        assertThat(answer["method"]!!.jsonPrimitive.content).isEqualTo("Page.handleJavaScriptDialog")
+        assertThat(answer["sessionId"]).isNull()
+    }
+
     @Test
     fun `Page javascriptDialogOpening populates tracker for active session`() = runTest {
         val conn = FakeCdpConnection()

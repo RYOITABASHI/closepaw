@@ -3,9 +3,11 @@ package ai.closepaw.platform.virtualdisplay
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.util.Log
+import android.view.Display
 import ai.closepaw.platform.ActionResult
 import ai.closepaw.platform.AppInfo
 import ai.closepaw.platform.AppManager
+import ai.closepaw.browser.setup.ChromeFlagDeepLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -19,7 +21,40 @@ internal class VirtualDisplayAppController(
 ) {
         companion object {
                 private const val TAG = "VDAppController"
+
         }
+
+        /** Chrome's root task ids on this display, or null when they cannot be read. */
+        suspend fun chromeTaskIds(): Set<Int>? {
+                val displayId = displayIdProvider()
+                return withContext(Dispatchers.IO) {
+                        shizuku.rootTaskIdsOnDisplay(displayId, ChromeFlagDeepLink.CHROME_PACKAGE)
+                }
+        }
+
+        /** Removes one task by id. Callers pass only a task they created. */
+        suspend fun removeTask(taskId: Int): Boolean =
+                withContext(Dispatchers.IO) { shizuku.removeRootTask(taskId) }
+
+        /** Root tasks on the main display, the one in front first; null when unreadable. */
+        suspend fun mainDisplayTasks(): List<ShizukuActivityTaskTransport.RootTask>? =
+                withContext(Dispatchers.IO) { shizuku.rootTasksWithPackagesOnDisplay(Display.DEFAULT_DISPLAY) }
+
+        /** Moves a root task (with its windows) onto this display. */
+        suspend fun moveTaskHere(taskId: Int): Boolean {
+                val displayId = displayIdProvider()
+                return withContext(Dispatchers.IO) { shizuku.moveRootTaskToDisplay(taskId, displayId) }
+        }
+
+        /** Moves a root task back to the main display. */
+        suspend fun moveTaskToMainDisplay(taskId: Int): Boolean =
+                withContext(Dispatchers.IO) {
+                        shizuku.moveRootTaskToDisplay(taskId, Display.DEFAULT_DISPLAY)
+                }
+
+        /** Puts a task in front on its display. */
+        suspend fun moveTaskToFront(taskId: Int): Boolean =
+                withContext(Dispatchers.IO) { shizuku.moveTaskToFront(taskId) }
 
         suspend fun getInstalledApps(): List<AppInfo> {
                 return withContext(Dispatchers.IO) {
@@ -29,6 +64,28 @@ internal class VirtualDisplayAppController(
                                 Log.e(TAG, "Failed to get installed apps", e)
                                 emptyList()
                         }
+                }
+        }
+
+        /** Brings Chrome onto this display without opening a tab. */
+        suspend fun showChrome(): ActionResult = startChrome(emptyArray())
+
+        /** Opens [url] in Chrome on this display, as a new tab. Argv only, no shell parsing. */
+        suspend fun openUrlInChrome(url: String): ActionResult =
+                startChrome(arrayOf("-a", "android.intent.action.VIEW", "-d", url))
+
+        private suspend fun startChrome(intentArgs: Array<String>): ActionResult {
+                val displayId = displayIdProvider()
+                return withContext(Dispatchers.IO) {
+                        val component =
+                                "${ChromeFlagDeepLink.CHROME_PACKAGE}/${ChromeFlagDeepLink.CHROME_MAIN_ACTIVITY}"
+                        val command =
+                                arrayOf("am", "start") +
+                                        intentArgs +
+                                        arrayOf("-n", component, "--display", "$displayId")
+                        val code = shizuku.executeQuietShellCommand(command)
+                        if (code == 0) ActionResult.Success("Opened Chrome on display $displayId")
+                        else ActionResult.Failure("am start failed with code $code")
                 }
         }
 

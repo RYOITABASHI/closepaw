@@ -36,6 +36,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -141,6 +142,20 @@ class BrowserSessionManager(
             scriptLease.unlock()
         }
     }
+
+    /** Page targets as Chrome reports them, without opening a CDP connection. */
+    internal suspend fun listPageTargets(): List<PageTarget> {
+        if (closed) throw IllegalStateException("Browser session is closed")
+        return bridge().bridge.listPageTargets()
+    }
+
+    /**
+     * Direct CDP access for callers that run no script (the draft routine). Holds the script
+     * lease, so it cannot interleave with a [run], and stays in the caller's job, so the caller's
+     * timeout and cancellation reach the CDP command.
+     */
+    internal suspend fun <T> withCdpClient(block: suspend (ChromeCdpClient) -> T): T =
+        scriptLease.withLock { block(ensureResources().cdpClient) }
 
     override fun close() {
         if (closed) return

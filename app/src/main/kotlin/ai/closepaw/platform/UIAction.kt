@@ -68,6 +68,21 @@ sealed interface UIAction {
         val text: String, val clear: Boolean = false
     ) : UIAction
 
+    /**
+     * Keyboard-style text entry: focus the text field at ([focusX],[focusY]) when given (or use
+     * the already-focused field), then deliver [text] as key events / a paste instead of
+     * ACTION_SET_TEXT. Last-resort path for fields that reject ACTION_SET_TEXT (Compose, WebView).
+     *
+     * Only the virtual-display platform implements it (events are injected into ClosePaw's own
+     * agent display through Shizuku); other platforms return a Failure.
+     */
+    data class InjectText(
+        val text: String,
+        val clear: Boolean = false,
+        val focusX: Int? = null,
+        val focusY: Int? = null
+    ) : UIAction
+
     // --- Gesture-based (AccessibilityService.dispatchGesture) ---
 
     /** Gesture long press (hold) at coordinates for duration */

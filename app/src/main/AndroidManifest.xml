@@ -91,6 +91,14 @@
             android:name=".app.ShellyGoalReceiver"
             android:exported="true" />
 
+        <!--
+            Fixed draft routine for a verified Shelly caller: same token and sender checks as
+            ShellyGoalReceiver, explicit component only. It runs no LLM and takes no goal.
+        -->
+        <receiver
+            android:name=".app.ShellySaveDraftReceiver"
+            android:exported="true" />
+
         <!-- Notification action buttons for Shelly runs (own PendingIntents only). -->
         <receiver
             android:name=".app.ShellyRunActionReceiver"

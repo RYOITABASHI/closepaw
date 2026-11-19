@@ -32,11 +32,11 @@ class VirtualDisplayInputInjector(
         private const val TAG = "VirtualDisplayInputInjector"
     }
 
-    fun injectTap(x: Int, y: Int): ActionResult {
-        val displayId = displayIdProvider()
-        if (displayId == Display.INVALID_DISPLAY) {
-            return ActionResult.Failure("Virtual display not started")
-        }
+    fun injectTap(x: Int, y: Int): ActionResult = guarded { injectTapUnguarded(x, y) }
+
+    private fun injectTapUnguarded(x: Int, y: Int): ActionResult {
+        val displayId = targetDisplayId()
+                ?: return ActionResult.Failure("Virtual display not started (refusing to inject into display ${displayIdProvider()})")
 
         if (!supportsDisplayIdInjection()) {
             return shellTap(displayId, x, y)
@@ -63,11 +63,12 @@ class VirtualDisplayInputInjector(
         else ActionResult.Failure("Tap inject failed at ($x,$y)")
     }
 
-    suspend fun injectLongPress(x: Int, y: Int, durationMs: Long): ActionResult {
-        val displayId = displayIdProvider()
-        if (displayId == Display.INVALID_DISPLAY) {
-            return ActionResult.Failure("Virtual display not started")
-        }
+    suspend fun injectLongPress(x: Int, y: Int, durationMs: Long): ActionResult =
+            guarded { injectLongPressUnguarded(x, y, durationMs) }
+
+    private suspend fun injectLongPressUnguarded(x: Int, y: Int, durationMs: Long): ActionResult {
+        val displayId = targetDisplayId()
+                ?: return ActionResult.Failure("Virtual display not started (refusing to inject into display ${displayIdProvider()})")
 
         if (!supportsDisplayIdInjection()) {
             return shellLongPress(displayId, x, y, durationMs)
@@ -111,11 +112,11 @@ class VirtualDisplayInputInjector(
         }
     }
 
-    suspend fun injectSwipe(action: UIAction.Swipe): ActionResult {
-        val displayId = displayIdProvider()
-        if (displayId == Display.INVALID_DISPLAY) {
-            return ActionResult.Failure("Virtual display not started")
-        }
+    suspend fun injectSwipe(action: UIAction.Swipe): ActionResult = guarded { injectSwipeUnguarded(action) }
+
+    private suspend fun injectSwipeUnguarded(action: UIAction.Swipe): ActionResult {
+        val displayId = targetDisplayId()
+                ?: return ActionResult.Failure("Virtual display not started (refusing to inject into display ${displayIdProvider()})")
 
         if (!supportsDisplayIdInjection()) {
             return shellSwipe(displayId, action)
@@ -189,11 +190,11 @@ class VirtualDisplayInputInjector(
         }
     }
 
-    fun injectSystemButton(button: SystemButtonType): ActionResult {
-        val displayId = displayIdProvider()
-        if (displayId == Display.INVALID_DISPLAY) {
-            return ActionResult.Failure("Virtual display not started")
-        }
+    fun injectSystemButton(button: SystemButtonType): ActionResult = guarded { injectSystemButtonUnguarded(button) }
+
+    private fun injectSystemButtonUnguarded(button: SystemButtonType): ActionResult {
+        val displayId = targetDisplayId()
+                ?: return ActionResult.Failure("Virtual display not started (refusing to inject into display ${displayIdProvider()})")
 
         val keyCode =
                 when (button) {
@@ -217,6 +218,21 @@ class VirtualDisplayInputInjector(
         else ActionResult.Failure("System button inject failed: $button")
     }
 
+    /**
+     * The only display this injector will ever target: ClosePaw's own virtual display. Null when
+     * the VD is not running — and also when the provider would hand back the DEFAULT display,
+     * which must never receive agent input (safety invariant, asserted on every injection).
+     */
+    private fun targetDisplayId(): Int? {
+        val id = displayIdProvider()
+        if (id == Display.INVALID_DISPLAY) return null
+        if (id == Display.DEFAULT_DISPLAY) {
+            Log.e(TAG, "Refusing to inject into the default display")
+            return null
+        }
+        return id
+    }
+
     private fun motionEvent(
             downTime: Long,
             eventTime: Long,
@@ -226,9 +242,16 @@ class VirtualDisplayInputInjector(
     ): MotionEvent {
         val event = MotionEvent.obtain(downTime, eventTime, action, x, y, 0)
         event.source = InputDevice.SOURCE_TOUCHSCREEN
-        setDisplayId(event, displayIdProvider())
+        if (!setDisplayId(event, displayIdProvider())) {
+            event.recycle()
+            throw UntargetedInputEventException(action)
+        }
         return event
     }
+
+    /** Thrown when an event could not be bound to the VD; callers must not inject it. */
+    class UntargetedInputEventException(action: Int) :
+            IllegalStateException("InputEvent (action=$action) is not bound to the virtual display")
 
     /**
      * Inject one raw MotionEvent action to the virtual display.
@@ -241,8 +264,7 @@ class VirtualDisplayInputInjector(
             downTime: Long,
             eventTime: Long,
     ): Boolean {
-        val displayId = displayIdProvider()
-        if (displayId == Display.INVALID_DISPLAY) return false
+        targetDisplayId() ?: return false
         if (action != MotionEvent.ACTION_DOWN &&
                 action != MotionEvent.ACTION_MOVE &&
                 action != MotionEvent.ACTION_UP &&
@@ -283,6 +305,15 @@ class VirtualDisplayInputInjector(
     }
 
     fun supportsDisplayIdInjection(): Boolean = displayIdInjectionVerified
+
+    /** Turns a failed display binding into a Failure instead of an untargeted injection. */
+    private inline fun guarded(block: () -> ActionResult): ActionResult =
+            try {
+                block()
+            } catch (e: UntargetedInputEventException) {
+                Log.e(TAG, "Input event not bound to the virtual display; dropped", e)
+                ActionResult.Failure(e.message ?: "Input event not bound to the virtual display")
+            }
 
     // ---- Shell fallback helpers (used when setDisplayId reflection is unavailable) ----
 
@@ -349,7 +380,7 @@ class VirtualDisplayInputInjector(
 
     private fun keyEvent(downTime: Long, eventTime: Long, action: Int, keyCode: Int): KeyEvent {
         val event = KeyEvent(downTime, eventTime, action, keyCode, 0)
-        setDisplayId(event, displayIdProvider())
+        if (!setDisplayId(event, displayIdProvider())) throw UntargetedInputEventException(action)
         return event
     }
 
@@ -386,12 +417,29 @@ class VirtualDisplayInputInjector(
                 .getOrNull()
     }
 
-    private fun setDisplayId(event: android.view.InputEvent, id: Int) {
-        val method = setDisplayIdMethod ?: return
-        try {
+    private val getDisplayIdMethod: java.lang.reflect.Method? by lazy {
+        runCatching { android.view.InputEvent::class.java.getMethod("getDisplayId") }.getOrNull()
+    }
+
+    /**
+     * Bind [event] to display [id] and confirm it stuck. Returns false (never inject!) when the
+     * id is not a virtual display or the hidden API did not take effect.
+     */
+    private fun setDisplayId(event: android.view.InputEvent, id: Int): Boolean {
+        if (id == Display.INVALID_DISPLAY || id == Display.DEFAULT_DISPLAY) return false
+        val method = setDisplayIdMethod ?: return false
+        return try {
             method.invoke(event, id) // void method — null return is normal
+            val readBack = getDisplayIdMethod?.invoke(event) as? Int
+            if (readBack != null && readBack != id) {
+                Log.e(TAG, "displayId mismatch after set: wanted=$id got=$readBack")
+                false
+            } else {
+                true
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to set displayId=$id on ${event.javaClass.simpleName}", e)
+            false
         }
     }
 }

@@ -26,7 +26,18 @@ import ai.closepaw.session.AgentSession
 import ai.closepaw.ui.overlay.compose.IslandOverlayHost
 import ai.closepaw.ui.overlay.compose.ServiceLifecycleOwner
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
+import ai.closepaw.R
+import ai.closepaw.browser.setup.ChromeFlagDeepLink
+import ai.closepaw.draft.ChromeDraftBrowser
+import ai.closepaw.draft.DraftOutcome
+import ai.closepaw.draft.SaveDraftRequest
+import ai.closepaw.draft.SaveDraftResult
+import ai.closepaw.draft.SaveDraftRoutine
+import ai.closepaw.platform.virtualdisplay.ShizukuClient
+import ai.closepaw.util.recycleCompat
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -41,6 +52,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class AgentService : AccessibilityService() {
 
@@ -156,6 +168,12 @@ class AgentService : AccessibilityService() {
      */
     private var shellyStartInFlight = false
 
+    /** The running save-draft routine, if any (no session, no LLM). Set and cleared on the main thread. */
+    private var draftJob: Job? = null
+
+    /** Why the running draft routine was stopped from outside. Main thread. */
+    private var draftStopReason: String? = null
+
     /**
      * Replaced-session shutdowns every new session start waits for: the process-wide barrier,
      * awaited by every session right before its platform starts a task (AgentSession), and by
@@ -190,6 +208,8 @@ class AgentService : AccessibilityService() {
         }
         // A MainActivity / onboarding session: back to the normal (visible) overlay behavior.
         overlayController?.clearShellyBackgroundRun()
+        // A running draft yields; its teardown is in the barrier the session's first task awaits.
+        stopDraftForForegroundSession()
         attachObservedSession(externalSession, platformMode)
     }
 
@@ -458,6 +478,9 @@ class AgentService : AccessibilityService() {
             return
         }
         overlayController?.clearShellyBackgroundRun()
+        // A running draft yields; its teardown is in the barrier awaitReplacedSessionReconcile
+        // (below) waits for before the new session is even created.
+        stopDraftForForegroundSession()
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
             shellyNotifier.render(it.state)
@@ -528,7 +551,7 @@ class AgentService : AccessibilityService() {
 
     /** A session is mid-task (a new background run must not clobber it). */
     internal fun isSessionBusy(): Boolean {
-        if (shellyStartInFlight) return true
+        if (shellyStartInFlight || draftJob != null) return true
         return when (session?.state?.value) {
             SessionState.Running, SessionState.Paused, SessionState.TakeoverPending -> true
             else -> false
@@ -851,6 +874,12 @@ class AgentService : AccessibilityService() {
     }
 
     internal fun stopShellyRun() {
+        // The notification's Stop during a save-draft routine (it has no session or tracker; a
+        // draft and a goal run never coexist, each refuses while the other is busy).
+        draftJob?.let {
+            it.cancel()
+            return
+        }
         if (session != null) {
             submitOp(Op.Shutdown)
         } else {
@@ -860,6 +889,260 @@ class AgentService : AccessibilityService() {
             shellyRun = null
             overlayController?.releaseShellyBackgroundRunWhenIdle()
         }
+    }
+
+    // ── Save-draft routine (fixed, LLM-free; see ShellySaveDraftReceiver) ──
+
+    /** True when Chrome is, or may be, what the user has in front on the main display. */
+    internal fun isChromeInFront(): Boolean {
+        val window = currentForegroundPackageOnDefaultDisplay()
+        val task = chromeTaskInFrontOnMainDisplay()
+        val chrome = ShellySaveDraft.chromeInFront(window, task)
+        if (chrome) Log.i(TAG, "chrome in front: windowIsChrome=${window == ChromeFlagDeepLink.CHROME_PACKAGE} windowKnown=${window != null} task=$task")
+        return chrome
+    }
+
+    private val taskReader by lazy { ShizukuClient() }
+
+    /**
+     * A second look, from the task list: true when the front visible root task on the main display
+     * is Chrome's. Null when the list cannot be read (the window check then fails closed).
+     */
+    private fun chromeTaskInFrontOnMainDisplay(): Boolean? = try {
+        val tasks = taskReader.rootTasksWithPackagesOnDisplay(Display.DEFAULT_DISPLAY)
+        val front = tasks?.firstOrNull { it.visible != false } ?: tasks?.firstOrNull()
+        if (front == null) null else ChromeFlagDeepLink.CHROME_PACKAGE in front.packages
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Package of the application window in front on the DEFAULT display right now (null if
+     * unknown). Used only by [isChromeInFront].
+     */
+    private fun currentForegroundPackageOnDefaultDisplay(): String? {
+        return try {
+            val defaultDisplayWindows: List<android.view.accessibility.AccessibilityWindowInfo> =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        windowsOnAllDisplays.get(Display.DEFAULT_DISPLAY) ?: emptyList()
+                    } else {
+                        this.windows ?: emptyList()
+                    }
+            val candidates = defaultDisplayWindows
+                    .filter { w ->
+                        w.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
+                                (Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
+                                        w.displayId == Display.DEFAULT_DISPLAY)
+                    }
+                    .sortedByDescending { it.layer }
+            val top = candidates.firstOrNull { it.isActive } ?: candidates.firstOrNull()
+            val fromWindow = top?.root?.let { root ->
+                try {
+                    root.packageName?.toString()
+                } finally {
+                    root.recycleCompat()
+                }
+            }
+            fromWindow ?: rootInActiveWindow?.packageName?.toString()
+        } catch (e: Exception) {
+            Log.w(TAG, "foreground package lookup failed: ${e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /**
+     * Runs the fixed draft routine for a verified Shelly request. Unlike [startShellyRun] it opens
+     * no session: no LLM, no tools, no policy engine. The receiver's precheck has already refused a
+     * busy service, so the caller's Shelly approval is the only gate, as on the goal path.
+     * Main thread.
+     */
+    internal fun startShellySaveDraft(
+            request: SaveDraftRequest,
+            correlation: ShellyBackgroundRun.ResultCorrelation,
+    ) {
+        // No notification rendering here (gate fix round 2, finding 4): this runs inside the
+        // receiver's ordered answer, after its last deadline check. The Working notification is
+        // posted below, to run after the answer has been committed.
+        val browser = ChromeDraftBrowser(this, serviceScope)
+        // Gate fix round 2, finding 2: a run-end display-0 restore of the session still attached
+        // (idle build 61 session) is joined before the draft touches Chrome's tasks.
+        // Gate fix round 3, finding 2: the attached platform is kept too, so its DEFERRED display-0
+        // restore (fired later by screen off / viewer close, outside any barrier) is accounted for.
+        val attachedPlatform = try {
+            session?.getServices()?.platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
+        } catch (e: Exception) {
+            null
+        }
+        val attachedRunEndRestore = try {
+            attachedPlatform?.runEndRestoreInFlight()
+        } catch (e: Exception) {
+            null
+        }
+        val routine = SaveDraftRoutine(browser, request, ownerHasChrome = ::isChromeInFront)
+        draftStopReason = null
+        // Gate fix round 1, finding 6. The draft owns Chrome's tasks (and its virtual display)
+        // until its teardown has COMPLETED: registered in the process-wide barrier now, so every
+        // session start (runAgent, MainActivity / onboarding sessions via AgentSession's own wait)
+        // waits for it. Completed normally on every path below, never cancelled: a cancelled
+        // entry would fail every later start.
+        val teardown = Job()
+        replacedShutdowns.add(teardown, owner = browser)
+        // From acceptance on, exactly one terminal callback: the body's own, or the fallback
+        // below when the job ended without reaching it.
+        val reported = java.util.concurrent.atomic.AtomicBoolean(false)
+        // ATOMIC: a Stop or the service going away before the body runs still runs the body, so
+        // its finally (teardown + callback) is never skipped.
+        val job = serviceScope.launch(Dispatchers.Default, start = CoroutineStart.ATOMIC) {
+            var result: SaveDraftResult? = null
+            try {
+                // Gate fix round 2, finding 2: the reverse direction of the session barrier. A
+                // replaced session's teardown (display-0 task returns) or a previous service's
+                // draft teardown still running is waited for before the draft acts on any task;
+                // this draft's own entry (owner = browser) is excluded. Past the same liveness
+                // bound as session starts, the draft fails without touching Chrome.
+                //
+                // Gate fix round 3, finding 2: fail closed. A run-end restore that did not finish
+                // within the bound, or an attached session's deferred display-0 restore still
+                // pending (or running), means another party may still move tasks: the draft does
+                // not start and reports FAILED previous-task-shutting-down via the normal callback.
+                // The run-end restore is joined BEFORE the deferral check: its completion can
+                // create a deferral.
+                val runEndDone = attachedRunEndRestore?.let { restore ->
+                    withTimeoutOrNull(REPLACED_SESSION_SHUTDOWN_TIMEOUT_MS) { restore.join() } != null
+                } ?: true
+                val barrierClear = runEndDone &&
+                        replacedShutdowns.awaitClear(REPLACED_SESSION_SHUTDOWN_TIMEOUT_MS, exceptOwner = browser)
+                // Checked last, immediately before browser.start(): nothing awaited above can be
+                // what clears it later.
+                val deferredPending = barrierClear && try {
+                    attachedPlatform?.displayZeroRestorePending() == true
+                } catch (e: Exception) {
+                    true // unknown counts as pending
+                }
+                val clear = barrierClear && !deferredPending
+                result = if (!clear) {
+                    Log.e(TAG, "Draft routine: previous task still shutting down; not starting " +
+                            "(runEndDone=$runEndDone deferredPending=$deferredPending)")
+                    routine.resultSoFar("previous-task-shutting-down")
+                } else if (browser.start()) {
+                    routine.run()
+                } else {
+                    routine.resultSoFar("virtual-display-unavailable")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.w(TAG, "Draft routine failed: ${e.javaClass.simpleName}")
+                result = routine.resultSoFar("error-${e.javaClass.simpleName}")
+            } finally {
+                withContext(NonCancellable) {
+                    try {
+                        browser.stop()
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "Draft routine teardown failed: ${e.javaClass.simpleName}")
+                    }
+                    teardown.complete()
+                    withContext(Dispatchers.Main) {
+                        // Before the callback, as before: Shelly sends its next draft on it, and
+                        // must not find this one still busy. (No other draft can be current here:
+                        // a second one is refused while this one is set.)
+                        draftJob = null
+                        // Gate fix round 2, finding 3: the callback does not depend on the
+                        // notification. Rendering is isolated in its own try; the guard is claimed
+                        // only once the callback has actually been dispatched, so anything that
+                        // stops this block before that leaves the completion handler's fallback
+                        // armed.
+                        if (!reported.get()) {
+                            val finalResult = result ?: routine.resultSoFar(draftStopReason ?: "stopped")
+                            try {
+                                renderDraftFinished(finalResult)
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "Draft routine notification failed: ${e.javaClass.simpleName}")
+                            }
+                            // The completion handler runs only after this body has ended, so the
+                            // two never race: send first, then claim.
+                            ShellyResultCallback.send(applicationContext, draftPayload(finalResult, correlation))
+                            reported.set(true)
+                        }
+                    }
+                }
+            }
+        }
+        draftJob = job
+        job.invokeOnCompletion {
+            // Normally a no-op: the body's finally has reported and completed the teardown.
+            teardown.complete()
+            if (reported.compareAndSet(false, true)) {
+                Log.w(TAG, "Draft routine ended before its report; reporting it stopped")
+                ShellyResultCallback.send(
+                        applicationContext,
+                        draftPayload(routine.resultSoFar(draftStopReason ?: "stopped"), correlation),
+                )
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).post { if (draftJob === job) draftJob = null }
+        }
+        // After the receiver's answer is committed (this runs inside it, on the main thread, so a
+        // post lands after it), and only while this draft is still the current one, so it can never
+        // overwrite the finished notification.
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            if (draftJob === job && !reported.get()) {
+                try {
+                    shellyNotifier.render(ShellyRunState.Working(false, listOf(ChromeFlagDeepLink.CHROME_PACKAGE)))
+                } catch (e: Exception) {
+                    Log.w(TAG, "Draft routine notification failed: ${e.javaClass.simpleName}")
+                }
+            }
+        }
+    }
+
+    /**
+     * A foreground session (MainActivity, onboarding) is about to start: a running draft yields.
+     * It is stopped like the notification's Stop; its teardown is in the barrier, which the new
+     * session's start waits for, so the two never act on Chrome's tasks at the same time.
+     */
+    private fun stopDraftForForegroundSession() {
+        val job = draftJob ?: return
+        Log.i(TAG, "Draft routine: a foreground session is starting; stopping the draft")
+        if (draftStopReason == null) draftStopReason = "replaced-by-session"
+        job.cancel()
+    }
+
+    private fun draftPayload(
+            result: SaveDraftResult,
+            correlation: ShellyBackgroundRun.ResultCorrelation,
+    ) = ShellyResultCallback.Payload(
+            reqId = correlation.reqId,
+            nonce = correlation.nonce,
+            status = result.outcome.status,
+            summary = ShellyResultCallback.truncateSummary(result.toSummary()),
+            finishedAtMs = System.currentTimeMillis(),
+            sessionId = null,
+    )
+
+    /**
+     * The finished draft's notification only. The terminal callback is sent by the caller,
+     * independently of this (gate fix round 2, finding 3), so a rendering failure cannot suppress it.
+     */
+    private fun renderDraftFinished(result: SaveDraftResult) {
+        // Never the article text, never the page: only what the summary already says.
+        Log.i(TAG, "Draft routine: ${result.platform.wire} ${result.outcome} reason=${result.reason}")
+        val (kind, messageId) = when (result.outcome) {
+            DraftOutcome.SAVED ->
+                if (result.imagesPlaced < result.imagesExpected) {
+                    ShellyRunState.Finished.Kind.DONE to R.string.shelly_draft_saved_missing_images
+                } else {
+                    ShellyRunState.Finished.Kind.DONE to R.string.shelly_draft_saved
+                }
+            DraftOutcome.ALREADY_EXISTS -> ShellyRunState.Finished.Kind.DONE to R.string.shelly_draft_exists
+            DraftOutcome.UNCERTAIN -> ShellyRunState.Finished.Kind.FAILED to R.string.shelly_draft_uncertain
+            DraftOutcome.FAILED -> ShellyRunState.Finished.Kind.FAILED to R.string.shelly_draft_failed
+        }
+        val message = if (messageId == R.string.shelly_draft_saved_missing_images) {
+            getString(messageId, result.imagesPlaced, result.imagesExpected)
+        } else {
+            getString(messageId)
+        }
+        shellyNotifier.render(ShellyRunState.Finished(kind, message))
     }
 
     internal fun resumeShellyRun() {
@@ -958,6 +1241,38 @@ class AgentService : AccessibilityService() {
             // displaced a task; see MainDisplayTaskGuard).
             (session?.getServices()?.platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform)
                     ?.onMainDisplayForeground(packageName)
+        }
+        // A save-draft routine has no tracker, so it is checked before the tracker: the owner
+        // opening Chrome on the main display stops it at once.
+        draftJob?.let { job ->
+            val opened = ShellySaveDraft.ownerOpenedChrome(
+                    packageName,
+                    isActivityWindowClass(className),
+                    displayId == Display.DEFAULT_DISPLAY,
+            )
+            if (!opened) return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                Log.i(TAG, "Draft routine: owner opened Chrome; stopping")
+                draftStopReason = "chrome-opened"
+                job.cancel()
+                return
+            }
+            // Gate fix round 2, finding 5: below API 33 every event reports display 0, so the
+            // draft's own Chrome on its virtual display looks the same as the owner opening
+            // Chrome. Cancel only once the task list positively shows Chrome in front on display 0
+            // (read off the main thread; an unreadable list does not cancel - the routine's own
+            // ownerHasChrome checks, which fail closed, still stop it at its next step).
+            serviceScope.launch(Dispatchers.IO) {
+                val onMainDisplay = chromeTaskInFrontOnMainDisplay() == true
+                withContext(Dispatchers.Main) {
+                    if (onMainDisplay && draftJob === job) {
+                        Log.i(TAG, "Draft routine: owner opened Chrome (task list); stopping")
+                        draftStopReason = "chrome-opened"
+                        job.cancel()
+                    }
+                }
+            }
+            return
         }
         val tracker = shellyRun ?: return
         if (!isActivityWindowClass(className)) return

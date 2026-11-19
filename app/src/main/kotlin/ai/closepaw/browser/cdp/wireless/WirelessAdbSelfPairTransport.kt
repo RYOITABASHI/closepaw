@@ -165,7 +165,13 @@ class WirelessAdbSelfPairTransport(
             ?: throw IOException("getAdbWirelessPort returned -1 after enableWirelessDebugging")
         Log.i(TAG, "wireless-adb bootstrap: (b) tls port = $tlsPort")
 
-        ensurePaired(tlsPort)
+        try {
+            ensurePaired(tlsPort)
+        } catch (t: Throwable) {
+            // Without this the failure is swallowed upstream and every retry looks alike.
+            Log.w(TAG, "wireless-adb bootstrap: (c) ensurePaired failed", t)
+            throw t
+        }
         Log.i(TAG, "wireless-adb bootstrap: complete")
         return tlsPort
     }

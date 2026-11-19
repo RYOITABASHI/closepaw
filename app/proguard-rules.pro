@@ -4,6 +4,10 @@
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
+# Keep exception class names: failure reasons and logs carry the simple name
+# (a save-draft run once reported only "error-c").
+-keepnames class * extends java.lang.Throwable
+
 # Keep all annotations so reflection-based libs keep working
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 
@@ -43,6 +47,13 @@
 -keep class android.os.IShellCallback { *; }
 -keep class android.os.IRemoteCallback { *; }
 
+# Shizuku instantiates the UserService by class name in a separate app_process;
+# R8 sees no `new` and turned it into an empty abstract class (bind then timed
+# out after 10 s, so every save-draft run ended "chrome-not-reachable").
+-keep class ai.closepaw.browser.cdp.shizuku.ChromeDevtoolsUserService { <init>(...); *; }
+-keep class ai.closepaw.browser.cdp.shizuku.IChromeDevtoolsUserService { *; }
+-keep class ai.closepaw.browser.cdp.shizuku.IChromeDevtoolsUserService$* { *; }
+
 # Hidden-framework AIDL stubs regenerated in the app (virtual display path).
 # IVirtualDisplayCallback is instantiated directly and passed via reflection
 # into IDisplayManager.createVirtualDisplay — R8 must not rename it.
@@ -78,6 +89,10 @@
 -dontwarn okio.**
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
+# BouncyCastleProvider loads its SPI classes by name (org.bouncycastle.jcajce.provider.*$Mappings);
+# obfuscated, it registered an empty "BC" provider, the wireless-adb key and certificate
+# could not be made, and the save-draft fallback failed before talking to adbd.
+-keep class org.bouncycastle.** { *; }
 -dontwarn org.openjsse.**
 
 # ── Leap SDK (LiquidAI) ─────────────────────────────────────────────────

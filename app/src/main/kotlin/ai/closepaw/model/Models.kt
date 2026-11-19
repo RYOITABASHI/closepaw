@@ -121,7 +121,9 @@ data class PerceptionElement(
         val hintText: String = "",
         val isChecked: Boolean = false,
         val isCheckable: Boolean = false,
-        val rangeInfo: RangeInfo? = null
+        val rangeInfo: RangeInfo? = null,
+        /** Owning app package (from the accessibility node); empty when unknown. */
+        val packageName: String = ""
 )
 
 data class RangeInfo(

@@ -1,5 +1,7 @@
 package ai.closepaw.platform.virtualdisplay
 
+import android.content.ComponentName
+import android.content.Intent
 import android.util.Log
 import java.lang.reflect.InvocationTargetException
 
@@ -15,6 +17,7 @@ internal class ShizukuActivityTaskTransport(
                 private const val TAG = "ShizukuActivityTask"
                 /** WindowConfiguration.WINDOWING_MODE_PINNED (hidden). */
                 private const val WINDOWING_MODE_PINNED = 2
+                /** Calls through Shizuku run as the shell user, whose package this is. */
                 private const val SHELL_PACKAGE = "com.android.shell"
                 /** UserHandle.USER_CURRENT (hidden): `am start`'s default target user. */
                 private const val USER_CURRENT = -2
@@ -84,6 +87,46 @@ internal class ShizukuActivityTaskTransport(
                 }
         }
 
+        /**
+         * Save-draft routine: ids of the root tasks on [displayId] whose base, top or real
+         * activity belongs to [packageName]; null when the transport fails.
+         */
+        fun rootTaskIdsOnDisplay(displayId: Int, packageName: String): Set<Int>? {
+                if (displayId < 0) return null
+                return try {
+                        getAllRootTaskInfosOnDisplay(activityTaskManagerProxy(), displayId)
+                                .filter { packageName in taskPackages(it) }
+                                .map { rootTaskId(it) }
+                                .toSet()
+                } catch (e: Exception) {
+                        Log.w(TAG, "root task query failed: displayId=$displayId err=${e.summary()}")
+                        null
+                }
+        }
+
+        /** A root task with every package of its activities and its visibility (save-draft routine). */
+        data class RootTask(val id: Int, val packages: Set<String>, val visible: Boolean?)
+
+        /**
+         * Save-draft routine: root tasks on [displayId] with all their packages and visibility,
+         * front first; null when the transport fails. (The shared VD guard code uses
+         * [rootTasksOnDisplay] / [DisplayTask].)
+         */
+        fun rootTasksWithPackagesOnDisplay(displayId: Int): List<RootTask>? {
+                if (displayId < 0) return null
+                return try {
+                        getAllRootTaskInfosOnDisplay(activityTaskManagerProxy(), displayId).map { info ->
+                                val visible =
+                                        runCatching { info.javaClass.getField("visible").getBoolean(info) }
+                                                .getOrNull()
+                                RootTask(rootTaskId(info), taskPackages(info), visible)
+                        }
+                } catch (e: Exception) {
+                        Log.w(TAG, "root task list failed: displayId=$displayId err=${e.summary()}")
+                        null
+                }
+        }
+
         /** Move a root task to [displayId] (lands on top of it). */
         fun moveRootTaskToDisplay(taskId: Int, displayId: Int): Boolean {
                 return try {
@@ -126,6 +169,35 @@ internal class ShizukuActivityTaskTransport(
                         Log.w(TAG, "startActivityFromRecents($taskId) failed: ${e.summary()}")
                         false
                 }
+        }
+
+        /**
+         * Save-draft routine: puts a task in front on its display via
+         * IActivityTaskManager.moveTaskToFront as the shell, or [startActivityFromRecents] where
+         * that signature is not there.
+         */
+        fun moveTaskToFront(taskId: Int): Boolean {
+                val proxy = try {
+                        activityTaskManagerProxy()
+                } catch (e: Exception) {
+                        Log.w(TAG, "task to front failed: taskId=$taskId err=${e.summary()}")
+                        return false
+                }
+                val toFront = proxy.javaClass.methods.firstOrNull { m ->
+                        m.name == "moveTaskToFront" && m.parameterTypes.size == 5 &&
+                                m.parameterTypes[1] == String::class.java &&
+                                m.parameterTypes[2] == Int::class.javaPrimitiveType
+                }
+                if (toFront != null) {
+                        try {
+                                toFront.invoke(proxy, null, SHELL_PACKAGE, taskId, 0, null)
+                                Log.i(TAG, "task $taskId to front")
+                                return true
+                        } catch (e: Exception) {
+                                Log.w(TAG, "moveTaskToFront failed: taskId=$taskId err=${e.summary()}")
+                        }
+                }
+                return startActivityFromRecents(taskId, null)
         }
 
         /**
@@ -172,6 +244,16 @@ internal class ShizukuActivityTaskTransport(
                 }
         }
 
+        /** Save-draft routine: removes one task by id. False when not removed or the transport failed. */
+        fun removeRootTask(taskId: Int): Boolean {
+                return try {
+                        removeTask(activityTaskManagerProxy(), taskId)
+                } catch (e: Exception) {
+                        Log.w(TAG, "remove task failed: taskId=$taskId err=${e.summary()}")
+                        false
+                }
+        }
+
         private fun toDisplayTask(info: Any): DisplayTask {
                 val taskId = rootTaskId(info)
                 val pkg =
@@ -196,6 +278,16 @@ internal class ShizukuActivityTaskTransport(
                 } catch (_: Exception) {
                         null
                 }
+        }
+
+        private fun taskPackages(info: Any): Set<String> {
+                val packages = mutableSetOf<String>()
+                for (name in listOf("baseActivity", "topActivity", "realActivity", "origActivity")) {
+                        val component = fieldOrNull(info, name)
+                        (component as? ComponentName)?.packageName?.let(packages::add)
+                }
+                (fieldOrNull(info, "baseIntent") as? Intent)?.component?.packageName?.let(packages::add)
+                return packages
         }
 
         private fun getAllRootTaskInfosOnDisplay(proxy: Any, displayId: Int): List<Any> {

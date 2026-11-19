@@ -161,10 +161,49 @@ class TypeExecutorTest {
     }
 
     @Test
-    fun `VD mode disables tap-to-focus fallback after direct-set fails`() = runTest {
+    fun `VD mode replaces tap-to-focus with keyboard injection after direct-set fails`() = runTest {
+        val snapshot = editableSnapshot()
+        // First: direct-set fails (Compose field rejects ACTION_SET_TEXT). Second: InjectText works.
+        val platform = TypeRecordingPlatform(
+            actionResults = listOf(
+                ActionResult.Failure("ACTION_SET_TEXT failed"),
+                ActionResult.Success("Typed via keyboard injection")
+            ),
+            capturedSnapshots = listOf(snapshot),
+            allowTapToFocus = false
+        )
+
+        val outcome = TypeExecutor().execute(
+            target = Target.ElementIndex(1),
+            inputText = "Smells Like 1991",
+            clear = false,
+            snapshot = snapshot,
+            platform = platform,
+            isCancelled = { false }
+        )
+
+        assertThat(outcome).isInstanceOf(ActionOutcome.Success::class.java)
+        val success = outcome as ActionOutcome.Success
+        assertThat(success.attemptTrail).contains("TapToFocus: skipped (VD mode)")
+        assertThat(success.attemptTrail).contains("InjectText: success")
+        assertThat(platform.performedActions).hasSize(2)
+        assertThat(platform.performedActions[0]).isInstanceOf(UIAction.SetTextOnNodeAt::class.java)
+        val inject = platform.performedActions[1] as UIAction.InjectText
+        assertThat(inject.text).isEqualTo("Smells Like 1991")
+        assertThat(inject.focusX).isEqualTo(editBounds.centerX)
+        assertThat(inject.focusY).isEqualTo(editBounds.centerY)
+        // Never a TapAt / SetTextOnFocused on the VD path (IME would land on the main display).
+        assertThat(platform.performedActions.none { it is UIAction.TapAt }).isTrue()
+    }
+
+    @Test
+    fun `VD mode reports a failure when keyboard injection also fails`() = runTest {
         val snapshot = editableSnapshot()
         val platform = TypeRecordingPlatform(
-            actionResults = listOf(ActionResult.Failure("no node at point")),
+            actionResults = listOf(
+                ActionResult.Failure("no node at point"),
+                ActionResult.Failure("No focused text field on the virtual display")
+            ),
             allowTapToFocus = false
         )
 
@@ -180,8 +219,59 @@ class TypeExecutorTest {
         assertThat(outcome).isInstanceOf(ActionOutcome.Failed::class.java)
         val failed = outcome as ActionOutcome.Failed
         assertThat(failed.attemptTrail).contains("TapToFocus: skipped (VD mode)")
+        assertThat(failed.attemptTrail).contains("InjectText: No focused text field on the virtual display")
+        assertThat(failed.reason).contains("No focused text field on the virtual display")
+        assertThat(failed.reason).doesNotContain("disabled in VD mode")
+        assertThat(platform.performedActions).hasSize(2)
+    }
+
+    @Test
+    fun `VD mode falls back to keyboard injection on the focused field without a target`() = runTest {
+        val snapshot = editableSnapshot()
+        val platform = TypeRecordingPlatform(
+            actionResults = listOf(
+                ActionResult.Failure("No focused editable element found"),
+                ActionResult.Success("Typed via keyboard injection")
+            ),
+            capturedSnapshots = listOf(snapshot),
+            allowTapToFocus = false
+        )
+
+        val outcome = TypeExecutor().execute(
+            target = null,
+            inputText = "hello",
+            clear = true,
+            snapshot = snapshot,
+            platform = platform,
+            isCancelled = { false }
+        )
+
+        assertThat(outcome).isInstanceOf(ActionOutcome.Success::class.java)
+        val inject = platform.performedActions[1] as UIAction.InjectText
+        assertThat(inject.focusX).isNull()
+        assertThat(inject.focusY).isNull()
+        assertThat(inject.clear).isTrue()
+    }
+
+    @Test
+    fun `main display never uses keyboard injection without a target`() = runTest {
+        val snapshot = editableSnapshot()
+        val platform = TypeRecordingPlatform(
+            actionResults = listOf(ActionResult.Failure("No focused editable element found")),
+            allowTapToFocus = true
+        )
+
+        val outcome = TypeExecutor().execute(
+            target = null,
+            inputText = "hello",
+            clear = false,
+            snapshot = snapshot,
+            platform = platform,
+            isCancelled = { false }
+        )
+
+        assertThat(outcome).isInstanceOf(ActionOutcome.Failed::class.java)
         assertThat(platform.performedActions).hasSize(1)
-        assertThat(platform.performedActions.first()).isInstanceOf(UIAction.SetTextOnNodeAt::class.java)
     }
 
     @Test

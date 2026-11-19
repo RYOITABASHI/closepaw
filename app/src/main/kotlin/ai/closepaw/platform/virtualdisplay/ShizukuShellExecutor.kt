@@ -10,27 +10,32 @@ internal class ShizukuShellExecutor {
                 private const val TAG = "ShizukuShellExec"
         }
 
-        fun execute(command: Array<String>): Int {
+        /**
+         * @param quiet the command names private data (a URL with a publication in it), so logs
+         *   carry only the program name, and neither stderr nor exception text.
+         */
+        fun execute(command: Array<String>, quiet: Boolean = false): Int {
+                val shown = if (quiet) command.first() else command.joinToString(" ")
                 return try {
                         val process = newProcessViaShizuku(command)
                         if (!waitForProcess(process, 30, TimeUnit.SECONDS)) {
                                 process.destroy()
-                                Log.e(TAG, "Shell command timed out: ${command.joinToString(" ")}")
+                                Log.e(TAG, "Shell command timed out: $shown")
                                 return -1
                         }
                         val exitCode = process.exitValue()
                         if (exitCode != 0) {
-                                val error = process.errorStream.bufferedReader().use { it.readText() }
-                                Log.w(
-                                        TAG,
-                                        "Shell command non-zero exit ($exitCode): ${command.joinToString(" ")}\n$error"
-                                )
+                                val error =
+                                        if (quiet) ""
+                                        else process.errorStream.bufferedReader().use { it.readText() }
+                                Log.w(TAG, "Shell command non-zero exit ($exitCode): $shown\n$error")
                         } else {
-                                Log.d(TAG, "Shell command success: ${command.joinToString(" ")}")
+                                Log.d(TAG, "Shell command success: $shown")
                         }
                         exitCode
                 } catch (e: Exception) {
-                        Log.e(TAG, "Failed to execute shell command: ${command.joinToString(" ")}", e)
+                        if (quiet) Log.e(TAG, "Failed to execute shell command: $shown: ${e.javaClass.simpleName}")
+                        else Log.e(TAG, "Failed to execute shell command: $shown", e)
                         -1
                 }
         }
