@@ -10,6 +10,12 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // SPIKE (spike/shizuku-start, never merges): libadb-android + its spake2-android dep are
+        // JitPack-only. Scoped so nothing else can resolve from JitPack.
+        maven {
+            url = uri("https://jitpack.io")
+            content { includeGroupByRegex("com\\.github\\.MuntashirAkon(\\..*)?") }
+        }
     }
 }
 

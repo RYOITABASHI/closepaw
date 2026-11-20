@@ -234,7 +234,19 @@ dependencies {
     // Conscrypt — bundled (vs reflection on platform) for the TLS exporter API used by the
     // ADB pairing handshake. Platform Conscrypt is hidden API and HiddenApiBypass falls flat
     // on certain Android builds; the bundled AAR (~3MB) gives us a stable Conscrypt.exportKeyingMaterial.
-    implementation("org.conscrypt:conscrypt-android:2.5.2")
+    // SPIKE (spike/shizuku-start): 2.5.2 -> 2.5.3, the version libadb-android documents.
+    implementation("org.conscrypt:conscrypt-android:2.5.3")
+
+    // SPIKE (spike/shizuku-start, never merges): libadb-android for the on-device
+    // wireless-debugging pair/connect/shell probe (ai.closepaw.spike.ShizukuStartSpike).
+    // Dual-licensed GPL-3.0-or-later OR Apache-2.0 — we take it under Apache-2.0.
+    // Transitively pulls com.github.MuntashirAkon.spake2-java:spake2-android (LGPL-3.0, JNI) —
+    // the dependency the main line deliberately removed; acceptable only on this spike branch.
+    // Its bcprov-jdk15to18 is excluded: the app already ships bcprov/bcpkix-jdk18on 1.84 (same
+    // org.bouncycastle.* classes), and both artifacts together fail checkDuplicateClasses.
+    implementation("com.github.MuntashirAkon:libadb-android:3.1.1") {
+        exclude(group = "org.bouncycastle")
+    }
 
     // Testing
     testImplementation("junit:junit:4.13.2")

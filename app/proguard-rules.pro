@@ -144,3 +144,12 @@
 -dontwarn javax.lang.model.**
 -dontwarn java.lang.reflect.AnnotatedParameterizedType
 -dontwarn java.lang.reflect.AnnotatedType
+
+# ── SPIKE (spike/shizuku-start, never merges): libadb-android ──────────────
+# libadb resolves Conscrypt reflectively (Class.forName("org.conscrypt.Conscrypt") /
+# "org.conscrypt.OpenSSLProvider", getMethod("exportKeyingMaterial", ...)), and spake2-android
+# binds JNI natives by class/method name.
+-keep class org.conscrypt.Conscrypt { *; }
+-keep class org.conscrypt.OpenSSLProvider { *; }
+-keep class io.github.muntashirakon.** { *; }
+-dontwarn io.github.muntashirakon.**

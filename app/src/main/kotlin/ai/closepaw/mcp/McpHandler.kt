@@ -75,8 +75,9 @@ class McpHandler(
     /** SPIKE: null (default) = no spike tool and no `spike` status field. */
     private val spike: McpSpikeHook? = null,
 ) {
-    private val tools: JsonArray = if (spike == null) TOOLS else JsonArray(TOOLS + SPIKE_TOOL)
-    private val toolNames: Set<String> = if (spike == null) TOOL_NAMES else TOOL_NAMES + TOOL_SPIKE_SELF_REINSTALL
+    private val tools: JsonArray = if (spike == null) TOOLS else JsonArray(TOOLS + SPIKE_TOOL + SPIKE_START_TOOL)
+    private val toolNames: Set<String> =
+        if (spike == null) TOOL_NAMES else TOOL_NAMES + TOOL_SPIKE_SELF_REINSTALL + TOOL_SPIKE_SHIZUKU_START
 
     private val sessionsLock = Any()
 
@@ -189,6 +190,7 @@ class McpHandler(
             TOOL_STOP_RUN -> stopRun(args)
             TOOL_STATUS -> status()
             TOOL_SPIKE_SELF_REINSTALL -> spikeSelfReinstall()
+            TOOL_SPIKE_SHIZUKU_START -> spikeShizukuStart(args)
             else -> error("unreachable")
         }
         audit("mcp tool=$name handle=${out.handle ?: "-"} outcome=${out.outcome}")
@@ -251,6 +253,9 @@ class McpHandler(
                 put("spike", runCatching { hook.status() }.getOrElse { e ->
                     buildJsonObject { put("error", e.javaClass.simpleName) }
                 })
+                put("spikeStart", runCatching { hook.shizukuStartStatus() }.getOrElse { e ->
+                    buildJsonObject { put("error", e.javaClass.simpleName) }
+                })
             }
         }))
     }
@@ -261,6 +266,19 @@ class McpHandler(
         val current = hook.startSelfReinstall()
         val stage = ((current["current"] as? JsonObject)?.get("stage") as? JsonPrimitive)?.contentOrNull
         return ToolOutcome(null, "spike:${stage ?: "none"}", toolOk(current))
+    }
+
+    /** SPIKE: Shizuku-start probe. The audit line carries only the stage, never the arguments. */
+    private fun spikeShizukuStart(args: JsonObject): ToolOutcome {
+        val hook = spike ?: return toolError(null, "unknown_tool", "spike tool not enabled")
+        val current = runCatching { hook.startShizukuStart(args) }.getOrElse { e ->
+            return toolError(null, "spike_error", e.javaClass.simpleName)
+        }
+        (current["invalidArgs"] as? JsonPrimitive)?.contentOrNull?.let { msg ->
+            return toolError(null, "invalid_params", msg)
+        }
+        val stage = ((current["current"] as? JsonObject)?.get("stage") as? JsonPrimitive)?.contentOrNull
+        return ToolOutcome(null, "spike_start:${stage ?: "none"}", toolOk(current))
     }
 
     private fun handleArg(args: JsonObject): String? =
@@ -351,6 +369,7 @@ class McpHandler(
         const val TOOL_STATUS = "closepaw_status"
         val TOOL_NAMES = setOf(TOOL_RUN_GOAL, TOOL_GET_RUN_RESULT, TOOL_STOP_RUN, TOOL_STATUS)
         const val TOOL_SPIKE_SELF_REINSTALL = "spike_self_reinstall"
+        const val TOOL_SPIKE_SHIZUKU_START = "spike_shizuku_start"
 
         private val CODE_RE = Regex("^[a-z_]{1,40}$|^[A-Z_]{1,40}$")
         private val JSON = Json { ignoreUnknownKeys = true }
@@ -437,6 +456,38 @@ class McpHandler(
             putJsonObject("inputSchema") {
                 put("type", "object")
                 putJsonObject("properties") {}
+                put("additionalProperties", false)
+            }
+        }
+
+        /** SPIKE tool, listed only when the handler has a [McpSpikeHook]. */
+        val SPIKE_START_TOOL: JsonObject = buildJsonObject {
+            put("name", TOOL_SPIKE_SHIZUKU_START)
+            put(
+                "description",
+                "SPIKE (throwaway probe, not a product feature): pairs with / connects to this " +
+                    "device's own wireless-debugging adbd on 127.0.0.1, runs Shizuku's official " +
+                    "start.sh as the shell user and checks that the Shizuku binder answers. Returns " +
+                    "the current stage at once; progress is in closepaw_status.spikeStart. pairPort + " +
+                    "pairCode are only needed for the first pairing; pairCode is never recorded.",
+            )
+            putJsonObject("inputSchema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("pairPort") {
+                        put("type", "integer")
+                        put("description", "Wireless debugging pairing port (with pairCode; first run only).")
+                    }
+                    putJsonObject("pairCode") {
+                        put("type", "string")
+                        put("description", "6-digit Wireless debugging pairing code (with pairPort).")
+                    }
+                    putJsonObject("connectPort") {
+                        put("type", "integer")
+                        put("description", "Wireless debugging connect port (IP address & Port screen).")
+                    }
+                }
+                putJsonArray("required") { add(JsonPrimitive("connectPort")) }
                 put("additionalProperties", false)
             }
         }
