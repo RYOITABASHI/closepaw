@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="ai.closepaw.vdprobe" android:versionCode="1" android:versionName="1.0">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+    <application android:label="ClosePaw VD Probe" android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:allowBackup="false">
+        <activity android:name=".ProbeActivity" android:exported="true"
+            android:permission="android.permission.DUMP" android:resizeableActivity="true"
+            android:excludeFromRecents="true" />
+    </application>
+</manifest>

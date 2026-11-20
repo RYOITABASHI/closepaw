@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="ai.closepaw.spike.vd.VdRendezvousProvider"
+            android:authorities="${applicationId}.spike.vd"
+            android:exported="true" />
+    </application>
+</manifest>

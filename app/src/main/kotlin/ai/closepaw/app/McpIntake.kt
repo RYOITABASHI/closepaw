@@ -12,6 +12,7 @@ import ai.closepaw.mcp.McpSettingsStore
 import ai.closepaw.mcp.reconcileLateStart
 import ai.closepaw.onboarding.OnboardingStore
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
+import ai.closepaw.spike.vd.VdPhase0Tool
 import ai.closepaw.update.SelfUpdate
 import android.content.Context
 import android.os.Handler
@@ -222,6 +223,7 @@ internal object McpServerController {
             serverVersion = BuildConfig.VERSION_NAME,
             adbStatus = { McpHandler.AdbStatus(channel.paired, channel.isConnected(), channel.lastPort) },
             selfUpdate = SelfUpdate.mcpHook(app, channel),
+            vdPhase0 = VdPhase0Tool(app, channel),
         )
         val s = McpHttpServer(h, onError = { Log.w(TAG, it) })
         try {

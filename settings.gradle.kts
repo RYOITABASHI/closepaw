@@ -20,3 +20,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "ClosePaw"
 include(":app")
+include(":vdhelper")

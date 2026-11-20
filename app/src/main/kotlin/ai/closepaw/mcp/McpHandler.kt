@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -15,6 +16,12 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+
+/** Optional typed entry point for the VD Phase 0 spike. */
+interface McpVdPhase0 {
+    fun start(appDeathCheck: Boolean): JsonObject
+    fun status(): JsonObject
+}
 
 /** One HTTP request as the transport hands it over. Header names are lowercase. */
 data class McpHttpRequest(
@@ -75,11 +82,20 @@ class McpHandler(
     private val newSessionId: () -> String = { UUID.randomUUID().toString() },
     private val adbStatus: () -> AdbStatus = { AdbStatus(false, false, null) },
     private val selfUpdate: McpSelfUpdate? = null,
+    private val vdPhase0: McpVdPhase0? = null,
 ) {
     data class AdbStatus(val paired: Boolean, val connected: Boolean, val lastPort: Int?)
 
-    private val tools = if (selfUpdate == null) TOOLS else JsonArray(TOOLS + SELF_UPDATE_TOOL)
-    private val toolNames = if (selfUpdate == null) TOOL_NAMES else TOOL_NAMES + TOOL_SELF_UPDATE
+    private val tools = JsonArray(buildList {
+        addAll(TOOLS)
+        if (selfUpdate != null) add(SELF_UPDATE_TOOL)
+        if (vdPhase0 != null) add(VD_PHASE0_TOOL)
+    })
+    private val toolNames = buildSet {
+        addAll(TOOL_NAMES)
+        if (selfUpdate != null) add(TOOL_SELF_UPDATE)
+        if (vdPhase0 != null) add(TOOL_VD_PHASE0)
+    }
     private val sessionsLock = Any()
 
     /** Live session ids, access-ordered so the eldest is evicted first. */
@@ -178,6 +194,15 @@ class McpHandler(
                     audit("mcp tool=$name handle=- outcome=invalid_params")
                     return jsonResponse(200, rpcError(id, INVALID_PARAMS, "self_update arguments must be an object"))
                 }
+                if (name == TOOL_VD_PHASE0 && arguments != null &&
+                    (arguments !is JsonObject || arguments.any { (key, value) ->
+                        key != "appDeathCheck" || value !is JsonPrimitive ||
+                            value.isString || value.booleanOrNull == null
+                    })
+                ) {
+                    audit("mcp tool=$name handle=- outcome=invalid_params")
+                    return jsonResponse(200, rpcError(id, INVALID_PARAMS, "Expected optional boolean appDeathCheck"))
+                }
                 val args = arguments as? JsonObject ?: JsonObject(emptyMap())
                 jsonResponse(200, rpcResult(id, callTool(name, args)))
             }
@@ -196,6 +221,9 @@ class McpHandler(
             TOOL_STOP_RUN -> stopRun(args)
             TOOL_STATUS -> status()
             TOOL_SELF_UPDATE -> selfUpdate(args)
+            TOOL_VD_PHASE0 -> ToolOutcome(null, "ok", toolOk(checkNotNull(vdPhase0).start(
+                (args["appDeathCheck"] as? JsonPrimitive)?.booleanOrNull == true,
+            )))
             else -> error("unreachable")
         }
         audit("mcp tool=$name handle=${out.handle ?: "-"} outcome=${out.outcome}")
@@ -260,6 +288,7 @@ class McpHandler(
                 put("connected", adb.connected)
                 put("lastPort", adb.lastPort?.let { JsonPrimitive(it) } ?: JsonNull)
             }
+            vdPhase0?.status()?.let { put("spikeVd", it) }
             selfUpdate?.status()?.let {
                 put("selfUpdateAdb", it.getValue("selfUpdateAdb"))
                 put("selfUpdate", JsonObject(it - "selfUpdateAdb"))
@@ -367,6 +396,7 @@ class McpHandler(
         const val TOOL_STOP_RUN = "stop_run"
         const val TOOL_STATUS = "closepaw_status"
         const val TOOL_SELF_UPDATE = "self_update"
+        const val TOOL_VD_PHASE0 = "spike_vd_phase0"
         val TOOL_NAMES = setOf(TOOL_RUN_GOAL, TOOL_GET_RUN_RESULT, TOOL_STOP_RUN, TOOL_STATUS)
 
         private val CODE_RE = Regex("^[a-z_]{1,40}$|^[A-Z_]{1,40}$")
@@ -440,6 +470,20 @@ class McpHandler(
                     put("additionalProperties", false)
                 }
             })
+        }
+        private val VD_PHASE0_TOOL = buildJsonObject {
+            put("name", TOOL_VD_PHASE0)
+            put("description", "Run the VD Phase 0 spike with the disposable probe APK. Poll closepaw_status.")
+            putJsonObject("inputSchema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("appDeathCheck") {
+                        put("type", "boolean")
+                        put("description", "Pause after P1 for a supervised ClosePaw-only process death.")
+                    }
+                }
+                put("additionalProperties", false)
+            }
         }
         private val SELF_UPDATE_TOOL = buildJsonObject {
             put("name", TOOL_SELF_UPDATE)
