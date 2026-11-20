@@ -10,12 +10,14 @@ internal class ShizukuServiceProxyProvider {
         @Volatile private var cachedInputProxy: Any? = null
         @Volatile private var cachedActivityTaskProxy: Any? = null
         @Volatile private var cachedWindowManagerProxy: Any? = null
+        @Volatile private var cachedPackageManagerProxy: Any? = null
 
         fun clear() {
                 cachedDisplayProxy = null
                 cachedInputProxy = null
                 cachedActivityTaskProxy = null
                 cachedWindowManagerProxy = null
+                cachedPackageManagerProxy = null
         }
 
         fun displayManagerProxy(): Any {
@@ -59,6 +61,17 @@ internal class ShizukuServiceProxyProvider {
                                 ?: throw IllegalStateException("Cannot obtain window service binder")
                 val proxy = asInterface(binder, "android.view.IWindowManager\$Stub")
                 cachedWindowManagerProxy = proxy
+                return proxy
+        }
+
+        /** Shizuku-wrapped IPackageManager for the self-update fallback. */
+        fun packageManagerProxy(): Any {
+                cachedPackageManagerProxy?.let { return it }
+                val binder =
+                        SystemServiceHelper.getSystemService("package")
+                                ?: throw IllegalStateException("Cannot obtain package service binder")
+                val proxy = asInterface(binder, "android.content.pm.IPackageManager\$Stub")
+                cachedPackageManagerProxy = proxy
                 return proxy
         }
 

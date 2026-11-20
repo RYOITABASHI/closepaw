@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -72,7 +73,13 @@ class McpHandler(
     private val audit: (String) -> Unit,
     private val serverVersion: String,
     private val newSessionId: () -> String = { UUID.randomUUID().toString() },
+    private val adbStatus: () -> AdbStatus = { AdbStatus(false, false, null) },
+    private val selfUpdate: McpSelfUpdate? = null,
 ) {
+    data class AdbStatus(val paired: Boolean, val connected: Boolean, val lastPort: Int?)
+
+    private val tools = if (selfUpdate == null) TOOLS else JsonArray(TOOLS + SELF_UPDATE_TOOL)
+    private val toolNames = if (selfUpdate == null) TOOL_NAMES else TOOL_NAMES + TOOL_SELF_UPDATE
     private val sessionsLock = Any()
 
     /** Live session ids, access-ordered so the eldest is evicted first. */
@@ -159,14 +166,19 @@ class McpHandler(
 
         return when (method) {
             "ping" -> jsonResponse(200, rpcResult(id, JsonObject(emptyMap())))
-            "tools/list" -> jsonResponse(200, rpcResult(id, buildJsonObject { put("tools", TOOLS) }))
+            "tools/list" -> jsonResponse(200, rpcResult(id, buildJsonObject { put("tools", tools) }))
             "tools/call" -> {
                 val name = (params?.get("name") as? JsonPrimitive)?.contentOrNull
-                if (name == null || name !in TOOL_NAMES) {
+                if (name == null || name !in toolNames) {
                     audit("mcp tool=${sanitize(name)} handle=- outcome=unknown_tool")
                     return jsonResponse(200, rpcError(id, INVALID_PARAMS, "unknown tool: ${sanitize(name)}"))
                 }
-                val args = params?.get("arguments") as? JsonObject ?: JsonObject(emptyMap())
+                val arguments = params?.get("arguments")
+                if (name == TOOL_SELF_UPDATE && arguments != null && arguments !is JsonObject) {
+                    audit("mcp tool=$name handle=- outcome=invalid_params")
+                    return jsonResponse(200, rpcError(id, INVALID_PARAMS, "self_update arguments must be an object"))
+                }
+                val args = arguments as? JsonObject ?: JsonObject(emptyMap())
                 jsonResponse(200, rpcResult(id, callTool(name, args)))
             }
             else -> jsonResponse(200, rpcError(id, METHOD_NOT_FOUND, "method not found: ${sanitize(method)}"))
@@ -183,6 +195,7 @@ class McpHandler(
             TOOL_GET_RUN_RESULT -> getRunResult(args)
             TOOL_STOP_RUN -> stopRun(args)
             TOOL_STATUS -> status()
+            TOOL_SELF_UPDATE -> selfUpdate(args)
             else -> error("unreachable")
         }
         audit("mcp tool=$name handle=${out.handle ?: "-"} outcome=${out.outcome}")
@@ -241,7 +254,30 @@ class McpHandler(
             put("shizukuReady", s.shizukuReady)
             put("accessibilityReady", s.accessibilityReady)
             put("activeRuns", registry.activeCount())
+            val adb = adbStatus()
+            putJsonObject("adbChannel") {
+                put("paired", adb.paired)
+                put("connected", adb.connected)
+                put("lastPort", adb.lastPort?.let { JsonPrimitive(it) } ?: JsonNull)
+            }
+            selfUpdate?.status()?.let {
+                put("selfUpdateAdb", it.getValue("selfUpdateAdb"))
+                put("selfUpdate", JsonObject(it - "selfUpdateAdb"))
+            }
         }))
+    }
+
+    private fun selfUpdate(args: JsonObject): ToolOutcome {
+        val update = checkNotNull(selfUpdate)
+        val port = args["connectPort"]?.let {
+            (it as? JsonPrimitive)?.takeUnless { value -> value.isString }?.intOrNull
+                ?.takeIf { value -> value in 1..65535 }
+                ?: return toolError(null, "invalid_params", "connectPort must be an integer from 1 to 65535")
+        }
+        if (args.keys.any { it != "connectPort" }) {
+            return toolError(null, "invalid_params", "Unexpected self_update argument")
+        }
+        return ToolOutcome(null, "ok", toolOk(update.start(port)))
     }
 
     private fun handleArg(args: JsonObject): String? =
@@ -330,6 +366,7 @@ class McpHandler(
         const val TOOL_GET_RUN_RESULT = "get_run_result"
         const val TOOL_STOP_RUN = "stop_run"
         const val TOOL_STATUS = "closepaw_status"
+        const val TOOL_SELF_UPDATE = "self_update"
         val TOOL_NAMES = setOf(TOOL_RUN_GOAL, TOOL_GET_RUN_RESULT, TOOL_STOP_RUN, TOOL_STATUS)
 
         private val CODE_RE = Regex("^[a-z_]{1,40}$|^[A-Z_]{1,40}$")
@@ -395,7 +432,7 @@ class McpHandler(
                 put("name", TOOL_STATUS)
                 put(
                     "description",
-                    "Returns {version, serverOn, shizukuReady, accessibilityReady, activeRuns}.",
+                    "Returns service readiness, active runs, adbChannel, and self-update progress.",
                 )
                 putJsonObject("inputSchema") {
                     put("type", "object")
@@ -403,6 +440,22 @@ class McpHandler(
                     put("additionalProperties", false)
                 }
             })
+        }
+        private val SELF_UPDATE_TOOL = buildJsonObject {
+            put("name", TOOL_SELF_UPDATE)
+            put("description", "Reinstall this ClosePaw build from its release APK. Poll closepaw_status for progress.")
+            putJsonObject("inputSchema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("connectPort") {
+                        put("type", "integer")
+                        put("minimum", 1)
+                        put("maximum", 65535)
+                        put("description", "Wireless debugging connect port to try if automatic discovery fails.")
+                    }
+                }
+                put("additionalProperties", false)
+            }
         }
     }
 }
