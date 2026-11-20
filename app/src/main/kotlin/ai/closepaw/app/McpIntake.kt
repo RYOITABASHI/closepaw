@@ -1,6 +1,7 @@
 package ai.closepaw.app
 
 import ai.closepaw.BuildConfig
+import ai.closepaw.adb.AdbShellChannel
 import ai.closepaw.llm.ModelCatalogRepositoryHolder
 import ai.closepaw.mcp.McpBackend
 import ai.closepaw.mcp.McpHandler
@@ -11,6 +12,7 @@ import ai.closepaw.mcp.McpSettingsStore
 import ai.closepaw.mcp.reconcileLateStart
 import ai.closepaw.onboarding.OnboardingStore
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
+import ai.closepaw.update.SelfUpdate
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -182,6 +184,7 @@ internal class AgentServiceMcpBackend(
  * thread (Keystore-backed token read, socket bind).
  */
 internal object McpServerController {
+    private var adbChannel: AdbShellChannel? = null
     private const val TAG = "ClosePawMcp"
     private const val AUDIT_TAG = "ClosePawMcpAudit"
 
@@ -210,12 +213,15 @@ internal object McpServerController {
         }
         if (server?.isRunning == true) return
         token = store.tokenOrCreate()
+        val channel = adbChannel ?: AdbShellChannel(app).also { adbChannel = it }
         val h = McpHandler(
             expectedToken = { token },
             registry = registry,
             backend = AgentServiceMcpBackend(app, registry),
             audit = { line -> Log.i(AUDIT_TAG, line) },
             serverVersion = BuildConfig.VERSION_NAME,
+            adbStatus = { McpHandler.AdbStatus(channel.paired, channel.isConnected(), channel.lastPort) },
+            selfUpdate = SelfUpdate.mcpHook(app, channel),
         )
         val s = McpHttpServer(h, onError = { Log.w(TAG, it) })
         try {

@@ -104,6 +104,15 @@
             android:name=".app.ShellyRunActionReceiver"
             android:exported="false" />
 
+        <!-- Result of the self-update PackageInstaller session. -->
+        <receiver
+            android:name=".update.UpdateInstallResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="ai.closepaw.action.SPIKE_INSTALL_RESULT" />
+            </intent-filter>
+        </receiver>
+
         <!-- Shizuku content provider for binder forwarding -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

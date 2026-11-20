@@ -234,7 +234,13 @@ dependencies {
     // Conscrypt — bundled (vs reflection on platform) for the TLS exporter API used by the
     // ADB pairing handshake. Platform Conscrypt is hidden API and HiddenApiBypass falls flat
     // on certain Android builds; the bundled AAR (~3MB) gives us a stable Conscrypt.exportKeyingMaterial.
-    implementation("org.conscrypt:conscrypt-android:2.5.2")
+    implementation("org.conscrypt:conscrypt-android:2.5.3")
+
+    // Embedded wireless ADB transport. Use the Apache-2.0 option for libadb-android.
+    // Exclude its BouncyCastle artifacts because the app already provides BouncyCastle 1.84.
+    implementation("com.github.MuntashirAkon:libadb-android:3.1.1") {
+        exclude(group = "org.bouncycastle")
+    }
 
     // Testing
     testImplementation("junit:junit:4.13.2")
