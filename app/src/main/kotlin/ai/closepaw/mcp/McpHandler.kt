@@ -72,7 +72,12 @@ class McpHandler(
     private val audit: (String) -> Unit,
     private val serverVersion: String,
     private val newSessionId: () -> String = { UUID.randomUUID().toString() },
+    /** SPIKE: null (default) = no spike tool and no `spike` status field. */
+    private val spike: McpSpikeHook? = null,
 ) {
+    private val tools: JsonArray = if (spike == null) TOOLS else JsonArray(TOOLS + SPIKE_TOOL)
+    private val toolNames: Set<String> = if (spike == null) TOOL_NAMES else TOOL_NAMES + TOOL_SPIKE_SELF_REINSTALL
+
     private val sessionsLock = Any()
 
     /** Live session ids, access-ordered so the eldest is evicted first. */
@@ -159,10 +164,10 @@ class McpHandler(
 
         return when (method) {
             "ping" -> jsonResponse(200, rpcResult(id, JsonObject(emptyMap())))
-            "tools/list" -> jsonResponse(200, rpcResult(id, buildJsonObject { put("tools", TOOLS) }))
+            "tools/list" -> jsonResponse(200, rpcResult(id, buildJsonObject { put("tools", tools) }))
             "tools/call" -> {
                 val name = (params?.get("name") as? JsonPrimitive)?.contentOrNull
-                if (name == null || name !in TOOL_NAMES) {
+                if (name == null || name !in toolNames) {
                     audit("mcp tool=${sanitize(name)} handle=- outcome=unknown_tool")
                     return jsonResponse(200, rpcError(id, INVALID_PARAMS, "unknown tool: ${sanitize(name)}"))
                 }
@@ -183,6 +188,7 @@ class McpHandler(
             TOOL_GET_RUN_RESULT -> getRunResult(args)
             TOOL_STOP_RUN -> stopRun(args)
             TOOL_STATUS -> status()
+            TOOL_SPIKE_SELF_REINSTALL -> spikeSelfReinstall()
             else -> error("unreachable")
         }
         audit("mcp tool=$name handle=${out.handle ?: "-"} outcome=${out.outcome}")
@@ -241,7 +247,20 @@ class McpHandler(
             put("shizukuReady", s.shizukuReady)
             put("accessibilityReady", s.accessibilityReady)
             put("activeRuns", registry.activeCount())
+            spike?.let { hook ->
+                put("spike", runCatching { hook.status() }.getOrElse { e ->
+                    buildJsonObject { put("error", e.javaClass.simpleName) }
+                })
+            }
         }))
+    }
+
+    /** SPIKE: only reachable when [spike] is set (the tool is not listed otherwise). */
+    private fun spikeSelfReinstall(): ToolOutcome {
+        val hook = spike ?: return toolError(null, "unknown_tool", "spike tool not enabled")
+        val current = hook.startSelfReinstall()
+        val stage = ((current["current"] as? JsonObject)?.get("stage") as? JsonPrimitive)?.contentOrNull
+        return ToolOutcome(null, "spike:${stage ?: "none"}", toolOk(current))
     }
 
     private fun handleArg(args: JsonObject): String? =
@@ -331,6 +350,7 @@ class McpHandler(
         const val TOOL_STOP_RUN = "stop_run"
         const val TOOL_STATUS = "closepaw_status"
         val TOOL_NAMES = setOf(TOOL_RUN_GOAL, TOOL_GET_RUN_RESULT, TOOL_STOP_RUN, TOOL_STATUS)
+        const val TOOL_SPIKE_SELF_REINSTALL = "spike_self_reinstall"
 
         private val CODE_RE = Regex("^[a-z_]{1,40}$|^[A-Z_]{1,40}$")
         private val JSON = Json { ignoreUnknownKeys = true }
@@ -403,6 +423,22 @@ class McpHandler(
                     put("additionalProperties", false)
                 }
             })
+        }
+
+        /** SPIKE tool, listed only when the handler has a [McpSpikeHook]. */
+        val SPIKE_TOOL: JsonObject = buildJsonObject {
+            put("name", TOOL_SPIKE_SELF_REINSTALL)
+            put(
+                "description",
+                "SPIKE: reinstalls this ClosePaw build from its own release APK via the Shizuku " +
+                    "PackageInstaller session and returns the current stage at once. Progress (also " +
+                    "across the restart) is in closepaw_status.spike.",
+            )
+            putJsonObject("inputSchema") {
+                put("type", "object")
+                putJsonObject("properties") {}
+                put("additionalProperties", false)
+            }
         }
     }
 }

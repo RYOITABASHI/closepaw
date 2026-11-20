@@ -104,6 +104,15 @@
             android:name=".app.ShellyRunActionReceiver"
             android:exported="false" />
 
+        <!-- SPIKE (self-update probe, throwaway): PackageInstaller commit result, own PendingIntent only. -->
+        <receiver
+            android:name=".spike.SpikeInstallResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="ai.closepaw.action.SPIKE_INSTALL_RESULT" />
+            </intent-filter>
+        </receiver>
+
         <!-- Shizuku content provider for binder forwarding -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

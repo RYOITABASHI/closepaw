@@ -11,6 +11,7 @@ import ai.closepaw.mcp.McpSettingsStore
 import ai.closepaw.mcp.reconcileLateStart
 import ai.closepaw.onboarding.OnboardingStore
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
+import ai.closepaw.spike.SelfUpdateSpike
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -216,6 +217,7 @@ internal object McpServerController {
             backend = AgentServiceMcpBackend(app, registry),
             audit = { line -> Log.i(AUDIT_TAG, line) },
             serverVersion = BuildConfig.VERSION_NAME,
+            spike = SelfUpdateSpike.mcpHook(app), // SPIKE: self-reinstall probe (throwaway branch)
         )
         val s = McpHttpServer(h, onError = { Log.w(TAG, it) })
         try {
