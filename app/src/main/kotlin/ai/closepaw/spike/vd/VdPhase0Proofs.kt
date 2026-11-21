@@ -11,6 +11,8 @@ import android.os.SystemClock
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 
+private const val ACTIVITIES = "dumpsys activity activities"
+
 internal class VdPhase0Proofs(
     context: Context,
     private val shell: AdbShellChannel,
@@ -187,22 +189,38 @@ internal class VdPhase0Proofs(
         val helperPsName = processes?.get(display.helperPid)
         val expectedHelperName = session.launchInfo?.stagingDir?.substringAfterLast('/')
         val helperNameMatched = sessionOpen && helperPsName == expectedHelperName
-        val activities = if (helperNameMatched) {
-            parseActivities(exec("armedDisplays", ACTIVITIES))
+        val fixturePids = if (helperNameMatched) {
+            exec("armedFixturePid", "pidof $FIXTURE_PACKAGE").completeOutput()
+                ?.trim()?.split(Regex("\\s+"))?.mapNotNull(String::toIntOrNull)
         } else null
-        val displaysSeen = activities?.displays
+        val fixtureProcessAlive = fixturePids?.any { it > 0 } == true
+        val freshWindow = if (fixtureProcessAlive) window("vd", display.displayId) else null
+        val fixtureInstanceLive = freshWindow != null &&
+            freshWindow.instance == vdWindow.instance && freshWindow.task == vdWindow.task
+        val roots = if (fixtureInstanceLive) parseStack(exec("armedStack", STACK)) else null
+        val stackParseOk = roots != null
+        val displaysSeen = roots?.map(StackRoot::display)?.toSet()
         val vdDisplayPresent = displaysSeen?.contains(display.displayId) == true
+        val vdFixturePresent = roots?.any {
+            it.display == display.displayId && vdWindow.task in it.childIds
+        } == true
         evidence.put("endpointCheck", buildJsonObject {
             put("sessionOpen", sessionOpen)
             put("processesParseOk", processes != null)
             put("helperPsName", helperPsName)
             put("expectedHelperName", expectedHelperName)
             put("helperNameMatched", helperNameMatched)
-            put("activitiesParseOk", activities != null)
+            put("fixturePids", fixturePids?.let { JsonArray(it.map(::JsonPrimitive)) } ?: JsonNull)
+            put("fixtureProcessAlive", fixtureProcessAlive)
+            put("freshInstance", freshWindow?.instance)
+            put("fixtureInstanceLive", fixtureInstanceLive)
+            put("stackParseOk", stackParseOk)
             put("displaysSeen", displaysSeen?.let(::ids) ?: JsonNull)
             put("vdDisplayPresent", vdDisplayPresent)
+            put("vdFixturePresent", vdFixturePresent)
+            put("vdWindowTask", vdWindow.task)
         })
-        check(sessionOpen && helperNameMatched && vdDisplayPresent) {
+        check(sessionOpen && helperNameMatched && fixtureProcessAlive && fixtureInstanceLive && vdFixturePresent) {
             "Endpoints were not live at the app-death observation boundary"
         }
         evidence.put("appDeathCheckRequested", appDeathCheck)
@@ -619,7 +637,6 @@ internal class VdPhase0Proofs(
         }.digest().joinToString("") { "%02x".format(it) }
         const val WINDOW_DISPLAYS = "dumpsys window displays"
         const val STACK = "am stack list"
-        const val ACTIVITIES = "dumpsys activity activities"
         val REQUIRED_FLAGS = setOf(
             "PUBLIC", "SECURE", "SUPPORTS_TOUCH", "SHOULD_SHOW_SYSTEM_DECORATIONS", "TRUSTED", "OWN_DISPLAY_GROUP",
         )
