@@ -44,9 +44,10 @@ private val activitiesFilter = """
 """.trimIndent()
 
 internal fun activitiesObservationCommand(stagingDir: String): String {
-    val file = "'${stagingDir.replace("'", "'\\''")}/observe-activities.txt'"
+    val escapedStagingDir = stagingDir.replace("'", "'\\''")
+    val file = "'$escapedStagingDir/observe-activities.txt'"
     val filter = activitiesFilter.replace("'", "'\\''")
-    return "dumpsys activity activities > $file && awk '$filter' $file"
+    return "mkdir -p '$escapedStagingDir' && dumpsys activity activities > $file && awk '$filter' $file"
 }
 
 internal class VdPhase0Proofs(

@@ -25,6 +25,13 @@ android {
         versionName = project.findProperty("VERSION_NAME") as String
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            // The shelly variant ships only to the owner's arm64 Fold. Carrying the
+            // x86_64 / x86 / armeabi-v7a native libs (~71MB of the 152MB APK) only
+            // slows every deployment, so package arm64-v8a only.
+            abiFilters += "arm64-v8a"
+        }
     }
 
     // Release signing reads from environment so the keystore + password never

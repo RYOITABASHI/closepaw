@@ -9,6 +9,16 @@ import org.junit.rules.TemporaryFolder
 
 class VdEvidenceTest {
     @get:Rule val activityFiles = TemporaryFolder()
+
+    @Test
+    fun activitiesObservationCreatesQuotedStagingDirectoryBeforeDump() {
+        val command = activitiesObservationCommand("/data/local/tmp/run's staging")
+        val prefix = "mkdir -p '/data/local/tmp/run'\\''s staging' && " +
+            "dumpsys activity activities > '/data/local/tmp/run'\\''s staging/observe-activities.txt' && "
+
+        assertTrue("Expected the staging directory to be created before the dump", command.startsWith(prefix))
+    }
+
     @Test
     fun persistedVerdictRequiresEveryP1Observation() {
         val frame = buildJsonObject { put("digest", "captured-fixture-digest") }
