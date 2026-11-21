@@ -65,8 +65,10 @@ internal class VdPhase0Tool(context: Context, private val shell: AdbShellChannel
         scope.launch {
             try {
                 action()
-            } catch (error: Exception) {
-                Log.w("VdPhase0Tool", "Spike worker terminated: ${error.javaClass.simpleName}")
+            } catch (error: Throwable) {
+                runCatching {
+                    Log.e("VdPhase0Tool", "Spike worker terminated: ${error.javaClass.name}: ${error.message}", error)
+                }
             } finally {
                 running.set(false)
             }

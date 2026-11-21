@@ -70,11 +70,13 @@ internal class VdPhase0Proofs(
                     val timeout = if (stage == VdStage.PROOF_1 && appDeathCheck) 150_000L else 70_000L
                     withTimeout(timeout) { action() }
                 } catch (error: TimeoutCancellationException) {
+                    currentCoroutineContext().ensureActive()
                     outcome = VdOutcome.FAILED
                     put("reason", "stage_timed_out")
-                } catch (error: Exception) {
+                } catch (error: Throwable) {
+                    if (error is CancellationException) currentCoroutineContext().ensureActive()
                     outcome = VdOutcome.FAILED
-                    put("reason", if (error is IllegalStateException) error.message else error.javaClass.simpleName)
+                    put("reason", "throwable:${error.javaClass.name}: ${failureMessage(error).take(200)}")
                 } finally {
                     put("commands", JsonObject(commands.toMap()))
                 }
@@ -98,6 +100,9 @@ internal class VdPhase0Proofs(
             throw error
         }
     }
+
+    private fun failureMessage(error: Throwable): String =
+        runCatching { error.message }.getOrNull() ?: "<message unavailable>"
 
     private suspend fun proof1() {
         check(withTimeout(15_000) { shell.connectAuto() }) { "ADB connection unavailable" }
