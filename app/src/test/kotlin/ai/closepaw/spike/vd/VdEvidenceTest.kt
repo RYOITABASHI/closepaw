@@ -3,9 +3,12 @@ package ai.closepaw.spike.vd
 import ai.closepaw.adb.ShellResult
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class VdEvidenceTest {
+    @get:Rule val activityFiles = TemporaryFolder()
     @Test
     fun persistedVerdictRequiresEveryP1Observation() {
         val frame = buildJsonObject { put("digest", "captured-fixture-digest") }
@@ -68,6 +71,60 @@ class VdEvidenceTest {
           * Task{2c11 #12 type=standard}
             * Hist #0: ActivityRecord{90 u0 ai.closepaw.main/.Home t12}
     """.trimIndent()
+
+    @Test fun stagedActivitiesFilterPreservesDumpEvidence() {
+        val details = "                state=RESUMED savedState=" + "x".repeat(1024)
+        val full = activities.replace(
+            "Display #0",
+            List(70) { details }.joinToString("\n") + "\n" + """
+                |  Task scope ended
+                |      *hIsT   #0: ActivityRecord{a u0 ai.closepaw.detached/.Other t44}
+                |  Resumed: ActivityRecord{b u0 ai.closepaw.reference/.Other t45}
+                |  ResumedActivity: ActivityRecord{c u0 ai.closepaw.reference/.Other t46}
+                |  topPausingActivity=ActivityRecord{d u0 ai.closepaw.reference/.Other t47}
+                |  topResumedActivity=ActivityRecord{e u0 ai.closepaw.reference/.Other t48}
+                |  mLastPausedActivity: ActivityRecord{f u0 ai.closepaw.reference/.Other t49}
+                |Display #0
+            """.trimMargin(),
+        )
+        val expected = checkNotNull(parseActivities(ShellResult(full, 0)))
+        assertEquals(setOf(12, 43, 44, 45, 46, 47, 48, 49), expected.referencedTaskIds)
+        assertTrue(full.length > 64 * 1024)
+        val filtered = filterActivities(full)
+        assertFalse(filtered.stdout.contains("savedState="))
+        assertEquals(expected, parseActivities(filtered))
+    }
+
+    @Test fun stagedActivitiesFilterPreservesMalformedTaskAndDiagnostics() {
+        val malformed = "  * Task{malformed"
+        val filtered = filterActivities("$activities\n$malformed")
+        assertEquals(0, filtered.exitCode)
+        assertTrue(filtered.stdout.lines().contains(malformed))
+        assertNull(parseActivities(filtered))
+
+        val timedOut = filterActivities("$activities\nignored detail\r*** SERVICE 'activity' DUMP TIMEOUT")
+        assertEquals(0, timedOut.exitCode)
+        assertNull(parseActivities(timedOut))
+    }
+
+    @Test fun stagedActivitiesFilterPreservesDumpsysFailure() {
+        val filtered = filterActivities(activities, dumpsysExit = 17)
+        assertEquals(17, filtered.exitCode)
+        assertEquals("", filtered.stdout)
+        assertNull(parseActivities(filtered))
+    }
+
+    private fun filterActivities(full: String, dumpsysExit: Int = 0): ShellResult {
+        val source = activityFiles.newFile().apply { writeText(full) }
+        val command = activitiesObservationCommand(activityFiles.root.path)
+        val process = ProcessBuilder(
+            "sh", "-c",
+            "source=\$1; dumpsys() { cat \"\$source\"; return $dumpsysExit; }; $command",
+            "filter-test", source.path,
+        ).start()
+        val stdout = process.inputStream.bufferedReader().use { it.readText() }
+        return ShellResult(stdout, process.waitFor())
+    }
 
     @Test fun rootAndChildIdsAreDistinct() {
         val roots = parseStack(ShellResult(stack, 0))!!

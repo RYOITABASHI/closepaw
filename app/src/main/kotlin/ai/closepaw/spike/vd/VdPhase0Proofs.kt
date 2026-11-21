@@ -11,7 +11,43 @@ import android.os.SystemClock
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 
-private const val ACTIVITIES = "dumpsys activity activities"
+// Keep structural rows and the shallowest skipped row when its indentation can close
+// a task scope that the next structural row's indentation would leave open.
+private val activitiesFilter = """
+    function keep(line,    indent, body, lower) {
+        match(line, /^[[:space:]]*/)
+        indent = RLENGTH
+        body = substr(line, indent + 1)
+        lower = tolower(body)
+        if (lower ~ /^(error([^[:alnum:]_]|$)|exception([^[:alnum:]_]|$)|security exception|permission denial|can't find service|unknown command|dumpsys:|failure([^[:alnum:]_]|$)|[*]+.*dump timeout)/) {
+            print line
+        } else if (body ~ /^Display #/) {
+            print line
+            previousIndent = -1
+            boundary = ""
+        } else if (body ~ /^([*] Task[{]|[*] Hist|(Resumed(Activity)?: |top(Pausing|Resumed)Activity=|mLastPausedActivity: )ActivityRecord[{])/ ||
+                   lower ~ /^[*][[:space:]]*hist[[:space:]]+#/) {
+            if (boundary != "" && boundaryIndent < indent) print boundary
+            print line
+            previousIndent = indent
+            boundary = ""
+        } else if (body != "" && indent <= previousIndent && (boundary == "" || indent < boundaryIndent)) {
+            boundary = line
+            boundaryIndent = indent
+        }
+    }
+    BEGIN { previousIndent = -1 }
+    {
+        count = split($0, lines, /\r/)
+        for (i = 1; i <= count; i++) keep(lines[i])
+    }
+""".trimIndent()
+
+internal fun activitiesObservationCommand(stagingDir: String): String {
+    val file = "'${stagingDir.replace("'", "'\\''")}/observe-activities.txt'"
+    val filter = activitiesFilter.replace("'", "'\\''")
+    return "dumpsys activity activities > $file && awk '$filter' $file"
+}
 
 internal class VdPhase0Proofs(
     context: Context,
@@ -565,8 +601,9 @@ internal class VdPhase0Proofs(
     }
 
     private suspend fun observe(): VdTaskObservation? {
+        val stagingDir = log.journal?.stagingDir ?: return null
         val stack = parseStack(exec("stack", STACK)) ?: return null
-        val dump = parseActivities(exec("activities", ACTIVITIES)) ?: return null
+        val dump = parseActivities(exec("activities", activitiesObservationCommand(stagingDir))) ?: return null
         return mergeTasks(stack, dump)
     }
 
