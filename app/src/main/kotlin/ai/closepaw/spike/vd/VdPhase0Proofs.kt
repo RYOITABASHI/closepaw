@@ -76,7 +76,15 @@ internal class VdPhase0Proofs(
                 } catch (error: Throwable) {
                     if (error is CancellationException) currentCoroutineContext().ensureActive()
                     outcome = VdOutcome.FAILED
-                    put("reason", "throwable:${error.javaClass.name}: ${failureMessage(error).take(200)}")
+                    val causes = generateSequence(error) { runCatching { it.cause }.getOrNull() }
+                        .drop(1)
+                        .take(4)
+                        .map { "${it.javaClass.name}: ${failureMessage(it).take(160)}" }
+                        .toList()
+                    put("causes", JsonArray(causes.map(::JsonPrimitive)))
+                    val reason = "throwable:${error.javaClass.name}: ${failureMessage(error).take(200)}".take(400)
+                    val withCause = causes.firstOrNull()?.let { "$reason | cause: $it" }
+                    put("reason", withCause?.takeIf { it.length <= 400 } ?: reason)
                 } finally {
                     put("commands", JsonObject(commands.toMap()))
                 }
