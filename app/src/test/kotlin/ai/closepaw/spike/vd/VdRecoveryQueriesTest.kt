@@ -11,7 +11,7 @@ class VdRecoveryQueriesTest {
     private fun query(command: String, dump: String, status: Int = 0): ShellResult {
         val input = Files.createTempFile("vd-recovery", ".txt")
         return try {
-            Files.writeString(input, dump)
+            Files.write(input, dump.toByteArray(Charsets.UTF_8))
             val process = ProcessBuilder("bash", "-c", """
                 dumpsys() { cat; return $status; }
                 am() { cat; return $status; }
