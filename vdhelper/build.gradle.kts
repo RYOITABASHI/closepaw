@@ -47,7 +47,10 @@ android {
 }
 
 val sdk = androidComponents.sdkComponents
-val bootClasspath = sdk.bootClasspath
+// Deferred: reading bootClasspath eagerly at script evaluation queries the
+// Java plugin's targetCompatibility before AGP finalizes it ("targetCompatibility
+// is not yet finalized"). Realize it only when a task consumes the provider.
+val bootClasspath = providers.provider { sdk.bootClasspath.get() }
 val d8Jar = sdk.sdkDirectory.map { it.file("build-tools/35.0.0/lib/d8.jar") }
 
 // Compile only the standalone entry point and shared wire classes into the shell dex.
