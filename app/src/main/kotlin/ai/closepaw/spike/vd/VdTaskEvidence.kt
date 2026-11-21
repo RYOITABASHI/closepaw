@@ -67,7 +67,8 @@ internal fun parseStack(result: ShellResult): List<StackRoot>? {
 
 private val displayLine = Regex("""Display #(\d+) \(activities from top to bottom\):""")
 private val taskLine = Regex("""\* Task\{\S+ #(\d+)(?:\s|\}).*""")
-private val historyLine = Regex("""\* Hist #\d+: ActivityRecord\{\S+ u\d+ (\S+) t(\d+)(?:\s|\}).*""")
+private val historyLine = Regex("""\*\s*Hist\s+#\d+:\s+ActivityRecord\{\S+ u\d+ (\S+) t(\d+)(?:\s|\}).*""", RegexOption.IGNORE_CASE)
+private val activityReferenceLine = Regex("""(?:Resumed(?:Activity)?: |top(?:Pausing|Resumed)Activity=|mLastPausedActivity: )ActivityRecord\{\S+ u\d+ \S+ t(\d+)(?:\s|\}).*""")
 
 internal data class DumpTask(
     val id: Int,
@@ -78,11 +79,16 @@ internal data class DumpTask(
     val visible: Boolean? = null,
 )
 
-internal data class ActivityDump(val displays: Set<Int>, val tasks: List<DumpTask>)
+internal data class ActivityDump(
+    val displays: Set<Int>,
+    val tasks: List<DumpTask>,
+    val referencedTaskIds: Set<Int>,
+)
 
 internal fun parseActivities(result: ShellResult): ActivityDump? {
     val output = result.completeOutput() ?: return null
     val displays = linkedSetOf<Int>()
+    val referencedTaskIds = mutableSetOf<Int>()
     val tasks = mutableListOf<DumpTask>()
     val parents = mutableListOf<Pair<Int, DumpTask>>()
     var display: Int? = null
@@ -108,16 +114,23 @@ internal fun parseActivities(result: ShellResult): ActivityDump? {
             parents.add(indent to task)
             continue
         }
-        val task = parents.lastOrNull()?.second ?: continue
-        if (line.startsWith("* Hist #")) {
-            val history = historyLine.matchEntire(line) ?: return null
-            if (history.groupValues[2].toIntOrNull() != task.id) return null
-            task.activities.add(history.groupValues[1])
-            continue
+        val task = parents.lastOrNull()?.second
+        val history = historyLine.matchEntire(line)
+        if (history != null) {
+            val id = history.groupValues[2].toIntOrNull() ?: return null
+            if (task != null) {
+                if (id != task.id) return null
+                task.activities.add(history.groupValues[1])
+            }
+            referencedTaskIds.add(id)
+        } else if (task != null && line.startsWith("* Hist #")) {
+            return null
         }
+        val reference = activityReferenceLine.matchEntire(line)
+        if (reference != null) referencedTaskIds.add(reference.groupValues[1].toIntOrNull() ?: return null)
     }
     if (displays.isEmpty() || tasks.map(DumpTask::id).distinct().size != tasks.size) return null
-    return ActivityDump(displays, tasks)
+    return ActivityDump(displays, tasks, referencedTaskIds)
 }
 
 internal data class ObservedTask(

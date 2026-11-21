@@ -122,9 +122,15 @@ internal class VdPhase0Proofs(
             "Expected a known display 0 baseline and an inactive fixture package"
         }
 
-        val baselineCleanup = recovery.verify(VdJournal())
+        val baselineDisplayDump = exec("baselineDisplays", recoveryDisplayQuery)
+        val baselineDisplays = requireNotNull(parseRecoveryDisplay(baselineDisplayDump)) { "Display baseline unknown" }
+        val baselineJournal = checkNotNull(log.journal).copy(
+            baselineDisplayIds = baselineDisplays.displayIds,
+        )
+        val baselineCleanup = recovery.verify(baselineJournal, baselineDisplayDump)
         evidence.put("resourceBaseline", baselineCleanup.json())
         check(baselineCleanup.confirmed) { "Spike resource baseline was not clean" }
+        persist(log.copy(journal = baselineJournal))
         if (appDeathCheck) observeHelperDeath()
         val display = openJournaled()
         evidence.put("displayId", display.displayId)
@@ -364,7 +370,7 @@ internal class VdPhase0Proofs(
         evidence.put("helperDeathJournalVerification", verified.json())
         check(verified.confirmed) { "Helper-death session cleanup was unconfirmed" }
         persist(log.copy(
-            journal = VdJournal(),
+            journal = VdJournal(baselineDisplayIds = journal.baselineDisplayIds),
             endpointDeaths = buildJsonObject { put("helperOnly", observation) },
         ))
     }
@@ -435,9 +441,8 @@ internal class VdPhase0Proofs(
                     "Fixture force-stop failed"
                 }
                 await("Fixture task or process remains") {
-                    val roots = parseStack(exec("cleanupStack", STACK))
-                    true.takeIf { roots != null && roots.none(::mentionsFixture) &&
-                        processAbsent(FIXTURE_PACKAGE) }
+                    val stack = parseRecoveryCandidates(exec("cleanupStack", recoveryStackQuery))
+                    true.takeIf { stack?.fixturePresent == false && processAbsent(FIXTURE_PACKAGE) }
                 }
                 fixtureGone = true
             }
@@ -471,9 +476,10 @@ internal class VdPhase0Proofs(
     }
 
     private suspend fun displayAbsent(id: Int): Boolean {
-        val dump = parseActivities(exec("releaseDisplays", ACTIVITIES)) ?: return false
-        val logical = parseLogicalDisplayIds(exec("logicalDisplays", "dumpsys display", retainOutput = false))
-        return logical != null && id !in logical && 0 in dump.displays && id !in dump.displays
+        val activities = parseRecoveryCandidates(exec("releaseDisplays", recoveryActivitiesQuery)) ?: return false
+        val logical = parseRecoveryDisplay(exec("logicalDisplays", recoveryDisplayQuery)) ?: return false
+        val stack = parseRecoveryCandidates(exec("releaseStack", recoveryStackQuery)) ?: return false
+        return id !in logical.displayIds && id !in activities.displayIds && id !in stack.displayIds
     }
 
     private suspend fun pidAbsent(pid: Int): Boolean {

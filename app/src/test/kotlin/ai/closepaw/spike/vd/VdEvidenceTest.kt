@@ -169,14 +169,6 @@ class VdEvidenceTest {
         assertFalse(partial.copy(recovery = VdRecoveryEvidence(mapOf("stagingDir:${journal.stagingDir}" to true)).json()).rerunAllowed)
     }
 
-    @Test fun logicalDisplayInventoryRequiresDefaultDisplayAndDeclaredCount() {
-        val dump = "Logical Displays: size=2\n  Display 0:\n  Display 5:\n"
-        assertEquals(setOf(0, 5), parseLogicalDisplayIds(ShellResult(dump, 0)))
-        assertNull(parseLogicalDisplayIds(ShellResult(dump.replace("size=2", "size=3"), 0)))
-        assertNull(parseLogicalDisplayIds(ShellResult(dump.replace("Display 0:", "Display 1:"), 0)))
-        assertNull(parseLogicalDisplayIds(ShellResult(dump, 0, truncated = true)))
-    }
-
     @Test fun processInventoryFailsClosed() {
         val name = "closepaw-vd-0123456789abcdef01234567"
         assertEquals(mapOf(1 to "init", 123 to name), parseRecoveryProcesses(ShellResult(" PID  NAME\n1 init\n123 $name", 0)))

@@ -8,11 +8,18 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.*
 
 /** The probe package and the Lane A launch namespace are reserved for this spike. */
-internal class VdRecovery(private val shell: AdbShellChannel) {
+internal class VdRecovery(
+    private val connect: suspend () -> Boolean,
+    private val execute: suspend (String, Long) -> ShellResult,
+) {
+    constructor(shell: AdbShellChannel) : this({ shell.connectAuto() }, { command, timeout ->
+        shell.exec(command, timeoutMs = timeout)
+    })
+
     suspend fun recover(log: VdStageLog, processToken: String, save: (VdStageLog) -> Unit) {
         var journal = log.journal ?: VdJournal()
         var current = log.copy(journal = journal)
-        if (withTimeoutOrNull(15_000) { shell.connectAuto() } != true ||
+        if (withTimeoutOrNull(15_000) { connect() } != true ||
             exec("id -u")?.completeOutput()?.trim() != "2000"
         ) {
             val unverified = VdRecoveryEvidence(recoveryItemNames(journal).associateWith { false })
@@ -99,33 +106,51 @@ internal class VdRecovery(private val shell: AdbShellChannel) {
         return last
     }
 
-    suspend fun verify(journal: VdJournal): VdRecoveryEvidence {
+    suspend fun verify(journal: VdJournal, baselineDisplayDump: ShellResult? = null): VdRecoveryEvidence {
         val processes = processes()
         val paths = stagingDirs()
-        val displayDump = exec("dumpsys display")
-        val logicalDisplays = displayDump?.let(::parseLogicalDisplayIds)
-        val displayNamespaceGone = logicalDisplays != null &&
-            displayDump?.completeOutput()?.let { "Display Devices:" in it && "closepaw_phase0" !in it } == true
-        val activities = exec("dumpsys activity activities")?.let(::parseActivities)?.takeIf { 0 in it.displays }
-        val stack = exec("am stack list")?.let(::parseStack)?.takeIf { roots -> roots.any { it.display == 0 } }
+        val displayDump = baselineDisplayDump ?: exec(recoveryDisplayQuery)
+        val display = displayDump?.let(::parseRecoveryDisplay)
+        val activityDump = exec(recoveryActivitiesQuery)
+        val activities = activityDump?.let(::parseRecoveryCandidates)
+        val stackDump = exec(recoveryStackQuery)
+        val stack = stackDump?.let(::parseRecoveryCandidates)
         val fixturePid = exec("pidof $FIXTURE_PACKAGE")
-        return VdRecoveryEvidence(buildMap {
+        val fixturePidAbsent = fixturePid?.let(::parseFixturePidAbsence)
+        val fixtureAbsentInStack = stack?.let { !it.fixturePresent }
+        val fixtureAbsentInActivities = activities?.let { !it.fixturePresent }
+        val items = buildMap {
             put("helperNamespace", processes != null && processes.values.none(helperName::matches))
-            put("displayNamespace", displayNamespaceGone)
+            put("displayNamespace", display != null && !display.namespacePresent &&
+                display.displayIds.all { it == 0 || it in journal.baselineDisplayIds })
             put("stagingNamespace", paths != null && paths.isEmpty())
-            put("fixturePackage", stack != null && stack.none {
-                FIXTURE_PACKAGE in it.childPackages || it.topPackage == FIXTURE_PACKAGE
-            } && activities != null && activities.tasks.none {
-                it.intentPackage == FIXTURE_PACKAGE || it.activities.any { component -> component.startsWith("$FIXTURE_PACKAGE/") }
-            } && fixturePid?.exitCode == 1 && !fixturePid.truncated && fixturePid.stdout.isBlank())
+            put("fixturePackage", fixtureAbsentInStack == true && fixtureAbsentInActivities == true && fixturePidAbsent == true)
             journal.helperPid?.let { put("helperPid:$it", processes != null && it !in processes) }
-            journal.displayId?.let { put("displayId:$it", logicalDisplays != null && it !in logicalDisplays && activities != null && it !in activities.displays) }
+            journal.displayId?.let { id ->
+                put("displayId:$id", display != null && activities != null && stack != null &&
+                    id !in display.displayIds && id !in activities.displayIds && id !in stack.displayIds)
+            }
             journal.stagingDir?.let { put("stagingDir:$it", paths != null && it !in paths) }
             for (id in journal.ownedTaskIds) {
-                put("taskId:$id", activities != null && stack != null &&
-                    activities.tasks.none { it.id == id } && stack.none { it.id == id || id in it.childIds })
+                put(
+                    "taskId:$id",
+                    activities != null && stack != null &&
+                        id !in activities.taskIds && id !in stack.taskIds,
+                )
             }
-        })
+        }
+        val diagnostics = shellEvidence("displayDump", displayDump, display != null) +
+            shellEvidence("activityDump", activityDump, activities != null) +
+            shellEvidence("stackList", stackDump, stack != null) +
+            shellEvidence("fixturePid", fixturePid, fixturePidAbsent != null) +
+            mapOf(
+                "diag:activityDefaultDisplayPresent" to JsonPrimitive(activities != null),
+                "diag:stackDefaultDisplayPresent" to JsonPrimitive(stack != null),
+                "diag:fixtureAbsentInActivities" to JsonPrimitive(fixtureAbsentInActivities),
+                "diag:fixtureAbsentInStack" to JsonPrimitive(fixtureAbsentInStack),
+                "diag:fixturePidAbsent" to JsonPrimitive(fixturePidAbsent),
+            )
+        return VdRecoveryEvidence(items, diagnostics)
     }
 
     private suspend fun processes() = exec("ps -A -w -o PID,NAME")?.let(::parseRecoveryProcesses)
@@ -138,11 +163,12 @@ internal class VdRecovery(private val shell: AdbShellChannel) {
                 |done
             """.trimMargin()
         )?.completeOutput() ?: return null
-        return output.lineSequence().filter(String::isNotBlank).filter(stagingPath::matches).toSet()
+        val paths = output.lineSequence().filter(String::isNotEmpty).toSet()
+        return paths.takeIf { it.all(stagingPath::matches) }
     }
 
     private suspend fun exec(command: String): ShellResult? = try {
-        withTimeoutOrNull(7_000) { shell.exec(command, timeoutMs = 6_000) }
+        withTimeoutOrNull(7_000) { execute(command, 6_000) }
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {

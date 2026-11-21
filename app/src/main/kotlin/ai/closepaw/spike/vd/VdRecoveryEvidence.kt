@@ -12,12 +12,14 @@ internal data class VdJournal(
     val displayId: Int? = null,
     val ownedTaskIds: Set<Int> = emptySet(),
     val appDeathArmedBy: String? = null,
+    val baselineDisplayIds: Set<Int> = emptySet(),
 ) {
     init {
         require(stagingDir == null || stagingPath.matches(stagingDir))
         require(helperPid == null || helperPid > 0)
         require(displayId == null || displayId > 0)
         require(ownedTaskIds.all { it > 0 })
+        require(baselineDisplayIds.all { it >= 0 })
     }
 
     fun json() = buildJsonObject {
@@ -26,6 +28,9 @@ internal data class VdJournal(
         put("displayId", displayId?.let(::JsonPrimitive) ?: JsonNull)
         put("ownedTaskIds", buildJsonArray { ownedTaskIds.sorted().forEach { add(JsonPrimitive(it)) } })
         put("appDeathArmedBy", appDeathArmedBy)
+        if (baselineDisplayIds.isNotEmpty()) {
+            put("baselineDisplayIds", buildJsonArray { baselineDisplayIds.sorted().forEach { add(JsonPrimitive(it)) } })
+        }
     }
 
     companion object {
@@ -35,18 +40,25 @@ internal data class VdJournal(
             row.getValue("displayId").jsonPrimitive.intOrNull,
             row.getValue("ownedTaskIds").jsonArray.map { it.jsonPrimitive.int }.toSet(),
             row.getValue("appDeathArmedBy").jsonPrimitive.contentOrNull,
+            row["baselineDisplayIds"]?.jsonArray?.map { it.jsonPrimitive.int }?.toSet().orEmpty(),
         )
     }
 }
 
-internal data class VdRecoveryEvidence(val items: Map<String, Boolean>) {
+internal data class VdRecoveryEvidence(
+    val items: Map<String, Boolean>,
+    val diagnostics: Map<String, JsonPrimitive> = emptyMap(),
+) {
     val confirmed get() = items.isNotEmpty() && items.values.all { it }
 
     fun json() = buildJsonObject {
         put("stage", "recovery")
         put("outcome", if (confirmed) "passed" else "failed")
         put("confirmed", confirmed)
-        put("items", buildJsonObject { items.forEach { (item, gone) -> put(item, gone) } })
+        put("items", buildJsonObject {
+            items.forEach { (item, gone) -> put(item, gone) }
+            diagnostics.forEach { (name, value) -> put(name, value) }
+        })
     }
 }
 
@@ -55,8 +67,17 @@ internal fun recoveryConfirmed(record: JsonObject?, journal: VdJournal?): Boolea
     val required = recoveryItemNames(journal ?: return false)
     return record["stage"] == JsonPrimitive("recovery") && record["outcome"] == JsonPrimitive("passed") &&
         record["confirmed"] == JsonPrimitive(true) && items.keys.containsAll(required) &&
-        items.values.all { it == JsonPrimitive(true) }
+        items.filterKeys { !it.startsWith("diag:") }.values.all { it == JsonPrimitive(true) }
 }
+
+internal fun shellEvidence(name: String, result: ShellResult?, parsed: Boolean): Map<String, JsonPrimitive> =
+    mapOf(
+        "diag:${name}ExitCode" to JsonPrimitive(result?.exitCode),
+        "diag:${name}Truncated" to JsonPrimitive(result?.truncated),
+        "diag:${name}StdoutBytes" to JsonPrimitive(result?.stdout?.toByteArray(Charsets.UTF_8)?.size),
+        "diag:${name}CompleteOutputNull" to JsonPrimitive(result?.completeOutput() == null),
+        "diag:${name}Parsed" to JsonPrimitive(parsed),
+    )
 
 internal fun parseRecoveryProcesses(result: ShellResult): Map<Int, String>? {
     val lines = result.completeOutput()?.trim()?.lines() ?: return null
@@ -77,15 +98,4 @@ internal fun recoveryItemNames(journal: VdJournal): Set<String> = buildSet {
     journal.displayId?.let { add("displayId:$it") }
     journal.stagingDir?.let { add("stagingDir:$it") }
     journal.ownedTaskIds.forEach { add("taskId:$it") }
-}
-
-private val logicalDisplayCount = Regex("""Logical Displays: size=(\d+)""")
-private val logicalDisplayId = Regex("""Display (\d+):""")
-
-internal fun parseLogicalDisplayIds(result: ShellResult): Set<Int>? {
-    val lines = result.completeOutput()?.lineSequence()?.map(String::trim)?.toList() ?: return null
-    val count = lines.mapNotNull { logicalDisplayCount.matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }
-        .singleOrNull() ?: return null
-    val ids = lines.mapNotNull { logicalDisplayId.matchEntire(it)?.groupValues?.get(1)?.toIntOrNull() }.toSet()
-    return ids.takeIf { 0 in it && it.size == count }
 }
