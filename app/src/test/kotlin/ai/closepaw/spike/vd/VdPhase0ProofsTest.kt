@@ -1,6 +1,7 @@
 package ai.closepaw.spike.vd
 
 import ai.closepaw.adb.AdbShellChannel
+import ai.closepaw.adb.ShellResult
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.awaitCancellation
@@ -9,11 +10,29 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class VdPhase0ProofsTest {
+    @Test
+    fun longCommandOutputPersistsHeadAndTail() = runBlocking {
+        val head = "Error: command failed\n".padEnd(800, 'h')
+        val tail = "t".repeat(1199) + "\n"
+        val stdout = head + "omitted middle\n" + tail
+        val shell = mockk<AdbShellChannel>()
+        coEvery { shell.exec("id -u", timeoutMs = 6_000) } returns ShellResult(stdout, exitCode = 255)
+
+        val saved = runWithOpeningAction(shell) { true }
+        val persisted = (decodeVdStages(saved.last().json().toString()) as VdStageLoad.Present).log
+        val command = persisted.stages.first().evidence.getValue("commands").jsonObject
+            .getValue("uid").jsonObject
+
+        assertEquals(head, command.getValue("outputHead").jsonPrimitive.content)
+        assertEquals(tail, command.getValue("outputTail").jsonPrimitive.content)
+    }
+
     @Test
     fun openingErrorIsPersistedAndRunCompletesCleanup() = runBlocking {
         val prefix = "TLS initializer failed. ".repeat(10).take(200)
@@ -60,8 +79,10 @@ class VdPhase0ProofsTest {
             get() = throw IllegalStateException("Message getter failed")
     }
 
-    private suspend fun runWithOpeningAction(connect: suspend () -> Boolean): List<VdStageLog> {
-        val shell = mockk<AdbShellChannel>()
+    private suspend fun runWithOpeningAction(
+        shell: AdbShellChannel = mockk(),
+        connect: suspend () -> Boolean,
+    ): List<VdStageLog> {
         coEvery { shell.connectAuto() } coAnswers { connect() }
         val saved = mutableListOf<VdStageLog>()
 

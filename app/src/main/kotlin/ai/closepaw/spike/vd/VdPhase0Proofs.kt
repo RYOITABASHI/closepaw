@@ -547,7 +547,10 @@ internal class VdPhase0Proofs(
                 put("elapsedMs", SystemClock.elapsedRealtime() - start)
                 put("exitCode", result?.exitCode?.let(::JsonPrimitive) ?: JsonNull)
                 put("truncated", result?.truncated?.let(::JsonPrimitive) ?: JsonNull)
-                if (retainOutput) put("outputTail", result?.stdout?.takeLast(1200))
+                if (retainOutput) {
+                    put("outputHead", result?.stdout?.take(800))
+                    put("outputTail", result?.stdout?.takeLast(1200))
+                }
             }
         }
     }
