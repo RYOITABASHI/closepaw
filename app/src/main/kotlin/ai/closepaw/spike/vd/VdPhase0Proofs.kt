@@ -498,7 +498,7 @@ internal class VdPhase0Proofs(
         require(display >= 0)
         fixtureLaunchAttempted = true
         val result = exec("launch_$role", "am start -W --user current --display $display " +
-            "--activity-new-task --activity-multiple-task -n $FIXTURE_COMPONENT --es vdRun ${log.runId} --es vdRole $role")
+            "-f 0x18000000 -n $FIXTURE_COMPONENT --es vdRun ${log.runId} --es vdRole $role")
         val output = result.completeOutput()
         check(output != null && output.lineSequence().any { it.trim() == "Status: ok" } &&
             output.lineSequence().none { it.trimStart().startsWith("Warning:") }) {
