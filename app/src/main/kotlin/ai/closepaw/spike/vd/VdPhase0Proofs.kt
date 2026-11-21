@@ -50,6 +50,13 @@ internal fun activitiesObservationCommand(stagingDir: String): String {
     return "mkdir -p '$escapedStagingDir' && dumpsys activity activities > $file && awk '$filter' $file"
 }
 
+internal data class VdExecBudget(val outerMs: Long, val channelMs: Long)
+
+internal fun vdExecBudget(key: String): VdExecBudget = when (key) {
+    "activities" -> VdExecBudget(outerMs = 30_000, channelMs = 25_000)
+    else -> VdExecBudget(outerMs = 7_000, channelMs = 6_000)
+}
+
 internal class VdPhase0Proofs(
     context: Context,
     private val shell: AdbShellChannel,
@@ -611,11 +618,18 @@ internal class VdPhase0Proofs(
     private suspend fun observeBoth(display: Int): VdTaskObservation? =
         observe()?.takeIf { it.onDisplay(0) != null && it.onDisplay(display) != null }
 
-    private suspend fun exec(key: String, command: String, retainOutput: Boolean = true): ShellResult {
+    private suspend fun exec(
+        key: String,
+        command: String,
+        retainOutput: Boolean = true,
+        budget: VdExecBudget = vdExecBudget(key),
+    ): ShellResult {
         val start = SystemClock.elapsedRealtime()
         var result: ShellResult? = null
         try {
-            return withTimeout(7_000) { shell.exec(command, timeoutMs = 6_000) }.also { result = it }
+            return withTimeout(budget.outerMs) {
+                shell.exec(command, timeoutMs = budget.channelMs)
+            }.also { result = it }
         } finally {
             commands[key] = buildJsonObject {
                 put("command", command)

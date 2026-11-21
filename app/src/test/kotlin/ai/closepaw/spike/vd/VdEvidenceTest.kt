@@ -11,6 +11,12 @@ class VdEvidenceTest {
     @get:Rule val activityFiles = TemporaryFolder()
 
     @Test
+    fun activitiesObservationUsesExtendedExecBudget() {
+        assertEquals(VdExecBudget(outerMs = 30_000, channelMs = 25_000), vdExecBudget("activities"))
+        assertEquals(VdExecBudget(outerMs = 7_000, channelMs = 6_000), vdExecBudget("stack"))
+    }
+
+    @Test
     fun activitiesObservationCreatesQuotedStagingDirectoryBeforeDump() {
         val command = activitiesObservationCommand("/data/local/tmp/run's staging")
         val prefix = "mkdir -p '/data/local/tmp/run'\\''s staging' && " +
