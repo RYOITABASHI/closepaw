@@ -78,6 +78,20 @@ class VdEvidenceTest {
         assertEquals("ai.closepaw.top", roots.first().topPackage)
     }
 
+    @Test fun activityTaskHeadersAcceptClosingBraceAfterFinalField() {
+        val dump = """
+            Display #5 (activities from top to bottom):
+              * Task{1608 #42 visible=true}
+              * Task{1901 #43 I=ai.closepaw.intent/.Main}
+              * Task{2c11 #12}
+        """.trimIndent()
+
+        val tasks = parseActivities(ShellResult(dump, 0))!!.tasks
+        assertEquals(listOf(42, 43, 12), tasks.map { it.id })
+        assertEquals(true, tasks[0].visible)
+        assertEquals("ai.closepaw.intent", tasks[1].intentPackage)
+    }
+
     @Test fun unknownIsDifferentFromDisplayWithNoTask() {
         assertNull(parseStack(ShellResult(stack, null)))
         assertNull(parseStack(ShellResult(stack, 0, truncated = true)))

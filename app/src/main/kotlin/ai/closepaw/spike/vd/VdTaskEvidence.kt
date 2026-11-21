@@ -4,10 +4,10 @@ import ai.closepaw.adb.ShellResult
 
 private val component = Regex("""([\w.]+)/[\w.\$]+""")
 private val rootLine = Regex("""RootTask id=(\d+) bounds=.* displayId=(\d+) userId=\d+""")
-private val childLine = Regex("""taskId=(\d+): (.*?) userId=\d+ visible=(true|false)(?: topActivity=ComponentInfo\{([^}]+)})?""")
+private val childLine = Regex("""taskId=(\d+): (.*?) userId=\d+ visible=(true|false)(?: topActivity=ComponentInfo\{([^}]+)\})?""")
 private val mode = Regex("""mWindowingMode=(\w+)""")
-private val taskVisibility = Regex("""(?:^| )visible=(true|false)(?: |})""")
-private val intentComponent = Regex("""(?:^| )I=([\w.]+)/[\w.\$]+(?: |})""")
+private val taskVisibility = Regex("""(?:^| )visible=(true|false)(?: |\})""")
+private val intentComponent = Regex("""(?:^| )I=([\w.]+)/[\w.\$]+(?: |\})""")
 private val diagnostics = Regex(
     """(?im)^\s*(error(?:\b|:)|exception\b|security exception|permission denial|can't find service|unknown command|dumpsys:|failure\b|\*+.*dump timeout)"""
 )
@@ -66,8 +66,8 @@ internal fun parseStack(result: ShellResult): List<StackRoot>? {
 }
 
 private val displayLine = Regex("""Display #(\d+) \(activities from top to bottom\):""")
-private val taskLine = Regex("""\* Task\{\S+ #(\d+)(?:\s|}).*""")
-private val historyLine = Regex("""\* Hist #\d+: ActivityRecord\{\S+ u\d+ (\S+) t(\d+)(?:\s|}).*""")
+private val taskLine = Regex("""\* Task\{\S+ #(\d+)(?:\s|\}).*""")
+private val historyLine = Regex("""\* Hist #\d+: ActivityRecord\{\S+ u\d+ (\S+) t(\d+)(?:\s|\}).*""")
 
 internal data class DumpTask(
     val id: Int,
@@ -191,7 +191,7 @@ internal fun mergeTasks(stack: List<StackRoot>, dump: ActivityDump): VdTaskObser
 }
 
 private val displayHeader = Regex("""Display: mDisplayId=(\d+)(?: \(organized\))?""")
-private val focusedWindow = Regex("""mCurrentFocus=(Window\{[0-9a-fA-F]+ u\d+ .+})""")
+private val focusedWindow = Regex("""mCurrentFocus=(Window\{[0-9a-fA-F]+ u\d+ .+\})""")
 
 internal fun parseDisplayZeroFocus(result: ShellResult): String? {
     val output = result.completeOutput() ?: return null
