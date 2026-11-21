@@ -180,10 +180,29 @@ internal class VdPhase0Proofs(
             }
         }
         evidence.put("accessibilityRoot", root)
-        check(session.isOpen &&
+        val sessionOpen = session.isOpen
+        val processes = if (sessionOpen) {
             parseRecoveryProcesses(exec("armedProcesses", "ps -A -w -o PID,NAME", retainOutput = false))
-                ?.get(display.helperPid) == session.launchInfo?.stagingDir?.substringAfterLast('/') &&
-            parseActivities(exec("armedDisplays", ACTIVITIES))?.displays?.contains(display.displayId) == true) {
+        } else null
+        val helperPsName = processes?.get(display.helperPid)
+        val expectedHelperName = session.launchInfo?.stagingDir?.substringAfterLast('/')
+        val helperNameMatched = sessionOpen && helperPsName == expectedHelperName
+        val activities = if (helperNameMatched) {
+            parseActivities(exec("armedDisplays", ACTIVITIES))
+        } else null
+        val displaysSeen = activities?.displays
+        val vdDisplayPresent = displaysSeen?.contains(display.displayId) == true
+        evidence.put("endpointCheck", buildJsonObject {
+            put("sessionOpen", sessionOpen)
+            put("processesParseOk", processes != null)
+            put("helperPsName", helperPsName)
+            put("expectedHelperName", expectedHelperName)
+            put("helperNameMatched", helperNameMatched)
+            put("activitiesParseOk", activities != null)
+            put("displaysSeen", displaysSeen?.let(::ids) ?: JsonNull)
+            put("vdDisplayPresent", vdDisplayPresent)
+        })
+        check(sessionOpen && helperNameMatched && vdDisplayPresent) {
             "Endpoints were not live at the app-death observation boundary"
         }
         evidence.put("appDeathCheckRequested", appDeathCheck)
