@@ -11,7 +11,6 @@ import android.provider.Settings
 import android.util.Log
 import ai.closepaw.llm.ModelCatalogRepositoryHolder
 import ai.closepaw.onboarding.OnboardingStore
-import ai.closepaw.platform.virtualdisplay.ShizukuClient
 import ai.closepaw.protocol.PlatformMode
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -73,7 +72,7 @@ class ShellyGoalReceiver : BroadcastReceiver() {
             return
         }
 
-        // Settings / credential / Shizuku probes touch disk and binders: do them off the main
+        // Settings / credential / VD readiness probes can touch disk: do them off the main
         // thread, then decide + start on the main thread (where AgentService state lives, so two
         // back-to-back requests are serialized against AgentService's in-flight guard).
         val ordered = isOrderedBroadcast
@@ -130,11 +129,7 @@ class ShellyGoalReceiver : BroadcastReceiver() {
             Log.w(TAG, "credential check failed: ${e.javaClass.simpleName}")
             true
         }
-        val vdReady = try {
-            ShizukuClient().let { it.isAvailable() && it.hasPermission() }
-        } catch (e: Throwable) {
-            false
-        }
+        val vdReady = probeVirtualDisplayReady(app)
         return Probes(
             onboardingCompleted = OnboardingStore(app).isCompleted,
             canDrawOverlays = Settings.canDrawOverlays(app),

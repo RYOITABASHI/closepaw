@@ -11,7 +11,6 @@ import ai.closepaw.mcp.McpRunRegistry
 import ai.closepaw.mcp.McpSettingsStore
 import ai.closepaw.mcp.reconcileLateStart
 import ai.closepaw.onboarding.OnboardingStore
-import ai.closepaw.platform.virtualdisplay.ShizukuClient
 import ai.closepaw.update.SelfUpdate
 import android.content.Context
 import android.os.Handler
@@ -57,7 +56,7 @@ internal object McpRunStatus {
         ShellyBackgroundRun.Block.CREDENTIALS_MISSING -> "No credentials for ClosePaw's selected model"
         ShellyBackgroundRun.Block.BUSY -> "ClosePaw is busy with another task"
         ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE ->
-            "Shizuku is not running or not permitted (MCP runs need the virtual display)"
+            "ClosePaw's virtual display is unavailable (background execution is not ready)"
     }
 }
 
@@ -66,6 +65,7 @@ internal class AgentServiceMcpBackend(
     private val app: Context,
     private val registry: McpRunRegistry,
     private val maintenance: McpMaintenance,
+    private val adbChannel: AdbShellChannel,
 ) : McpBackend {
     private val main = Handler(Looper.getMainLooper())
 
@@ -136,7 +136,7 @@ internal class AgentServiceMcpBackend(
         maintenance.rediscover()
         return McpBackend.Status(
             version = BuildConfig.VERSION_NAME,
-            shizukuReady = shizukuReady(),
+            virtualDisplayReady = probeVirtualDisplayReady(app, adbChannel),
             accessibilityReady = bound,
             accessibilitySettingOn = settingOn,
         )
@@ -166,14 +166,8 @@ internal class AgentServiceMcpBackend(
             onboardingCompleted = OnboardingStore(app).isCompleted,
             canDrawOverlays = Settings.canDrawOverlays(app),
             credentialsMissing = credentialsMissing,
-            virtualDisplayReady = shizukuReady(),
+            virtualDisplayReady = probeVirtualDisplayReady(app, adbChannel),
         )
-    }
-
-    private fun shizukuReady(): Boolean = try {
-        ShizukuClient().let { it.isAvailable() && it.hasPermission() }
-    } catch (e: Throwable) {
-        false
     }
 
     /** The client was told TIMEOUT, but the start finished anyway: stop it so nothing unaddressable runs. */
@@ -230,7 +224,7 @@ internal object McpServerController {
         val h = McpHandler(
             expectedToken = { token },
             registry = registry,
-            backend = AgentServiceMcpBackend(app, registry, worker),
+            backend = AgentServiceMcpBackend(app, registry, worker, channel),
             audit = { line -> Log.i(AUDIT_TAG, line) },
             serverVersion = BuildConfig.VERSION_NAME,
             adbStatus = {

@@ -15,7 +15,6 @@ import android.os.SystemClock
 import android.util.Log
 import ai.closepaw.draft.SaveDraftRequestParser
 import ai.closepaw.onboarding.OnboardingStore
-import ai.closepaw.platform.virtualdisplay.ShizukuClient
 import java.io.IOException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -170,7 +169,7 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
         val onboarded: Boolean,
         val virtualDisplayReady: Boolean,
         val locked: Boolean,
-        /** Read on the worker: accessibility + Shizuku queries never block the answer on main. */
+        /** Read on the worker: accessibility and VD readiness checks never block the answer on main. */
         val chromeInFront: Boolean,
         /** The answer window, re-checked right before the run is committed. */
         val window: ShellySaveDraft.AnswerWindow,
@@ -185,11 +184,7 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
         val parsed = ShellySaveDraft.readRequest(target.site, target.requestSha256) {
             readFile(app.contentResolver, uri, window)
         }
-        val virtualDisplayReady = try {
-            ShizukuClient().let { it.isAvailable() && it.hasPermission() }
-        } catch (e: Throwable) {
-            false
-        }
+        val virtualDisplayReady = probeVirtualDisplayReady(app)
         val chromeInFront = try {
             AgentService.instance?.isChromeInFront() != false
         } catch (e: Throwable) {

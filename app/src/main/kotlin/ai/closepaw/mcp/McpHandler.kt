@@ -44,7 +44,7 @@ interface McpBackend {
 
     data class Status(
         val version: String,
-        val shizukuReady: Boolean,
+        val virtualDisplayReady: Boolean,
         val accessibilityReady: Boolean,
         val accessibilitySettingOn: Boolean = false,
     )
@@ -284,7 +284,7 @@ class McpHandler(
         return ToolOutcome(null, "ok", toolOk(buildJsonObject {
             put("version", s.version)
             put("serverOn", true)
-            put("shizukuReady", s.shizukuReady)
+            put("virtualDisplayReady", s.virtualDisplayReady)
             put("accessibilityReady", s.accessibilityReady)
             put("accessibilitySettingOn", s.accessibilitySettingOn)
             put("accessibilityBound", s.accessibilityReady)

@@ -22,7 +22,7 @@ order (Origin → path → bearer → method), status codes and JSON-RPC error c
 | `run_goal` | `{goal}` | `{runHandle}` |
 | `get_run_result` | `{runHandle, waitMs?}` (≤ 20000) | `{runHandle, status, summary}` |
 | `stop_run` | `{runHandle}` | `{runHandle, stopRequested, status}` |
-| `closepaw_status` | `{}` | `{version, serverOn, shizukuReady, accessibilityReady, activeRuns}` |
+| `closepaw_status` | `{}` | `{version, serverOn, virtualDisplayReady, accessibilityReady, activeRuns}` |
 
 `status`: `starting | running | completed | failed | cancelled`. There are no tap / swipe /
 text / shell tools: `run_goal` is the only way to make ClosePaw act.
