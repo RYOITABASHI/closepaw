@@ -9,7 +9,7 @@ import ai.closepaw.tool.AppClassifier
 /**
  * Scroll executor: content-direction scroll with optional element targeting.
  *
- * Cascade: a11y scroll first → gesture swipe fallback (matching click/long_press pattern).
+ * Cascade: a11y scroll first → gesture swipe → longer, faster flick.
  * Uses TargetResolver for element resolution (unified targeting).
  */
 class ScrollExecutor(
@@ -18,6 +18,7 @@ class ScrollExecutor(
     companion object {
         private const val UI_SETTLE_DELAY_MS = 400L
         private const val SWIPE_DURATION_MS = 300L
+        private const val FLICK_DURATION_MS = 180L
         private const val EDGE_INSET_RATIO = 0.1f
     }
 
@@ -44,32 +45,36 @@ class ScrollExecutor(
             if (isCancelled()) return ActionOutcome.Cancelled("Cancelled before scroll attempt")
             when (channel) {
                 ActionPriorityOrder.ScrollChannel.GESTURE_SWIPE -> {
-                    val swipe = computeSwipeGesture(direction, scrollArea)
-                    val gestureResult = platform.performAction(swipe)
-                    when (gestureResult) {
-                        is ActionResult.Success -> {
-                            val outcome = buildSuccessOutcome(
-                                direction = direction,
-                                channel = "gesture_swipe",
-                                attemptTrail = attemptTrail,
-                                preSnapshot = snapshot,
-                                platform = platform,
-                                appClassifier = appClassifier
-                            )
-                            when (outcome) {
-                                is ActionOutcome.Success -> {
-                                    attemptTrail += "gesture_swipe: success"
-                                    return outcome.copy(attemptTrail = attemptTrail.toList())
+                    for (flick in listOf(false, true)) {
+                        if (flick && isCancelled()) return ActionOutcome.Cancelled("Cancelled before scroll attempt")
+                        val name = if (flick) "gesture_flick" else "gesture_swipe"
+                        val swipe = computeSwipeGesture(direction, scrollArea, flick)
+                        val gestureResult = platform.performAction(swipe)
+                        when (gestureResult) {
+                            is ActionResult.Success -> {
+                                val outcome = buildSuccessOutcome(
+                                    direction = direction,
+                                    channel = name,
+                                    attemptTrail = attemptTrail,
+                                    preSnapshot = snapshot,
+                                    platform = platform,
+                                    appClassifier = appClassifier
+                                )
+                                when (outcome) {
+                                    is ActionOutcome.Success -> {
+                                        attemptTrail += "$name: success"
+                                        return outcome.copy(attemptTrail = attemptTrail.toList())
+                                    }
+                                    is ActionOutcome.Failed -> {
+                                        attemptTrail += "$name: ${outcome.reason}"
+                                    }
+                                    is ActionOutcome.Cancelled -> return outcome
                                 }
-                                is ActionOutcome.Failed -> {
-                                    attemptTrail += "gesture_swipe: ${outcome.reason}"
-                                }
-                                is ActionOutcome.Cancelled -> return outcome
                             }
-                        }
-                        is ActionResult.Cancelled -> return ActionOutcome.Cancelled(gestureResult.reason)
-                        is ActionResult.Failure -> {
-                            attemptTrail += "gesture_swipe: ${gestureResult.reason}"
+                            is ActionResult.Cancelled -> return ActionOutcome.Cancelled(gestureResult.reason)
+                            is ActionResult.Failure -> {
+                                attemptTrail += "$name: ${gestureResult.reason}"
+                            }
                         }
                     }
                 }
@@ -215,7 +220,7 @@ class ScrollExecutor(
      * - "left" (reveal left) → finger swipes RIGHT → start=center, end=right
      * - "right" (reveal right) → finger swipes LEFT → start=center, end=left
      */
-    private fun computeSwipeGesture(direction: String, area: Bounds): UIAction.Swipe {
+    private fun computeSwipeGesture(direction: String, area: Bounds, flick: Boolean): UIAction.Swipe {
         val cx = area.centerX
         val cy = area.centerY
         val insetX = (area.width * EDGE_INSET_RATIO).toInt().coerceAtLeast(1)
@@ -228,6 +233,16 @@ class ScrollExecutor(
             "right" -> (area.left + insetX) to cy     // finger left
             else -> cx to cy
         }
-        return UIAction.Swipe(cx, cy, endX, endY, SWIPE_DURATION_MS)
+        if (!flick) return UIAction.Swipe(cx, cy, endX, endY, SWIPE_DURATION_MS)
+
+        // Start a quarter of the area's size behind center, away from the destination edge.
+        val (startX, startY) = when (direction) {
+            "down" -> cx to (cy + area.height / 4)
+            "up" -> cx to (cy - area.height / 4)
+            "left" -> (cx - area.width / 4) to cy
+            "right" -> (cx + area.width / 4) to cy
+            else -> cx to cy
+        }
+        return UIAction.Swipe(startX, startY, endX, endY, FLICK_DURATION_MS)
     }
 }

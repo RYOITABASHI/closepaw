@@ -40,18 +40,67 @@ internal class AdbShellChannel(context: Context) {
         port.validAdbPort()?.let { connectLocked(it) } ?: false
     }
 
+    data class PortStatus(
+        val lastPort: Int?,
+        val lastSuccessfulAt: Long?,
+        val discoveredPort: Int?,
+        val discoveredAt: Long?,
+        val discoverySource: String?,
+    )
+
+    fun portStatus(): PortStatus {
+        val values = prefs.all
+        return PortStatus(
+            lastPort = (values["lastPort"] as? Int).validAdbPort(),
+            lastSuccessfulAt = values["lastSuccessfulAt"] as? Long,
+            discoveredPort = (values["discoveredPort"] as? Int).validAdbPort(),
+            discoveredAt = values["discoveredAt"] as? Long,
+            discoverySource = values["discoverySource"] as? String,
+        )
+    }
+
     suspend fun connectAuto(): Boolean = mutex.withLock {
         isConnected() || withContext(Dispatchers.IO) {
-            connectUsingPorts(lastPort, {
-                try {
-                    discoverAdbPort(app)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    null
-                }
-            }, ::connectLocked)
+            connectUsingPorts(lastPort, ::discoverPort, ::recordDiscovery, ::connectLocked)
         }
+    }
+
+    /** Maintenance can use recorded candidates without starting another NSD scan. */
+    suspend fun connectKnownPorts(): Boolean = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            if (isConnected()) return@withLock true
+            val status = portStatus()
+            connectUsingPorts(status.lastPort, { status.discoveredPort }, ::connectLocked)
+        }
+    }
+
+    /** Record every valid observation. Only a disconnected channel can promote it. */
+    suspend fun rediscover(): Boolean = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val discovered = discoverPort().validAdbPort() ?: return@withLock false
+            recordDiscovery(discovered)
+            if (shouldAttemptPromotion(isConnected(), lastPort, discovered)) {
+                connectLocked(discovered)
+            } else {
+                true
+            }
+        }
+    }
+
+    private suspend fun discoverPort(): Int? = try {
+        discoverAdbPort(app)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun recordDiscovery(port: Int) {
+        prefs.edit()
+            .putInt("discoveredPort", port)
+            .putLong("discoveredAt", System.currentTimeMillis())
+            .putString("discoverySource", "nsd")
+            .apply()
     }
 
     private suspend fun connectLocked(port: Int): Boolean {
@@ -68,7 +117,12 @@ internal class AdbShellChannel(context: Context) {
             // This checks shell behavior and UID. A full shell impostor can answer both probes
             // and is outside the scope of this check.
             if (!isShellIdentityProbeValid(probe, nonce)) return false
-            runInterruptible(Dispatchers.IO) { prefs.edit().putInt("lastPort", port).commit() }
+            runInterruptible(Dispatchers.IO) {
+                prefs.edit()
+                    .putInt("lastPort", port)
+                    .putLong("lastSuccessfulAt", System.currentTimeMillis())
+                    .commit()
+            }
             activeConnection = connection
             return true
         } catch (e: CancellationException) {

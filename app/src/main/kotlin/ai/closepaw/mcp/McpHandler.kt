@@ -46,6 +46,7 @@ interface McpBackend {
         val version: String,
         val shizukuReady: Boolean,
         val accessibilityReady: Boolean,
+        val accessibilitySettingOn: Boolean = false,
     )
 
     /** Blocking; called on an HTTP worker thread. */
@@ -76,7 +77,15 @@ class McpHandler(
     private val adbStatus: () -> AdbStatus = { AdbStatus(false, false, null) },
     private val selfUpdate: McpSelfUpdate? = null,
 ) {
-    data class AdbStatus(val paired: Boolean, val connected: Boolean, val lastPort: Int?)
+    data class AdbStatus(
+        val paired: Boolean,
+        val connected: Boolean,
+        val lastPort: Int?,
+        val lastSuccessfulAt: Long? = null,
+        val discoveredPort: Int? = null,
+        val discoveredAt: Long? = null,
+        val discoverySource: String? = null,
+    )
 
     private val tools = if (selfUpdate == null) TOOLS else JsonArray(TOOLS + SELF_UPDATE_TOOL)
     private val toolNames = if (selfUpdate == null) TOOL_NAMES else TOOL_NAMES + TOOL_SELF_UPDATE
@@ -253,12 +262,19 @@ class McpHandler(
             put("serverOn", true)
             put("shizukuReady", s.shizukuReady)
             put("accessibilityReady", s.accessibilityReady)
+            put("accessibilitySettingOn", s.accessibilitySettingOn)
+            put("accessibilityBound", s.accessibilityReady)
             put("activeRuns", registry.activeCount())
             val adb = adbStatus()
             putJsonObject("adbChannel") {
                 put("paired", adb.paired)
                 put("connected", adb.connected)
                 put("lastPort", adb.lastPort?.let { JsonPrimitive(it) } ?: JsonNull)
+                put("lastSuccessfulPort", adb.lastPort?.let { JsonPrimitive(it) } ?: JsonNull)
+                put("lastSuccessfulAt", adb.lastSuccessfulAt?.let { JsonPrimitive(it) } ?: JsonNull)
+                put("discoveredPort", adb.discoveredPort?.let { JsonPrimitive(it) } ?: JsonNull)
+                put("discoveredAt", adb.discoveredAt?.let { JsonPrimitive(it) } ?: JsonNull)
+                put("discoverySource", adb.discoverySource?.let { JsonPrimitive(it) } ?: JsonNull)
             }
             selfUpdate?.status()?.let {
                 put("selfUpdateAdb", it.getValue("selfUpdateAdb"))

@@ -2678,4 +2678,14 @@ class ShellyBackgroundRunTest {
         val inline = McpMainCall(post = { error("must not post") }, onTargetThread = { true }, timeoutMs = 1)
         assertThat(inline.call<String> { "inline" }).isEqualTo("inline")
     }
+
+    @Test
+    fun `MCP keeps working notifications and cancels them at every terminal state`() {
+        assertThat(ShellyRunOrigin.MCP.shouldNotify(ShellyRunState.Working(false, emptyList()))).isTrue()
+        for (kind in ShellyRunState.Finished.Kind.entries) {
+            val finished = ShellyRunState.Finished(kind, null)
+            assertThat(ShellyRunOrigin.MCP.shouldNotify(finished)).isFalse()
+            assertThat(ShellyRunOrigin.SHELLY.shouldNotify(finished)).isTrue()
+        }
+    }
 }

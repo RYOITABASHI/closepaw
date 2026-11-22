@@ -150,11 +150,12 @@ internal fun shouldSuppressForShellyBackgroundRun(
     mode: CapsuleMode,
     shellyBackgroundRun: Boolean,
     shellyRunOnMainDisplay: Boolean,
+    origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
 ): Boolean = shellyBackgroundRun &&
     !shellyRunOnMainDisplay &&
     platformMode == PlatformMode.VIRTUAL_DISPLAY &&
     location != OverlayUserLocation.VD_VIEWER &&
-    !isShellyAttentionMode(mode)
+    (!isShellyAttentionMode(mode) || (origin == ShellyRunOrigin.MCP && mode is CapsuleMode.Error))
 
 /**
  * Lifecycle of the Shelly background-run inputs of [deriveOverlayVisibility], kept pure so the
@@ -174,7 +175,11 @@ internal class ShellyOverlayState {
     var releasePending: Boolean = false
         private set
 
-    fun start(onMainDisplay: Boolean) {
+    var origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY
+        private set
+
+    fun start(onMainDisplay: Boolean, origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY) {
+        this.origin = origin
         active = true
         this.onMainDisplay = onMainDisplay
         releasePending = false
@@ -221,6 +226,7 @@ internal class ShellyOverlayState {
 
     private fun reset() {
         active = false
+        origin = ShellyRunOrigin.SHELLY
         onMainDisplay = false
         releasePending = false
     }
@@ -240,6 +246,7 @@ internal fun deriveOverlayVisibility(
     showPreference: ShowPreference,
     shellyBackgroundRun: Boolean = false,
     shellyRunOnMainDisplay: Boolean = false,
+    origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
 ): OverlayVisibilityDecision {
     val isActive = hasActiveTask || mode is CapsuleMode.Done || mode is CapsuleMode.Error
     val normalizedShowPreference = when {
@@ -257,6 +264,7 @@ internal fun deriveOverlayVisibility(
             mode = mode,
             shellyBackgroundRun = shellyBackgroundRun,
             shellyRunOnMainDisplay = shellyRunOnMainDisplay,
+            origin = origin,
         )
     ) {
         // Invisible background run: nothing on the main display. The preference is kept as-is

@@ -63,7 +63,11 @@ class ShellyRunNotifier(context: Context) {
         pkg
     }
 
-    fun render(state: ShellyRunState) {
+    fun render(state: ShellyRunState, origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY) {
+        if (!origin.shouldNotify(state)) {
+            cancel()
+            return
+        }
         val content = text.render(state, ::labelOf)
         val attention = when (state) {
             is ShellyRunState.Working -> state.onMainDisplay
@@ -73,6 +77,7 @@ class ShellyRunNotifier(context: Context) {
         if (!canNotify()) {
             // Toast fallback (notifications blocked): one toast per distinct state, so the user
             // still learns whether they may use the phone, must approve, or the run ended.
+            if (origin == ShellyRunOrigin.MCP && state is ShellyRunState.Working) return
             val key = toastKey(state)
             if (key != lastToastKey) {
                 lastToastKey = key
@@ -134,7 +139,12 @@ class ShellyRunNotifier(context: Context) {
     }
 
     /** A request was refused before anything started. Tap opens ClosePaw (never auto-opens). */
-    fun showBlocked(block: ShellyBackgroundRun.Block, goal: String?) {
+    fun showBlocked(
+        block: ShellyBackgroundRun.Block,
+        goal: String?,
+        origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
+    ) {
+        if (origin == ShellyRunOrigin.MCP) return
         val content = text.blocked(block)
         if (!canNotify()) {
             Toast.makeText(context, "${content.title}\n${content.body}", Toast.LENGTH_LONG).show()

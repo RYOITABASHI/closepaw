@@ -187,6 +187,7 @@ class ServiceOverlayController(
             showPreference = showPreference,
             shellyBackgroundRun = shelly.active,
             shellyRunOnMainDisplay = shelly.onMainDisplay,
+            origin = shelly.origin,
         )
         Log.i(
             logTag,
@@ -359,8 +360,8 @@ class ServiceOverlayController(
      * ([onMainDisplay] false) the main-display overlays stay hidden except in attention modes
      * (see [shouldSuppressForShellyBackgroundRun]).
      */
-    fun onBackgroundRunRequested(onMainDisplay: Boolean) {
-        shelly.start(onMainDisplay)
+    fun onBackgroundRunRequested(onMainDisplay: Boolean, origin: ShellyRunOrigin) {
+        shelly.start(onMainDisplay, origin)
         if (!isMainAppResumed && userLocation == OverlayUserLocation.MAIN_APP) {
             userLocation = OverlayUserLocation.OTHER_APP
             updateContext()

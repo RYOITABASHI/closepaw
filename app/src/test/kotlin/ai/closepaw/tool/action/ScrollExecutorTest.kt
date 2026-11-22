@@ -19,7 +19,7 @@ class ScrollExecutorTest {
     fun `scroll fails when all channels have no observable effect`() = runTest {
         val snapshot = scrollableSnapshot("Item 1")
         val platform = RecordingScrollPlatform(
-            actionResults = listOf(ActionResult.Success(), ActionResult.Success()),
+            actionResults = List(3) { ActionResult.Success() },
             capturedSnapshots = listOf(snapshot, snapshot, snapshot, snapshot)
         )
 
@@ -37,12 +37,14 @@ class ScrollExecutorTest {
         assertThat(failed.attemptTrail)
             .containsAtLeast(
                 "a11y_scroll: Scroll down via a11y_scroll had no observable effect",
-                "gesture_swipe: Scroll down via gesture_swipe had no observable effect"
+                "gesture_swipe: Scroll down via gesture_swipe had no observable effect",
+                "gesture_flick: Scroll down via gesture_flick had no observable effect"
             )
         assertThat(platform.performedActions)
             .containsExactly(
                 UIAction.ScrollNodeAt(540, 1200, "down"),
-                UIAction.Swipe(540, 1200, 540, 240, 300L)
+                UIAction.Swipe(540, 1200, 540, 240, 300L),
+                UIAction.Swipe(540, 1800, 540, 240, 180L)
             )
             .inOrder()
         assertThat(platform.visualizedScrolls).isEmpty()
@@ -221,6 +223,21 @@ class ScrollExecutorTest {
             assertThat(first.x).isEqualTo(540)
             assertThat(first.y).isEqualTo(1200)
         }
+    }
+
+    @Test
+    fun `flick mirrors upward and verifies the changed content`() = runTest {
+        val snapshot = scrollableSnapshot("Item 5")
+        val platform = RecordingScrollPlatform(
+            actionResults = listOf(ActionResult.Failure("Unsupported"), ActionResult.Failure("Miss"), ActionResult.Success()),
+            capturedSnapshots = listOf(scrollableSnapshot("Item 1")),
+        )
+        val success = ScrollExecutor().execute(null, "up", snapshot, platform, { false }) as ActionOutcome.Success
+        assertThat(success.verified).isTrue()
+        assertThat(success.attemptTrail).containsExactly(
+            "a11y_scroll: Unsupported", "gesture_swipe: Miss", "gesture_flick: success",
+        ).inOrder()
+        assertThat(platform.performedActions.last()).isEqualTo(UIAction.Swipe(540, 600, 540, 2160, 180L))
     }
 
     private fun scrollableSnapshot(label: String): ScreenSnapshot {
