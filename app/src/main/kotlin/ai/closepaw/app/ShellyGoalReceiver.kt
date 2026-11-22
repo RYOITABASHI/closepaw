@@ -156,7 +156,7 @@ class ShellyGoalReceiver : BroadcastReceiver() {
             // The caller's opt-in only counts when the user enabled it in ClosePaw settings.
             allowMainDisplay = request.allowMainDisplay && probes.mainDisplayAllowedBySetting,
         )
-        Log.i(TAG, "verified Shelly request: decision=$decision")
+        Log.i(TAG, "verified Shelly request: decision=$decision goal=${goalFingerprint(request.goal)}")
         return when (decision) {
             is ShellyBackgroundRun.Decision.Start -> {
                 service!!.startShellyRun(request.goal, decision.platformMode, request.correlation)

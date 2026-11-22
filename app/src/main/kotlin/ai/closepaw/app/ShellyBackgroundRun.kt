@@ -7,6 +7,7 @@ import ai.closepaw.protocol.ApprovalRequired
 import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.protocol.ScreenCaptured
 import ai.closepaw.protocol.SessionCompleted
+import ai.closepaw.protocol.SessionEndReason
 import ai.closepaw.protocol.SessionError
 import ai.closepaw.protocol.SessionResumed
 import ai.closepaw.protocol.SessionTakeover
@@ -306,7 +307,14 @@ class ShellyRunTracker(
                 state = ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, event.message)
             }
             is SessionCompleted -> {
-                state = ShellyRunState.Finished(ShellyRunState.Finished.Kind.STOPPED, null)
+                // USER_STOPPED is a genuine stop, including STOP-ALL.
+                // Idle timeout and interruption end the session without a final answer.
+                state = when (event.reason) {
+                    SessionEndReason.USER_STOPPED ->
+                        ShellyRunState.Finished(ShellyRunState.Finished.Kind.STOPPED, null)
+                    SessionEndReason.IDLE_TIMEOUT, SessionEndReason.INTERRUPTED ->
+                        ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, NO_ANSWER_MESSAGE)
+                }
             }
             else -> Unit
         }
@@ -319,6 +327,7 @@ class ShellyRunTracker(
     }
 
     companion object {
+        const val NO_ANSWER_MESSAGE = "The session ended without a final answer"
         private const val MAX_TRACKED_APPS = 3
     }
 }

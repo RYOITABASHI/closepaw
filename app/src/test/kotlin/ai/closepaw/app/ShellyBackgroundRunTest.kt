@@ -241,6 +241,34 @@ class ShellyBackgroundRunTest {
     }
 
     @Test
+    fun `idle timeout without task completion fails the run`() {
+        assertSessionEndedWithoutAnswer(SessionEndReason.IDLE_TIMEOUT)
+    }
+
+    @Test
+    fun `interruption without task completion fails the run`() {
+        assertSessionEndedWithoutAnswer(SessionEndReason.INTERRUPTED)
+    }
+
+    private fun assertSessionEndedWithoutAnswer(reason: SessionEndReason) {
+        val t = tracker()
+        assertThat(t.onEvent(SessionCompleted(sid, 0L, reason))).isTrue()
+        assertThat(t.state).isEqualTo(
+            ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, ShellyRunTracker.NO_ANSWER_MESSAGE),
+        )
+    }
+
+    @Test
+    fun `idle timeout after a stopped task preserves its outcome`() {
+        val t = tracker()
+        t.onEvent(TaskCompleted(sid, 0L, "task", null, TaskOutcome.USER_STOPPED))
+        val stopped = ShellyRunState.Finished(ShellyRunState.Finished.Kind.STOPPED, null)
+        assertThat(t.state).isEqualTo(stopped)
+        assertThat(t.onEvent(SessionCompleted(sid, 0L, SessionEndReason.IDLE_TIMEOUT))).isFalse()
+        assertThat(t.state).isEqualTo(stopped)
+    }
+
+    @Test
     fun `text tells the user whether they may use the phone`() {
         // Fake resolver: "<resource id>[args]" so the test checks which string is chosen.
         val text = ShellyRunText { id, args -> "$id" + args.joinToString(prefix = "[", postfix = "]") }
