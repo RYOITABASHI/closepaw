@@ -18,7 +18,7 @@ import org.json.JSONObject
 class MobileActionInvocation(
     override val params: JSONObject,
     private val description: String,
-    private val executeAction: suspend (AndroidPlatform, ScreenSnapshot?, () -> Boolean, AppClassifier?) -> ActionOutcome
+    private val executeAction: suspend (AndroidPlatform, ScreenSnapshot?, () -> Boolean, AppClassifier?, Boolean) -> ActionOutcome
 ) : ToolInvocation {
     override val toolName = "mobile_action"
 
@@ -29,7 +29,10 @@ class MobileActionInvocation(
 
     override suspend fun execute(context: ToolExecutionContext): ToolExecutionResult {
         if (context.isCancelled()) return ToolExecutionResult.Cancelled()
-        val outcome = executeAction(context.platform, context.currentSnapshot, context::isCancelled, context.appClassifier)
+        val outcome = executeAction(
+            context.platform, context.currentSnapshot, context::isCancelled, context.appClassifier,
+            context.externalDriver,
+        )
         return mapOutcome(outcome)
     }
 

@@ -18,6 +18,16 @@ interface TraceRecorder {
     fun record(event: TraceEventRecord)
 
     /**
+     * Records and confirms an event in a single atomic commit. Implementations must deduplicate
+     * acknowledged commits by (runId, seq) so callers can safely retry the same event after a timeout.
+     * Returns false when the commit could not be confirmed within [timeoutMs].
+     */
+    suspend fun recordAcknowledged(event: TraceEventRecord, timeoutMs: Long): Boolean {
+        record(event)
+        return enabled
+    }
+
+    /**
      * Store a UTF-8 text artifact in the trace run folder.
      * Returns a reference that can be attached to events.
      */

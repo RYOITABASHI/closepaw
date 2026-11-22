@@ -549,6 +549,7 @@ class MainActivity : ComponentActivity() {
     private fun rebindActiveServiceSessionIfNeeded() {
         val service = AgentService.instance ?: return
         val serviceSession = service.getActiveSession() ?: return
+        if (serviceSession.externalDriver) return
         if (coordinator.currentSession === serviceSession) return
         // Don't rebind a dead session — let the next message create a fresh one
         if (serviceSession.state.value == SessionState.Shutdown) return
@@ -609,6 +610,10 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
                 SubmitResult.QUEUED -> return@launch
+                SubmitResult.BUSY -> {
+                    Toast.makeText(this@MainActivity, "ClosePaw is busy with another task", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
                 SubmitResult.NO_SESSION, SubmitResult.SESSION_DEAD -> { /* create new session */ }
             }
 
@@ -697,54 +702,70 @@ class MainActivity : ComponentActivity() {
             launchPolicy: SessionLaunchPolicy,
             autoReload: Boolean = false
     ): AgentSession? {
-        val baseUrlOverrides: Map<LLMProvider, String> = if (settingsState.openaiBaseUrl.isNotBlank()) {
-            mapOf(LLMProvider.OPENAI_API to settingsState.openaiBaseUrl)
-        } else emptyMap()
-        val visualizer = service.getActionVisualizer()
-        val touchGate = service.getOverlayTouchGate()
-        val selectedForReload =
-                if (launchPolicy == SessionLaunchPolicy.FORCE_FRESH) null
-                else coordinator.selectedSessionForReload
-
-        val session = if (selectedForReload != null) {
-            val reloaded = tryReloadSelectedSession(
-                    service = service,
-                    baseUrlOverrides = baseUrlOverrides,
-                    visualizer = visualizer,
-                    touchGate = touchGate,
-                    selected = selectedForReload
-            )
-            if (reloaded != null) {
-                Log.i(TAG, "Reloaded session ${reloaded.sessionId} from checkpoint")
-                reloaded
-            } else if (autoReload) {
-                Log.w(TAG, "Auto-reload failed for ${selectedForReload.id}, falling back to fresh session")
-                coordinator.selectedSessionForReload = null
-                createFreshSession(service, baseUrlOverrides, visualizer, touchGate)
-            } else {
-                Log.w(TAG, "Explicit resume failed for ${selectedForReload.id}, checkpoint not reloadable")
-                coordinator.selectedSessionForReload = null
-                Toast.makeText(this, getString(R.string.main_activity_session_previous_version), Toast.LENGTH_SHORT).show()
-                return null
-            }
-        } else {
-            coordinator.selectedSessionForReload = null
-            createFreshSession(service, baseUrlOverrides, visualizer, touchGate)
+        val creation = InternalSessionCreation()
+        if (!creation.claim()) {
+            Toast.makeText(this, "ClosePaw is busy with another task", Toast.LENGTH_SHORT).show()
+            return null
         }
+        try {
+            val baseUrlOverrides: Map<LLMProvider, String> = if (settingsState.openaiBaseUrl.isNotBlank()) {
+                mapOf(LLMProvider.OPENAI_API to settingsState.openaiBaseUrl)
+            } else emptyMap()
+            val visualizer = service.getActionVisualizer()
+            val touchGate = service.getOverlayTouchGate()
+            val selectedForReload =
+                    if (launchPolicy == SessionLaunchPolicy.FORCE_FRESH) null
+                    else coordinator.selectedSessionForReload
 
-        pendingTraceEnabled = null
-        pendingTraceRunId = null
-        pendingExcludedTools = emptySet()
-        pendingApprovalMode = null
-        pendingEvalTurnBudget = null
-        pendingAutoStartGoal = null
+            val session = if (selectedForReload != null) {
+                val reloaded = tryReloadSelectedSession(
+                        service = service,
+                        baseUrlOverrides = baseUrlOverrides,
+                        visualizer = visualizer,
+                        touchGate = touchGate,
+                        selected = selectedForReload,
+                        creation = creation
+                )
+                if (reloaded != null) {
+                    Log.i(TAG, "Reloaded session ${reloaded.sessionId} from checkpoint")
+                    reloaded
+                } else if (autoReload) {
+                    Log.w(TAG, "Auto-reload failed for ${selectedForReload.id}, falling back to fresh session")
+                    coordinator.selectedSessionForReload = null
+                    createFreshSession(service, baseUrlOverrides, visualizer, touchGate, creation)
+                } else {
+                    Log.w(TAG, "Explicit resume failed for ${selectedForReload.id}, checkpoint not reloadable")
+                    coordinator.selectedSessionForReload = null
+                    Toast.makeText(this, getString(R.string.main_activity_session_previous_version), Toast.LENGTH_SHORT).show()
+                    return null
+                }
+            } else {
+                coordinator.selectedSessionForReload = null
+                createFreshSession(service, baseUrlOverrides, visualizer, touchGate, creation)
+            }
 
-        sessionHistoryManager.setActiveSessionId(session.sessionId.value)
-        viewModel.startEventCollection(session)
-        service.observeExternalSession(session, session.getServices().platform.mode)
+            if (!service.observeExternalSession(session, session.getServices().platform.mode)) return null
+            creation.adopt()
 
-        Log.i(TAG, "Session ready with backend=${settingsState.llmBackend} and message sent")
-        return session
+            pendingTraceEnabled = null
+            pendingTraceRunId = null
+            pendingExcludedTools = emptySet()
+            pendingApprovalMode = null
+            pendingEvalTurnBudget = null
+            pendingAutoStartGoal = null
+
+            sessionHistoryManager.setActiveSessionId(session.sessionId.value)
+            viewModel.startEventCollection(session)
+
+            Log.i(TAG, "Session ready with backend=${settingsState.llmBackend} and message sent")
+            return session
+        } finally {
+            try {
+                service.discardUnattachedSession(creation)
+            } finally {
+                creation.release()
+            }
+        }
     }
 
     private suspend fun tryReloadSelectedSession(
@@ -752,7 +773,8 @@ class MainActivity : ComponentActivity() {
             baseUrlOverrides: Map<LLMProvider, String>,
             visualizer: ActionVisualizerManager?,
             touchGate: OverlayTouchGate?,
-            selected: SessionInfo
+            selected: SessionInfo,
+            creation: InternalSessionCreation,
     ): AgentSession? {
         val storage = SessionStorage(applicationContext)
         val contextFileName = storage.contextFileNameFor(selected.fileName)
@@ -760,7 +782,7 @@ class MainActivity : ComponentActivity() {
         if (snapshot.schemaVersion != 2) return null
         if (!snapshot.checkpointState.isReloadable()) return null
 
-        val session = withContext(Dispatchers.Default) {
+        val session = creation.create(Dispatchers.Default) {
             AgentSession.reload(
                     snapshot = snapshot,
                     service = service,
@@ -789,7 +811,8 @@ class MainActivity : ComponentActivity() {
             service: AgentService,
             baseUrlOverrides: Map<LLMProvider, String>,
             visualizer: ActionVisualizerManager?,
-            touchGate: OverlayTouchGate?
+            touchGate: OverlayTouchGate?,
+            creation: InternalSessionCreation,
     ): AgentSession {
         val localConfig =
                 if (settingsState.llmBackend == LLMBackendType.LOCAL) {
@@ -828,7 +851,7 @@ class MainActivity : ComponentActivity() {
                 )
 
         val session =
-                withContext(Dispatchers.Default) {
+                creation.create(Dispatchers.Default) {
                     AgentSession.create(
                             config = sessionConfig,
                             service = service,

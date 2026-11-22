@@ -8,8 +8,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import java.io.BufferedWriter
 import java.io.File
@@ -19,7 +21,8 @@ import java.util.concurrent.atomic.AtomicLong
 
 internal class FileTraceRecorder(
     override val runId: String,
-    private val rootDir: File
+    private val rootDir: File,
+    private val boundedCleanup: Boolean = false,
 ) : TraceRecorder {
     companion object {
         private const val TAG = "FileTraceRecorder"
@@ -27,10 +30,12 @@ internal class FileTraceRecorder(
         private const val META_FILE_NAME = "meta.json"
         private const val ARTIFACTS_DIR_NAME = "artifacts"
         private const val WRITE_CHANNEL_CAPACITY = 2048
+        private const val CLOSE_JOIN_TIMEOUT_MS = 2_000L
     }
 
     private sealed interface WriteOp {
         data class AppendLine(val line: String) : WriteOp
+        data class CommitLine(val line: String, val commitId: String, val done: CompletableDeferred<Boolean>) : WriteOp
         data class WriteBytes(val relativePath: String, val bytes: ByteArray) : WriteOp
         data class WriteUtf8(val relativePath: String, val content: String) : WriteOp
         data class Flush(val done: CompletableDeferred<Unit>) : WriteOp
@@ -68,6 +73,20 @@ internal class FileTraceRecorder(
     override fun record(event: TraceEventRecord) {
         val line = TraceJson.instance.encodeToString(event)
         enqueue(WriteOp.AppendLine(line))
+    }
+
+    override suspend fun recordAcknowledged(event: TraceEventRecord, timeoutMs: Long): Boolean {
+        if (!enabled) return false
+        return try {
+            withTimeoutOrNull(timeoutMs) {
+                val line = TraceJson.instance.encodeToString(event)
+                val done = CompletableDeferred<Boolean>()
+                channel.send(WriteOp.CommitLine(line, "$runId:${event.seq}", done))
+                done.await()
+            } ?: false
+        } catch (_: ClosedSendChannelException) {
+            false
+        }
     }
 
     override fun storeText(
@@ -122,6 +141,7 @@ internal class FileTraceRecorder(
     }
 
     private suspend fun runWriterLoop() {
+        val committedIds = mutableSetOf<String>()
         var writer: BufferedWriter? = null
         try {
             writer = BufferedWriter(OutputStreamWriter(FileOutputStream(traceFile, true), Charsets.UTF_8))
@@ -130,6 +150,22 @@ internal class FileTraceRecorder(
                     is WriteOp.AppendLine -> {
                         writer.append(op.line)
                         writer.newLine()
+                    }
+                    is WriteOp.CommitLine -> {
+                        if (op.commitId in committedIds) {
+                            op.done.complete(true)
+                            continue
+                        }
+                        try {
+                            writer.append(op.line)
+                            writer.newLine()
+                            writer.flush()
+                            committedIds.add(op.commitId)
+                            op.done.complete(true)
+                        } catch (e: Exception) {
+                            op.done.complete(false)
+                            throw e
+                        }
                     }
                     is WriteOp.WriteBytes -> writeBytes(op.relativePath, op.bytes)
                     is WriteOp.WriteUtf8 -> writeText(op.relativePath, op.content)
@@ -141,6 +177,7 @@ internal class FileTraceRecorder(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Trace writer loop failed", e)
+            if (boundedCleanup) channel.close()
         } finally {
             try {
                 writer?.flush()
@@ -185,8 +222,13 @@ internal class FileTraceRecorder(
     override suspend fun close() {
         channel.close()
         withContext(Dispatchers.IO) {
-            writerJob.join()
+            if (boundedCleanup) {
+                withTimeoutOrNull(CLOSE_JOIN_TIMEOUT_MS) { writerJob.join() }
+            } else {
+                writerJob.join()
+            }
         }
+        if (boundedCleanup && writerJob.isActive) writerJob.cancel()
         scope.cancel()
     }
 }

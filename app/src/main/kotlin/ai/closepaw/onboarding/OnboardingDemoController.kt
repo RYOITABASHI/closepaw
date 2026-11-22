@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import ai.closepaw.R
 import ai.closepaw.app.AgentService
+import ai.closepaw.app.InternalSessionCreation
 import ai.closepaw.app.AppSettingsState
 import ai.closepaw.app.AuthStoreHolder
 import ai.closepaw.auth.MissingCredential
@@ -92,6 +93,11 @@ class OnboardingDemoController(
 
             val authStore = AuthStoreHolder.get(service.applicationContext)
 
+            val creation = InternalSessionCreation()
+            if (!creation.claim()) {
+                withContext(Dispatchers.Main) { onFailure("ClosePaw is busy with another task") }
+                return@launch
+            }
             try {
                 val config = SessionConfig(
                     approvalMode = ApprovalMode.AUTO_APPROVE,
@@ -109,7 +115,7 @@ class OnboardingDemoController(
 
                 val baseUrlOverrides = resolveBaseUrlOverrides(settingsState.openaiBaseUrl)
 
-                val session = withContext(Dispatchers.IO) {
+                val session = creation.create(Dispatchers.IO) {
                     AgentSession.create(
                         config = config,
                         service = service,
@@ -124,6 +130,7 @@ class OnboardingDemoController(
 
                 // Register with service for overlay visualization
                 service.observeExternalSession(session, PlatformMode.ACCESSIBILITY)
+                creation.adopt()
 
                 // Collect events in background
                 var lastPackageName: String? = null
@@ -230,7 +237,12 @@ class OnboardingDemoController(
                     )
                 }
             } finally {
-                shutdownSession()
+                try {
+                    shutdownSession()
+                } finally {
+                    service.discardUnattachedSession(creation)
+                    creation.release()
+                }
             }
         }
     }

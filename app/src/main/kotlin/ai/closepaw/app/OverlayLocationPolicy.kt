@@ -142,7 +142,7 @@ internal fun isShellyAttentionMode(mode: CapsuleMode): Boolean =
  * True only when ALL hold: the run was started by Shelly ([shellyBackgroundRun]), it works on the
  * virtual display (platform VD and not [shellyRunOnMainDisplay]), the user is on a main-display
  * surface (MAIN_APP / OTHER_APP — never VD_VIEWER, where the user chose to watch), and the mode is
- * not an attention mode ([isShellyAttentionMode]).
+ * either belongs to an external driver or is suppressed by the usual Shelly/MCP mode rules.
  */
 internal fun shouldSuppressForShellyBackgroundRun(
     platformMode: PlatformMode,
@@ -151,11 +151,12 @@ internal fun shouldSuppressForShellyBackgroundRun(
     shellyBackgroundRun: Boolean,
     shellyRunOnMainDisplay: Boolean,
     origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
+    externalDriver: Boolean = false,
 ): Boolean = shellyBackgroundRun &&
     !shellyRunOnMainDisplay &&
     platformMode == PlatformMode.VIRTUAL_DISPLAY &&
     location != OverlayUserLocation.VD_VIEWER &&
-    (!isShellyAttentionMode(mode) || (origin == ShellyRunOrigin.MCP && mode is CapsuleMode.Error))
+    (externalDriver || !isShellyAttentionMode(mode) || (origin == ShellyRunOrigin.MCP && mode is CapsuleMode.Error))
 
 /**
  * Lifecycle of the Shelly background-run inputs of [deriveOverlayVisibility], kept pure so the
@@ -178,8 +179,16 @@ internal class ShellyOverlayState {
     var origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY
         private set
 
-    fun start(onMainDisplay: Boolean, origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY) {
+    var externalDriver: Boolean = false
+        private set
+
+    fun start(
+        onMainDisplay: Boolean,
+        origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
+        externalDriver: Boolean = false,
+    ) {
         this.origin = origin
+        this.externalDriver = externalDriver
         active = true
         this.onMainDisplay = onMainDisplay
         releasePending = false
@@ -227,6 +236,7 @@ internal class ShellyOverlayState {
     private fun reset() {
         active = false
         origin = ShellyRunOrigin.SHELLY
+        externalDriver = false
         onMainDisplay = false
         releasePending = false
     }
@@ -247,6 +257,7 @@ internal fun deriveOverlayVisibility(
     shellyBackgroundRun: Boolean = false,
     shellyRunOnMainDisplay: Boolean = false,
     origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
+    externalDriver: Boolean = false,
 ): OverlayVisibilityDecision {
     val isActive = hasActiveTask || mode is CapsuleMode.Done || mode is CapsuleMode.Error
     val normalizedShowPreference = when {
@@ -265,6 +276,7 @@ internal fun deriveOverlayVisibility(
             shellyBackgroundRun = shellyBackgroundRun,
             shellyRunOnMainDisplay = shellyRunOnMainDisplay,
             origin = origin,
+            externalDriver = externalDriver,
         )
     ) {
         // Invisible background run: nothing on the main display. The preference is kept as-is

@@ -188,6 +188,7 @@ class ServiceOverlayController(
             shellyBackgroundRun = shelly.active,
             shellyRunOnMainDisplay = shelly.onMainDisplay,
             origin = shelly.origin,
+            externalDriver = shelly.externalDriver,
         )
         Log.i(
             logTag,
@@ -357,11 +358,16 @@ class ServiceOverlayController(
      * elsewhere: treat it as OTHER_APP.
      *
      * Also marks the run as Shelly-initiated: while it works on the virtual display
-     * ([onMainDisplay] false) the main-display overlays stay hidden except in attention modes
+     * ([onMainDisplay] false), the main-display overlays stay hidden in all modes for an
+     * external driver. Other background runs use the attention-mode rules
      * (see [shouldSuppressForShellyBackgroundRun]).
      */
-    fun onBackgroundRunRequested(onMainDisplay: Boolean, origin: ShellyRunOrigin) {
-        shelly.start(onMainDisplay, origin)
+    fun onBackgroundRunRequested(
+        onMainDisplay: Boolean,
+        origin: ShellyRunOrigin,
+        externalDriver: Boolean = false,
+    ) {
+        shelly.start(onMainDisplay, origin, externalDriver)
         if (!isMainAppResumed && userLocation == OverlayUserLocation.MAIN_APP) {
             userLocation = OverlayUserLocation.OTHER_APP
             updateContext()
@@ -388,6 +394,12 @@ class ServiceOverlayController(
      */
     fun clearShellyBackgroundRun() {
         if (shelly.clear()) applyVisibility()
+    }
+
+    fun retireExternalOverlay() {
+        if (!shelly.externalDriver) return
+        onSessionCompleted(SessionEndReason.USER_STOPPED)
+        clearShellyBackgroundRun()
     }
 
     /** Pause the agent as if the user pressed the capsule's takeover button. */
@@ -483,7 +495,7 @@ class ServiceOverlayController(
 
     fun onApprovalRequired(details: ApprovalDetails) {
         val appLabel = resolveAppLabel(details.packageName) ?: run {
-            Log.w(logTag, "Approval package label unavailable: ${details.packageName}")
+            Log.w(logTag, "Automatic fail-closed approval denial (package label unavailable): ${details.packageName}")
             onApprovalResponse(
                 details.callId,
                 ApprovalDecision.DENIED,

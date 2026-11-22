@@ -146,30 +146,36 @@ class ShellyGoalReceiver : BroadcastReceiver() {
         probes: Probes,
     ): Pair<Int, String> {
         val service = AgentService.instance
-        val decision = ShellyBackgroundRun.precheck(
-            accessibilityConnected = service != null,
-            onboardingCompleted = probes.onboardingCompleted,
-            canDrawOverlays = probes.canDrawOverlays,
-            credentialsMissing = probes.credentialsMissing,
-            sessionBusy = service?.isSessionBusy() == true,
-            virtualDisplayReady = probes.virtualDisplayReady,
-            // The caller's opt-in only counts when the user enabled it in ClosePaw settings.
-            allowMainDisplay = request.allowMainDisplay && probes.mainDisplayAllowedBySetting,
-        )
-        Log.i(TAG, "verified Shelly request: decision=$decision goal=${goalFingerprint(request.goal)}")
-        return when (decision) {
-            is ShellyBackgroundRun.Decision.Start -> {
-                service!!.startShellyRun(request.goal, decision.platformMode, request.correlation)
-                if (decision.platformMode == PlatformMode.VIRTUAL_DISPLAY) {
-                    ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY to "STARTED_VIRTUAL_DISPLAY"
-                } else {
-                    ShellyBackgroundRun.RESULT_STARTED_MAIN_DISPLAY to "STARTED_MAIN_DISPLAY"
+        val token = Any()
+        val claimed = BrainSessionAdmission.tryClaimInternal(token)
+        try {
+            val decision = ShellyBackgroundRun.precheck(
+                accessibilityConnected = service != null,
+                onboardingCompleted = probes.onboardingCompleted,
+                canDrawOverlays = probes.canDrawOverlays,
+                credentialsMissing = probes.credentialsMissing,
+                sessionBusy = service?.isInternalIntakeBusy() == true || !claimed,
+                virtualDisplayReady = probes.virtualDisplayReady,
+                // The caller's opt-in only counts when the user enabled it in ClosePaw settings.
+                allowMainDisplay = request.allowMainDisplay && probes.mainDisplayAllowedBySetting,
+            )
+            Log.i(TAG, "verified Shelly request: decision=$decision goal=${goalFingerprint(request.goal)}")
+            return when (decision) {
+                is ShellyBackgroundRun.Decision.Start -> {
+                    service!!.startShellyRun(request.goal, decision.platformMode, request.correlation)
+                    if (decision.platformMode == PlatformMode.VIRTUAL_DISPLAY) {
+                        ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY to "STARTED_VIRTUAL_DISPLAY"
+                    } else {
+                        ShellyBackgroundRun.RESULT_STARTED_MAIN_DISPLAY to "STARTED_MAIN_DISPLAY"
+                    }
+                }
+                is ShellyBackgroundRun.Decision.Blocked -> {
+                    ShellyRunNotifier(app).showBlocked(decision.block, request.goal)
+                    decision.block.resultCode to decision.block.name
                 }
             }
-            is ShellyBackgroundRun.Decision.Blocked -> {
-                ShellyRunNotifier(app).showBlocked(decision.block, request.goal)
-                decision.block.resultCode to decision.block.name
-            }
+        } finally {
+            BrainSessionAdmission.releaseInternal(token)
         }
     }
 

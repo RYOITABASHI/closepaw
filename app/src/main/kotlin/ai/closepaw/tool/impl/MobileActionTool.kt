@@ -68,11 +68,14 @@ Actions:
         val target = parseOptionalTarget(params)
         val description = buildDescription(action, target, params)
 
-        return MobileActionInvocation(params, description) { platform, snapshot, isCancelled, appClassifier ->
+        return MobileActionInvocation(params, description) { platform, snapshot, isCancelled, appClassifier, externalDriver ->
             when (action) {
                 "click" -> {
                     val requiredTarget = requireTarget(action, target)
-                    ClickExecutor().execute(requiredTarget, snapshot, platform, isCancelled, appClassifier)
+                    ClickExecutor().execute(
+                        requiredTarget, snapshot, platform, isCancelled, appClassifier,
+                        requireObservedNode = externalDriver && requiredTarget is Target.ElementIndex,
+                    )
                 }
                 "long_press" -> {
                     val requiredTarget = requireTarget(action, target)

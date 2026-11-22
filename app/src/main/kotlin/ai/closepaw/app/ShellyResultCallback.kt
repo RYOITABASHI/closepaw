@@ -183,6 +183,7 @@ object ShellyResultCallback {
  * reached its terminal state, and nothing is sent.
  */
 class ShellyPendingResult(val correlation: ShellyBackgroundRun.ResultCorrelation?) {
+    internal val stopIdentity = java.util.UUID.randomUUID().toString()
     private val claimed = AtomicBoolean(false)
 
     /** True once some terminal path claimed this start's result. */

@@ -63,7 +63,12 @@ class ShellyRunNotifier(context: Context) {
         pkg
     }
 
-    fun render(state: ShellyRunState, origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY) {
+    fun render(
+        state: ShellyRunState,
+        origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
+        sessionId: String? = null,
+        stopIdentity: String? = sessionId,
+    ) {
         if (!origin.shouldNotify(state)) {
             cancel()
             return
@@ -103,7 +108,7 @@ class ShellyRunNotifier(context: Context) {
                     .setSmallIcon(if (state.onMainDisplay) android.R.drawable.stat_sys_warning else R.drawable.ic_paw)
                     .setColor(if (state.onMainDisplay) COLOR_MAIN_DISPLAY else COLOR_WORKING)
                     .setProgress(0, 0, true)
-                    .addAction(0, text.actionStop, actionIntent(ShellyRunActionReceiver.ACTION_STOP))
+                stopIdentity?.let { builder.addAction(0, text.actionStop, stopIntent(it)) }
                 if (state.onMainDisplay) builder.setCategory(NotificationCompat.CATEGORY_STATUS)
             }
             is ShellyRunState.WaitingForApproval -> {
@@ -111,16 +116,18 @@ class ShellyRunNotifier(context: Context) {
                     .setSmallIcon(android.R.drawable.ic_dialog_alert)
                     .setColor(COLOR_ATTENTION)
                     .setCategory(NotificationCompat.CATEGORY_REMINDER)
-                    .addAction(securedAction(text.actionAllowAlways, approvalIntent(ShellyRunActionReceiver.ACTION_ALLOW_ALWAYS, state)))
-                    .addAction(securedAction(text.actionAllowSession, approvalIntent(ShellyRunActionReceiver.ACTION_ALLOW_SESSION, state)))
-                    .addAction(0, text.actionReject, approvalIntent(ShellyRunActionReceiver.ACTION_REJECT, state))
+                if (sessionId != null) {
+                    builder.addAction(securedAction(text.actionAllowAlways, approvalIntent(ShellyRunActionReceiver.ACTION_ALLOW_ALWAYS, state, sessionId)))
+                        .addAction(securedAction(text.actionAllowSession, approvalIntent(ShellyRunActionReceiver.ACTION_ALLOW_SESSION, state, sessionId)))
+                        .addAction(0, text.actionReject, approvalIntent(ShellyRunActionReceiver.ACTION_REJECT, state, sessionId))
+                }
             }
             is ShellyRunState.Paused -> {
                 builder.setOngoing(true)
                     .setSmallIcon(android.R.drawable.ic_media_pause)
                     .setColor(COLOR_ATTENTION)
                     .addAction(securedAction(text.actionResume, actionIntent(ShellyRunActionReceiver.ACTION_RESUME)))
-                    .addAction(0, text.actionStop, actionIntent(ShellyRunActionReceiver.ACTION_STOP))
+                stopIdentity?.let { builder.addAction(0, text.actionStop, stopIntent(it)) }
             }
             is ShellyRunState.Finished -> {
                 val (icon, color) = when (state.kind) {
@@ -227,8 +234,22 @@ class ShellyRunNotifier(context: Context) {
         )
     }
 
-    private fun approvalIntent(action: String, state: ShellyRunState.WaitingForApproval): PendingIntent =
-        actionIntent(action, requestCode = (action + state.callId).hashCode()) {
+    private fun stopIntent(identity: String): PendingIntent =
+        actionIntent(ShellyRunActionReceiver.ACTION_STOP) {
+            data = android.net.Uri.Builder().scheme("closepaw-stop").authority("run")
+                .appendPath(identity).build()
+            putExtra(ShellyRunActionReceiver.EXTRA_STOP_IDENTITY, identity)
+        }
+
+    private fun approvalIntent(
+        action: String,
+        state: ShellyRunState.WaitingForApproval,
+        sessionId: String,
+    ): PendingIntent =
+        actionIntent(action) {
+            data = android.net.Uri.Builder().scheme("closepaw-approval").authority(sessionId)
+                .appendPath(state.callId).build()
+            putExtra(ShellyRunActionReceiver.EXTRA_SESSION_ID, sessionId)
             putExtra(ShellyRunActionReceiver.EXTRA_CALL_ID, state.callId)
             putExtra(ShellyRunActionReceiver.EXTRA_PACKAGE, state.packageName)
         }

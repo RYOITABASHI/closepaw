@@ -1,6 +1,7 @@
 package ai.closepaw.session
 
 import com.google.common.truth.Truth.assertThat
+import ai.closepaw.app.BrainSessionAdmission
 import ai.closepaw.protocol.Op
 import ai.closepaw.protocol.SessionState
 import io.mockk.coEvery
@@ -26,9 +27,53 @@ class SessionCoordinatorTest {
         state: MutableStateFlow<SessionState> = MutableStateFlow(SessionState.Idle)
     ): AgentSession {
         val session = mockk<AgentSession>(relaxed = true)
+        every { session.tryClaimInternalAdmission() } returns true
         every { session.state } returns state
         coEvery { session.submit(any()) } returns Unit
         return session
+    }
+
+    @Test
+    fun `submit returns busy while brain owns admission`() = runTest {
+        val coordinator = SessionCoordinator(backgroundScope)
+        val session = fakeSession()
+        val brain = Any()
+        val token = Any()
+        val admission = BrainSessionAdmission
+        every { session.tryClaimInternalAdmission() } answers { admission.tryClaimInternal(token) }
+        check(admission.gate.tryBeginStart(brain))
+        admission.gate.startAdopted(brain)
+        try {
+            coordinator.attachSession(session)
+            assertThat(coordinator.submit("blocked")).isEqualTo(SubmitResult.BUSY)
+            coVerify(exactly = 0) { session.submit(Op.UserInput("blocked")) }
+        } finally {
+            admission.releaseInternal(token)
+            admission.gate.sessionEnded()
+        }
+    }
+
+    @Test
+    fun `create and submit hands admission off from predecessor token`() = runTest {
+        val coordinator = SessionCoordinator(backgroundScope)
+        val session = fakeSession()
+        val predecessor = Any()
+        val successor = Any()
+        val brain = Any()
+        val admission = BrainSessionAdmission
+        every { session.tryClaimInternalAdmission() } answers { admission.tryClaimInternal(successor) }
+        check(admission.tryClaimInternal(predecessor))
+        try {
+            assertThat(coordinator.createAndSubmit("next") { session }).isEqualTo(CreateResult.Success)
+            admission.releaseInternal(predecessor)
+            assertThat(admission.gate.tryBeginStart(brain)).isFalse()
+            assertThat(coordinator.currentSession).isSameInstanceAs(session)
+            coVerify(exactly = 1) { session.submit(Op.UserInput("next")) }
+        } finally {
+            admission.releaseInternal(predecessor)
+            admission.releaseInternal(successor)
+            admission.gate.startAborted(brain)
+        }
     }
 
     @Test
@@ -277,6 +322,7 @@ class SessionCoordinatorTest {
         val coordinator = SessionCoordinator(scope)
         val state = MutableStateFlow<SessionState>(SessionState.Running)
         val session = mockk<AgentSession>(relaxed = true)
+        every { session.tryClaimInternalAdmission() } returns true
         every { session.state } returns state
         // First UserInput drains "a" and flips state to Running mid-loop;
         // remaining inputs must stay queued.

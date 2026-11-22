@@ -41,6 +41,7 @@ import io.mockk.mockk
 import io.mockk.mockkConstructor
 import io.mockk.unmockkConstructor
 import io.mockk.verify
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -66,6 +67,36 @@ class ShellyBackgroundRunTest {
     private val sid = SessionId("s1")
 
     // ── Trust gate on the exported receiver ──
+
+    @Test
+    fun `failed brain shutdown leaves no failed entry in replacement barrier`() = runTest {
+        val barrier = ReplacedSessionShutdownBarrier()
+        val failedShutdown = Job().apply { cancel() }
+        var fallbackRan = false
+        settleBrainTeardown(
+            scope = this,
+            dispatcher = EmptyCoroutineContext,
+            timeoutMs = 1_000,
+            hardTimeoutMs = 10_000,
+            fence = {},
+            submit = { reconciliation ->
+                barrier.add(reconciliation)
+                assertThat(barrier.outstanding).isEqualTo(1)
+                failedShutdown
+            },
+            fallback = { fallbackRan = true },
+            close = {},
+            detach = {},
+            track = {},
+            onSubmissionError = { throw AssertionError(it) },
+            onFallback = {},
+            onCleanupError = { throw AssertionError(it) },
+            onTimeout = { error("unexpected timeout") },
+        )
+        assertThat(fallbackRan).isTrue()
+        assertThat(barrier.outstanding).isEqualTo(0)
+        assertThat(barrier.awaitClear(1_000)).isTrue()
+    }
 
     @Test
     fun `untrusted caller is ignored even with a valid action and goal`() {

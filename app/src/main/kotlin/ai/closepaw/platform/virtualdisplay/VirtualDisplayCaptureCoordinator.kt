@@ -49,7 +49,8 @@ internal class VirtualDisplayCaptureCoordinator(
         data class A11yCaptureResult(
                 val elements: List<PerceptionElement>,
                 val rawTreeArtifactPath: String?,
-                val sanitizedTreeArtifactPath: String?
+                val sanitizedTreeArtifactPath: String?,
+                val failure: String? = null,
         )
 
         suspend fun captureA11yTreeWithArtifacts(): A11yCaptureResult {
@@ -58,7 +59,7 @@ internal class VirtualDisplayCaptureCoordinator(
                         windowAccessor.getRootsOnDisplay()
                 }
                 if (roots.isEmpty()) {
-                        return A11yCaptureResult(emptyList(), null, null)
+                        return A11yCaptureResult(emptyList(), null, null, failure = "no accessibility roots on display")
                 }
                 try {
                         // Perception and serialization run off Main to avoid blocking
@@ -97,7 +98,7 @@ internal class VirtualDisplayCaptureCoordinator(
                         throw e // Never swallow coroutine cancellation
                 } catch (e: Exception) {
                         Log.w(TAG, "Perceptor.snapshot failed", e)
-                        return A11yCaptureResult(emptyList(), null, null)
+                        return A11yCaptureResult(emptyList(), null, null, failure = "perception failed: ${e.javaClass.simpleName}")
                 } finally {
                         roots.forEach { it.recycleCompat() }
                 }

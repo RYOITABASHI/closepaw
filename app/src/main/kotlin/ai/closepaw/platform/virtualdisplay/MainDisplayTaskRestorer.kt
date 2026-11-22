@@ -39,11 +39,14 @@ internal enum class MainDisplayReconcileOutcome {
     FAILED,
 }
 
+internal class LaunchRefusedException(val reason: String) : Exception(reason)
+
 internal class MainDisplayTaskRestorer(
         private val shizuku: ShizukuClient,
         homePackages: Set<String>,
         /** Builds the no-animation ActivityOptions (needs a Context); null in tests. */
         private val context: Context? = null,
+        private val strictIsolation: Boolean = false,
 ) {
     companion object {
         private const val TAG = "MainDisplayTasks"
@@ -65,10 +68,22 @@ internal class MainDisplayTaskRestorer(
      * Wrap one launch of [packageName] on [vdDisplayId]. [launch] receives whether to force a new
      * task (FLAG_ACTIVITY_MULTIPLE_TASK) so the user's display-0 task is not moved.
      */
-    suspend fun <T> aroundLaunch(packageName: String, vdDisplayId: Int, launch: suspend (newTask: Boolean) -> T): T =
+    suspend fun <T> aroundLaunch(
+            packageName: String,
+            vdDisplayId: Int,
+            launchGate: ((List<DisplayTask>) -> String?)? = null,
+            launch: suspend (newTask: Boolean) -> T,
+    ): T =
             mutex.withLock {
-                val mainBefore = withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(MAIN) }
+                val initialMain = withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(MAIN) }
+                if (launchGate != null && initialMain == null) {
+                    throw LaunchRefusedException("Could not verify main-display tasks for an isolated launch")
+                }
                 val vdBefore = withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(vdDisplayId) }
+                val mainBefore = if (launchGate != null) {
+                    withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(MAIN) }
+                        ?: throw LaunchRefusedException("Could not revalidate main-display tasks for an isolated launch")
+                } else initialMain
                 synchronized(guard) {
                     if (mainBefore != null) guard.observeMain(mainBefore)
                     // A failed pre-launch read (null) must reach the guard too: this launch may be
@@ -77,6 +92,9 @@ internal class MainDisplayTaskRestorer(
                 }
                 val newTask = mainBefore != null && vdBefore != null &&
                         MainDisplayTaskGuard.shouldLaunchInNewTask(packageName, mainBefore, vdBefore)
+                if (launchGate != null && mainBefore != null) {
+                    launchGate(mainBefore)?.let { throw LaunchRefusedException(it) }
+                }
                 val result = launch(newTask)
                 if (mainBefore != null) {
                     withContext(Dispatchers.IO) {
@@ -312,6 +330,7 @@ internal class MainDisplayTaskRestorer(
             executed: MutableList<MainDisplayRefront>,
     ): Boolean {
         val mainNow = shizuku.rootTasksOnDisplay(MAIN)
+        if (strictIsolation && mainNow == null) return false
         val target = if (mainNow == null) {
             planned
         } else {
@@ -367,6 +386,7 @@ internal class MainDisplayTaskRestorer(
                     if (handover.taskIds.isNotEmpty()) {
                         val landed = awaitOnMain(handover.taskIds)
                         val mainNow = shizuku.rootTasksOnDisplay(MAIN)
+                        if (strictIsolation && mainNow == null) return@withContext
                         val target = if (mainNow == null) {
                             handover.refront
                         } else {

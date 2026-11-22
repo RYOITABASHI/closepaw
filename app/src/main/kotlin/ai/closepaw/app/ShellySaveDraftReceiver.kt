@@ -211,32 +211,38 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
         checks: Checks,
     ): Pair<Int, String>? {
         val service = AgentService.instance
-        val refusal = ShellySaveDraft.refusal(
-            accessibilityConnected = service != null,
-            onboardingCompleted = checks.onboarded,
-            sessionBusy = service?.isSessionBusy() == true,
-            virtualDisplayReady = checks.virtualDisplayReady,
-            deviceLocked = checks.locked,
-            chromeInFront = checks.chromeInFront,
-        )
-        if (refusal != null) return refusal to "REFUSED"
-        val parsed = checks.parsed
-        if (parsed is SaveDraftRequestParser.Parsed.Bad) {
-            Log.w(TAG, "refused file: ${parsed.reason}")
-            return ShellyBackgroundRun.RESULT_REJECTED to parsed.reason
+        val token = Any()
+        val claimed = BrainSessionAdmission.tryClaimInternal(token)
+        try {
+            val refusal = ShellySaveDraft.refusal(
+                accessibilityConnected = service != null,
+                onboardingCompleted = checks.onboarded,
+                sessionBusy = service?.isInternalIntakeBusy() == true || !claimed,
+                virtualDisplayReady = checks.virtualDisplayReady,
+                deviceLocked = checks.locked,
+                chromeInFront = checks.chromeInFront,
+            )
+            if (refusal != null) return refusal to "REFUSED"
+            val parsed = checks.parsed
+            if (parsed is SaveDraftRequestParser.Parsed.Bad) {
+                Log.w(TAG, "refused file: ${parsed.reason}")
+                return ShellyBackgroundRun.RESULT_REJECTED to parsed.reason
+            }
+            // Last moment before the commit: past the cap, Shelly may already have stopped waiting.
+            // Checked before the replay guard, so a too-slow request id is not burned either.
+            if (checks.window.isExpired()) {
+                Log.w(TAG, "request too slow at commit; refused")
+                return null
+            }
+            if (!REPLAY_GUARD.firstUse(target.correlation.reqId)) {
+                Log.w(TAG, "refused a repeated request")
+                return ShellyBackgroundRun.RESULT_REJECTED to "REPEATED_REQUEST"
+            }
+            service!!.startShellySaveDraft((parsed as SaveDraftRequestParser.Parsed.Ok).request, target.correlation)
+            return ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY to "STARTED_VIRTUAL_DISPLAY"
+        } finally {
+            BrainSessionAdmission.releaseInternal(token)
         }
-        // Last moment before the commit: past the cap, Shelly may already have stopped waiting.
-        // Checked before the replay guard, so a too-slow request id is not burned either.
-        if (checks.window.isExpired()) {
-            Log.w(TAG, "request too slow at commit; refused")
-            return null
-        }
-        if (!REPLAY_GUARD.firstUse(target.correlation.reqId)) {
-            Log.w(TAG, "refused a repeated request")
-            return ShellyBackgroundRun.RESULT_REJECTED to "REPEATED_REQUEST"
-        }
-        service!!.startShellySaveDraft((parsed as SaveDraftRequestParser.Parsed.Ok).request, target.correlation)
-        return ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY to "STARTED_VIRTUAL_DISPLAY"
     }
 
     private fun reject(data: String) {

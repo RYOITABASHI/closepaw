@@ -41,6 +41,8 @@ object PlatformFactory {
             traceRecorder: TraceRecorder,
             overlayTouchGate: OverlayTouchGate? = null,
             isPackageBlocked: (String?) -> Boolean = { false },
+            externalDriver: Boolean = false,
+            isDispatchCancelled: (() -> Boolean)? = null,
     ): AndroidPlatform {
         return when (config.platformMode) {
             PlatformMode.ACCESSIBILITY -> {
@@ -48,7 +50,9 @@ object PlatformFactory {
                 AccessibilityPlatform(service, config, visualizer, traceRecorder, overlayTouchGate, isPackageBlocked)
             }
             PlatformMode.VIRTUAL_DISPLAY -> {
-                createVirtualDisplayPlatform(config, service, visualizer, traceRecorder, isPackageBlocked)
+                createVirtualDisplayPlatform(
+                    config, service, visualizer, traceRecorder, isPackageBlocked, externalDriver, isDispatchCancelled,
+                )
                         ?: run {
                             Log.w(TAG, "Shizuku unavailable, falling back to AccessibilityPlatform")
                             AccessibilityPlatform(service, config, visualizer, traceRecorder, overlayTouchGate, isPackageBlocked)
@@ -62,7 +66,9 @@ object PlatformFactory {
             service: AccessibilityService,
             visualizer: ActionVisualizerManager?,
             traceRecorder: TraceRecorder,
-            isPackageBlocked: (String?) -> Boolean
+            isPackageBlocked: (String?) -> Boolean,
+            externalDriver: Boolean,
+            isDispatchCancelled: (() -> Boolean)?,
     ): VirtualDisplayPlatform? {
         val shizuku = ShizukuClient()
 
@@ -89,7 +95,9 @@ object PlatformFactory {
                 sessionConfig = config,
                 traceRecorder = traceRecorder,
                 visualizer = visualizer,
-                isPackageBlocked = isPackageBlocked
+                isPackageBlocked = isPackageBlocked,
+                externalDriver = externalDriver,
+                isDispatchCancelled = isDispatchCancelled,
         )
     }
 }

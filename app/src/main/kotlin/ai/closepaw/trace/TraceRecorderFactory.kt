@@ -9,7 +9,12 @@ import ai.closepaw.protocol.SessionId
 object TraceRecorderFactory {
     private const val TRACE_ROOT_DIR_NAME = "inspection-trace"
 
-    fun create(context: Context, config: SessionConfig, sessionId: SessionId): TraceRecorder {
+    fun create(
+        context: Context,
+        config: SessionConfig,
+        sessionId: SessionId,
+        boundedCleanup: Boolean = false,
+    ): TraceRecorder {
         if (!config.traceEnabled) return NoopTraceRecorder
 
         val runId = config.traceRunId?.takeIf { it.isNotBlank() } ?: sessionId.value
@@ -18,7 +23,8 @@ object TraceRecorderFactory {
         val recorder =
             FileTraceRecorder(
                 runId = runId,
-                rootDir = rootDir
+                rootDir = rootDir,
+                boundedCleanup = boundedCleanup,
             )
 
         recorder.writeMeta(

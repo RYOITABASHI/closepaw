@@ -16,17 +16,31 @@ import kotlinx.coroutines.withContext
  */
 class NodeActionPerformer(
         private val rootProvider: () -> AccessibilityNodeInfo?,
-        private val sdkIntProvider: () -> Int = { Build.VERSION.SDK_INT }
+        private val sdkIntProvider: () -> Int = { Build.VERSION.SDK_INT },
+        val contentFreeLogs: Boolean = false,
+        private val isDispatchCancelled: (() -> Boolean)? = null,
 ) {
     @Suppress("DEPRECATION")
     suspend fun performNodeClickAt(x: Int, y: Int, hint: SemanticTargetHint? = null): ActionResult {
         return onMain {
-            withRoot { root ->
+            withRoot(
+                missingRootMessage = if (hint?.requireObservedIdentity == true) {
+                    "element_changed"
+                } else {
+                    NO_A11Y_ROOT_MESSAGE
+                },
+            ) { root ->
                 val node = AccessibilityNodeFinder.findClickableNodeAtLocation(root, x, y)
-                        ?: return@withRoot ActionResult.Failure("No clickable node at ($x,$y)")
+                        ?: return@withRoot ActionResult.Failure(
+                            if (hint?.requireObservedIdentity == true) "element_changed"
+                            else "No clickable node at ($x,$y)"
+                        )
                 try {
                     val guardResult = logAndGuard(node, x, y, hint, "ACTION_CLICK")
                     if (guardResult != null) return@withRoot guardResult
+                    if (isDispatchCancelled?.invoke() == true) {
+                        return@withRoot ActionResult.Cancelled("Cancelled before node click")
+                    }
                     val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     if (ok) {
                         ActionResult.Success("ACTION_CLICK at ($x,$y)")
@@ -158,8 +172,13 @@ class NodeActionPerformer(
                     if (node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) {
                         return@withRoot ActionResult.Success("ACTION_FOCUS at ($x,$y)")
                     }
-                    if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                        return@withRoot ActionResult.Success("ACTION_CLICK (focus) at ($x,$y)")
+                    if (node.isClickable) {
+                        if (isDispatchCancelled?.invoke() == true) {
+                            return@withRoot ActionResult.Cancelled("Cancelled before node click")
+                        }
+                        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                            return@withRoot ActionResult.Success("ACTION_CLICK (focus) at ($x,$y)")
+                        }
                     }
                     ActionResult.Failure("ACTION_FOCUS/ACTION_CLICK returned false at ($x,$y)")
                 } finally {
@@ -299,6 +318,9 @@ class NodeActionPerformer(
                         return@withRoot ActionResult.Success("Enter key pressed (IME action)")
                     }
 
+                    if (isDispatchCancelled?.invoke() == true) {
+                        return@withRoot ActionResult.Cancelled("Cancelled before node click")
+                    }
                     val clickFallbackResult =
                             focusedEditable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     if (clickFallbackResult) {
@@ -346,6 +368,9 @@ class NodeActionPerformer(
                             combined
                     )
                 }
+        if (clear && isDispatchCancelled?.invoke() == true) {
+            return ActionResult.Cancelled("Cancelled before writing replacement text")
+        }
         val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         if (!ok) {
             return ActionResult.Failure("ACTION_SET_TEXT failed")
@@ -384,8 +409,11 @@ class NodeActionPerformer(
         return ActionResult.Success("Text entered: $text")
     }
 
-    private inline fun withRoot(block: (AccessibilityNodeInfo) -> ActionResult): ActionResult {
-        val root = rootProvider() ?: return ActionResult.Failure("No a11y root available")
+    private inline fun withRoot(
+        missingRootMessage: String = NO_A11Y_ROOT_MESSAGE,
+        block: (AccessibilityNodeInfo) -> ActionResult,
+    ): ActionResult {
+        val root = rootProvider() ?: return ActionResult.Failure(missingRootMessage)
         return try {
             block(root)
         } finally {
@@ -394,7 +422,11 @@ class NodeActionPerformer(
     }
 
     private suspend inline fun onMain(crossinline block: () -> ActionResult): ActionResult {
-        return withContext(Dispatchers.Main) { block() }
+        return withContext(Dispatchers.Main) {
+            if (isDispatchCancelled?.invoke() == true) {
+                ActionResult.Cancelled("Cancelled before node action")
+            } else block()
+        }
     }
 
     /**
@@ -424,16 +456,35 @@ class NodeActionPerformer(
         // aggregates child text but the a11y node itself has no text/contentDescription.
         val boundsMatch = bounds.left == hint.bounds.left && bounds.top == hint.bounds.top &&
                 bounds.right == hint.bounds.right && bounds.bottom == hint.bounds.bottom
+        if (hint.requireObservedIdentity) {
+            val foundPackage = node.packageName?.toString().orEmpty()
+            val text = if (node.isPassword) "[password]" else foundText
+            val description = if (node.isPassword) "" else foundDesc
+            val matches = boundsMatch && foundClass.substringAfterLast('.') == hint.className &&
+                    text == hint.text && description == hint.description &&
+                    (hint.packageName.isEmpty() || foundPackage == hint.packageName) &&
+                    foundId == hint.resourceId
+            return if (matches) null else ActionResult.Failure("element_changed")
+        }
+
         val identityMatch = matchesIntended(foundId, foundText, foundDesc, foundClass, hint)
         val matches = boundsMatch || identityMatch
         val tag = if (matches) "MATCH" else "MISMATCH"
 
-        Log.d(TAG, "$actionLabel target=($x,$y) " +
-                "intended=[id=${hint.resourceId} text=${hint.text} desc=${hint.description} " +
-                "class=${hint.className} bounds=${hint.bounds}] " +
-                "found=[id=$foundId text=$foundText desc=$foundDesc " +
-                "class=$foundClass bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}]] " +
-                "→ $tag")
+        if (contentFreeLogs) {
+            Log.d(TAG, "$actionLabel target=($x,$y) " +
+                    "intended=[id=${hint.resourceId} class=${hint.className} bounds=${hint.bounds}] " +
+                    "found=[id=$foundId class=$foundClass " +
+                    "bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}]] " +
+                    "→ $tag")
+        } else {
+            Log.d(TAG, "$actionLabel target=($x,$y) " +
+                    "intended=[id=${hint.resourceId} text=${hint.text} desc=${hint.description} " +
+                    "class=${hint.className} bounds=${hint.bounds}] " +
+                    "found=[id=$foundId text=$foundText desc=$foundDesc " +
+                    "class=$foundClass bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}]] " +
+                    "→ $tag")
+        }
 
         return if (matches) {
             null // proceed with click
@@ -448,6 +499,7 @@ class NodeActionPerformer(
 
     companion object {
         private const val TAG = "NodeActionPerformer"
+        private const val NO_A11Y_ROOT_MESSAGE = "No a11y root available"
 
         /**
          * Check if the found node matches the intended element.

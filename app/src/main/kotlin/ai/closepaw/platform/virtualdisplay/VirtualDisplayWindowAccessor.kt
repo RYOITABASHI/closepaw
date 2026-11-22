@@ -14,7 +14,8 @@ import android.view.accessibility.AccessibilityWindowInfo
  */
 class VirtualDisplayWindowAccessor(
     private val service: AccessibilityService,
-    private val displayIdProvider: () -> Int
+    private val displayIdProvider: () -> Int,
+    private val contentFreeLogs: Boolean = false,
 ) {
     companion object {
         private const val TAG = "VDWindowAccessor"
@@ -30,9 +31,7 @@ class VirtualDisplayWindowAccessor(
                 val displayWindows = allDisplayWindows.get(displayId)
                 if (Log.isLoggable(TAG, Log.DEBUG)) {
                     if (displayWindows != null) {
-                        val summary = displayWindows.joinToString(", ") {
-                            "Window(id=${it.id}, display=${it.displayId}, title=${it.title}, type=${it.type}, layer=${it.layer})"
-                        }
+                        val summary = describeWindows(displayWindows)
                         Log.d(TAG, "Windows on display $displayId: $summary")
                     } else {
                         val displayIds = (0 until allDisplayWindows.size()).map { allDisplayWindows.keyAt(it) }
@@ -43,9 +42,7 @@ class VirtualDisplayWindowAccessor(
             } else {
                 val allWindows = service.windows
                 if (Log.isLoggable(TAG, Log.DEBUG) && allWindows != null) {
-                    val summary = allWindows.joinToString(", ") {
-                        "Window(id=${it.id}, display=${it.displayId}, title=${it.title}, type=${it.type}, layer=${it.layer})"
-                    }
+                    val summary = describeWindows(allWindows)
                     Log.d(TAG, "All windows (legacy): $summary")
                 }
                 allWindows?.filter { it.displayId == displayId } ?: emptyList()
@@ -54,6 +51,14 @@ class VirtualDisplayWindowAccessor(
             Log.w(TAG, "Failed to get windows for display $displayId", e)
             emptyList()
         }
+    }
+
+    private fun describeWindows(windows: List<AccessibilityWindowInfo>): String {
+        val summary = windows.joinToString(", ") { window ->
+            val title = if (contentFreeLogs) "" else ", title=${window.title}"
+            "Window(id=${window.id}, display=${window.displayId}$title, type=${window.type}, layer=${window.layer})"
+        }
+        return if (contentFreeLogs) "count=${windows.size}, $summary" else summary
     }
 
     /**

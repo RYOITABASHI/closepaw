@@ -36,7 +36,7 @@ internal data class ScreenSignature(val tokens: Set<String>) {
 
 internal data class LoopWarning(val message: String)
 
-private fun ScreenSnapshot.toSignature(): ScreenSignature {
+internal fun ScreenSnapshot.toSignature(): ScreenSignature {
     val tokens =
             elements.asSequence()
                     .map { it.toSignatureToken() }

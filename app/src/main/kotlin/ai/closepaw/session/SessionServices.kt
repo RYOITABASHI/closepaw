@@ -106,7 +106,8 @@ class SessionServices internal constructor(
         val agentSkillManager: AgentSkillManager = AgentSkillManager(java.io.File("")),
         val userResponseChannel: UserResponseChannel = UserResponseChannel(),
         val memoryStore: MemoryStore = MemoryStore(java.io.File("")),
-        val memoryRecaller: MemoryRecaller = MemoryRecaller(memoryStore)
+        val memoryRecaller: MemoryRecaller = MemoryRecaller(memoryStore),
+        private val externalDriver: Boolean = false,
 ) {
     companion object {
         private const val TAG = "SessionServices"
@@ -130,7 +131,8 @@ class SessionServices internal constructor(
                 context: Context,
                 scope: CoroutineScope,
                 traceRecorder: TraceRecorder,
-                appClassifier: AppClassifier
+                appClassifier: AppClassifier,
+                externalDriver: Boolean = false,
         ): SessionServices {
             Log.d(TAG, "Creating SessionServices...")
 
@@ -180,6 +182,7 @@ class SessionServices internal constructor(
                 context = context.applicationContext,
                 systemSurfacePackages = SystemSurfaces.resolve(context),
                 denySystemSurfaceActions = effectiveConfig.unattended,
+                strictBlockedFloor = externalDriver,
             )
             val policyEngine = tooling.policyEngine
             val sessionState = tooling.sessionState
@@ -228,7 +231,8 @@ class SessionServices internal constructor(
                     appSkillRepository = appSkillRepository,
                     agentSkillManager = agentSkillManager,
                     memoryStore = memoryStore,
-                    memoryRecaller = memoryRecaller
+                    memoryRecaller = memoryRecaller,
+                    externalDriver = externalDriver,
             )
         }
 
@@ -375,7 +379,8 @@ class SessionServices internal constructor(
                 agentSkillManager = agentSkillManager,
                 userResponseChannel = userResponseChannel,
                 memoryStore = memoryStore,
-                memoryRecaller = memoryRecaller
+                memoryRecaller = memoryRecaller,
+                externalDriver = externalDriver,
         )
     }
 
@@ -396,7 +401,11 @@ class SessionServices internal constructor(
         runStep("llmClient.cleanup", failures) { llmClient.cleanup() }
         runStep("llmClientFactory.cleanupAll", failures) { llmClientFactory.cleanupAll() }
         // Flush/close trace last so we still capture teardown artifacts if needed
-        runStep("traceRecorder.close", failures) { traceRecorder.close() }
+        if (externalDriver) {
+            Log.d(TAG, "External session trace recorder stays owned by the caller")
+        } else {
+            runStep("traceRecorder.close", failures) { traceRecorder.close() }
+        }
 
         Log.i(TAG, "SessionServices cleaned up (failures=${failures.size})")
         return if (failures.isEmpty()) CleanupResult.Success else CleanupResult.PartialFailure(failures)

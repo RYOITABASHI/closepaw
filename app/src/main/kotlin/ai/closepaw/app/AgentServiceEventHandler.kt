@@ -15,7 +15,7 @@ import java.util.UUID
 internal class AgentServiceEventHandler(
     private val logTag: String,
     private val updateStatus: (String) -> Unit,
-    private val sessionCleared: () -> Unit,
+    private val sessionCleared: (SessionId) -> Unit,
     private val overlayController: () -> ServiceOverlayController?
 ) {
     fun handleEvent(
@@ -135,7 +135,7 @@ internal class AgentServiceEventHandler(
                 }
                 updateStatus(statusMessage)
                 overlay?.onSessionCompleted(event.reason)
-                sessionCleared()
+                sessionCleared(event.sessionId)
             }
             is SessionError -> {
                 Log.e(logTag, "Session error: ${event.message}")

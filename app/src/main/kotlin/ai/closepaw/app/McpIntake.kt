@@ -79,6 +79,26 @@ internal class AgentServiceMcpBackend(
     /** runHandle -> the start's report-once guard (identifies the run inside AgentService). */
     private val guards = ConcurrentHashMap<String, ShellyPendingResult>()
 
+    @Volatile var brainStopHandler: ((String) -> Boolean)? = null
+
+    internal fun externalPrecheck(): (AgentService) -> ShellyBackgroundRun.Decision {
+        val onboardingCompleted = OnboardingStore(app).isCompleted
+        val canDrawOverlays = Settings.canDrawOverlays(app)
+        val virtualDisplayReady = probeVirtualDisplayReady(app, adbChannel)
+        return { service ->
+            ShellyBackgroundRun.precheck(
+                accessibilityConnected = AgentService.instance === service,
+                onboardingCompleted = onboardingCompleted,
+                canDrawOverlays = canDrawOverlays,
+                // The external driver never calls ClosePaw's LLM.
+                credentialsMissing = false,
+                sessionBusy = service.isSessionBusy(),
+                virtualDisplayReady = virtualDisplayReady,
+                allowMainDisplay = false,
+            )
+        }
+    }
+
     override fun startRun(goal: String): McpBackend.StartResult {
         val probes = try {
             probe()
@@ -92,40 +112,46 @@ internal class AgentServiceMcpBackend(
 
     private fun startOnMain(goal: String, probes: Probes): McpBackend.StartResult {
         val service = AgentService.instance
-        val decision = ShellyBackgroundRun.precheck(
-            accessibilityConnected = service != null,
-            onboardingCompleted = probes.onboardingCompleted,
-            canDrawOverlays = probes.canDrawOverlays,
-            credentialsMissing = probes.credentialsMissing,
-            sessionBusy = service?.isSessionBusy() == true,
-            virtualDisplayReady = probes.virtualDisplayReady,
-            allowMainDisplay = false,
-        )
-        return when (decision) {
-            is ShellyBackgroundRun.Decision.Blocked ->
-                McpBackend.StartResult.Refused(decision.block.name, McpRunStatus.refusalMessage(decision.block))
-            is ShellyBackgroundRun.Decision.Start -> {
-                val handle = registry.issue()
-                val guard = service!!.startShellyRun(
-                    goal, decision.platformMode, origin = ShellyRunOrigin.MCP,
-                ) { finished ->
-                    McpRunStatus.complete(registry, handle, finished)
-                    guards.remove(handle)
-                }
-                if (guard == null) {
-                    val failed = registry.snapshot(handle)
-                    McpBackend.StartResult.Refused("START_FAILED", failed?.summary?.ifBlank { null } ?: "ClosePaw could not start the task")
-                } else {
-                    guards[handle] = guard
-                    registry.markRunning(handle)
-                    McpBackend.StartResult.Started(handle)
+        val token = Any()
+        val claimed = BrainSessionAdmission.tryClaimInternal(token)
+        try {
+            val decision = ShellyBackgroundRun.precheck(
+                accessibilityConnected = service != null,
+                onboardingCompleted = probes.onboardingCompleted,
+                canDrawOverlays = probes.canDrawOverlays,
+                credentialsMissing = probes.credentialsMissing,
+                sessionBusy = service?.isInternalIntakeBusy() == true || !claimed,
+                virtualDisplayReady = probes.virtualDisplayReady,
+                allowMainDisplay = false,
+            )
+            return when (decision) {
+                is ShellyBackgroundRun.Decision.Blocked ->
+                    McpBackend.StartResult.Refused(decision.block.name, McpRunStatus.refusalMessage(decision.block))
+                is ShellyBackgroundRun.Decision.Start -> {
+                    val handle = registry.issue()
+                    val guard = service!!.startShellyRun(
+                        goal, decision.platformMode, origin = ShellyRunOrigin.MCP,
+                    ) { finished ->
+                        McpRunStatus.complete(registry, handle, finished)
+                        guards.remove(handle)
+                    }
+                    if (guard == null) {
+                        val failed = registry.snapshot(handle)
+                        McpBackend.StartResult.Refused("START_FAILED", failed?.summary?.ifBlank { null } ?: "ClosePaw could not start the task")
+                    } else {
+                        guards[handle] = guard
+                        registry.markRunning(handle)
+                        McpBackend.StartResult.Started(handle)
+                    }
                 }
             }
+        } finally {
+            BrainSessionAdmission.releaseInternal(token)
         }
     }
 
     override fun stopRun(runHandle: String): Boolean {
-        val guard = guards[runHandle] ?: return false
+        val guard = guards[runHandle] ?: return brainStopHandler?.invoke(runHandle) == true
         return mainCall.call<Boolean> { AgentService.instance?.stopIntakeRun(guard) == true } == true
     }
 
@@ -203,6 +229,8 @@ internal object McpServerController {
     val state: StateFlow<State> = _state.asStateFlow()
 
     private val registry = McpRunRegistry()
+    @Volatile internal var brainSessions: AgentServiceBrainSessions? = null
+        private set
 
     @Volatile private var token: String? = null
     private var server: McpHttpServer? = null
@@ -222,10 +250,15 @@ internal object McpServerController {
         val channel = adbChannel ?: AdbShellChannel(app).also { adbChannel = it }
         maintenance?.stop()
         val worker = McpMaintenance(app, channel)
+        val backend = AgentServiceMcpBackend(app, registry, worker, channel)
+        val brains = brainSessions ?: AgentServiceBrainSessions({ AgentService.instance }, backend)
+            .also { brainSessions = it }
+        brains.updateBackend(backend)
+        backend.brainStopHandler = brains::stop
         val h = McpHandler(
             expectedToken = { token },
             registry = registry,
-            backend = AgentServiceMcpBackend(app, registry, worker, channel),
+            backend = backend,
             audit = { line -> Log.i(AUDIT_TAG, line) },
             serverVersion = BuildConfig.VERSION_NAME,
             adbStatus = {
@@ -242,6 +275,8 @@ internal object McpServerController {
             },
             selfUpdate = SelfUpdate.mcpHook(app, channel),
             typedOps = McpDeviceOps(app) { line -> Log.i(AUDIT_TAG, line) }::call,
+            sessionOps = brains::handle,
+            sessionResults = brains,
         )
         val s = McpHttpServer(h, onError = { Log.w(TAG, it) })
         try {

@@ -43,6 +43,7 @@ class VirtualDisplayTextInjector(
             context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         },
         private val unattended: Boolean = false,
+        private val isDispatchCancelled: (() -> Boolean)? = null,
 ) {
     companion object {
         private const val TAG = "VDTextInjector"
@@ -157,7 +158,11 @@ class VirtualDisplayTextInjector(
                 trail.add("focus:a11y-failed(${(focusResult as? ActionResult.Failure)?.reason})")
             }
             if (focused == null) {
-                val tap = withContext(Dispatchers.IO) { inputInjector.injectTap(fx, fy) }
+                val tap = withContext(Dispatchers.IO) {
+                    if (isDispatchCancelled?.invoke() == true) ActionResult.Cancelled("Cancelled before input dispatch")
+                    else inputInjector.injectTap(fx, fy)
+                }
+                if (tap is ActionResult.Cancelled) return tap
                 if (tap is ActionResult.Failure) {
                     return ActionResult.Failure(
                             "Could not tap field at ($fx,$fy) on the virtual display: ${tap.reason}"
@@ -304,6 +309,7 @@ class VirtualDisplayTextInjector(
         // The cleanup starts before the write, including cancellation as the write returns.
         try {
             val failure = withContext(Dispatchers.Main) {
+                if (isDispatchCancelled?.invoke() == true) return@withContext "paste:cancelled"
                 previous = readClipboard(clipboard)
                 if (unattended) {
                     val first = snapshotValue(previous)
@@ -320,6 +326,7 @@ class VirtualDisplayTextInjector(
                             putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
                         }
                     }
+                    if (isDispatchCancelled?.invoke() == true) return@withContext "paste:cancelled"
                     clipboard.setPrimaryClip(clip)
                     wroteClip = true
                 } catch (e: Exception) {
@@ -401,6 +408,9 @@ class VirtualDisplayTextInjector(
             return -1
         }
         // Quiet: the command carries the typed text, which must not reach logcat.
-        return withContext(Dispatchers.IO) { shizuku.executeQuietShellCommand(arrayOf(*command)) }
+        return withContext(Dispatchers.IO) {
+            if (isDispatchCancelled?.invoke() == true) -1
+            else shizuku.executeQuietShellCommand(arrayOf(*command))
+        }
     }
 }
