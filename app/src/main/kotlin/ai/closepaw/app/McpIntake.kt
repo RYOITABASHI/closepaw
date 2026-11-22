@@ -246,6 +246,7 @@ internal object McpServerController {
                 )
             },
             selfUpdate = SelfUpdate.mcpHook(app, channel),
+            typedOps = McpDeviceOps(app) { line -> Log.i(AUDIT_TAG, line) }::call,
         )
         val s = McpHttpServer(h, onError = { Log.w(TAG, it) })
         try {

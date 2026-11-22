@@ -34,14 +34,18 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
     fun checkAccessibility() {
         scope.launch {
             try {
-                if (!channel.paired) return@launch
                 if (accessibilitySettingOn(app) && AgentService.instance != null) return@launch
                 if (!claimRecovery()) return@launch
-                if (!channel.isConnected()) {
-                    ensureRecentScan()
-                    check(channel.connectKnownPorts()) { "ADB connection unavailable" }
+                val direct = app.canWriteSecureSettings()
+                if (!direct && !channel.isConnected()) {
+                    if (channel.paired) ensureRecentScan()
+                    if (!channel.paired || !channel.connectKnownPorts()) {
+                        Log.w(TAG, "Accessibility recovery skipped: WRITE_SECURE_SETTINGS not granted and ADB unavailable")
+                        return@launch
+                    }
                 }
-                recoverAccessibility()
+                Log.i(TAG, "Accessibility recovery route=${if (direct) "content_resolver" else "adb"}")
+                recoverAccessibility(direct)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -50,24 +54,24 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         }
     }
 
-    private suspend fun recoverAccessibility() {
-        val current = readServices().removeSuffix("\n")
+    private suspend fun recoverAccessibility(direct: Boolean) {
+        val current = readServices(direct)
         when (AccessibilityRecoveryPlan.decide(
             AccessibilityServiceSetting.containsAgent(current),
             AgentService.instance != null,
         )) {
             AccessibilityRecoveryPlan.NO_OP -> return
-            AccessibilityRecoveryPlan.APPEND -> if (!updateServices(agentExpected = true)) return
+            AccessibilityRecoveryPlan.APPEND -> if (!updateServices(direct, agentExpected = true)) return
             AccessibilityRecoveryPlan.TOGGLE_REBIND -> {
                 // Finish the bounded re-add even if the listener stops after the removal write.
                 val toggled = withContext(NonCancellable) {
-                    val removed = updateServices(agentExpected = false)
+                    val removed = updateServices(direct, agentExpected = false)
                     // Give the settings observer time to reconcile the disabled component.
                     if (removed) delay(500)
-                    val restored = updateServices(agentExpected = true)
+                    val restored = updateServices(direct, agentExpected = true)
                     if (!restored) {
                         val present = try {
-                            AccessibilityServiceSetting.containsAgent(readServices().removeSuffix("\n"))
+                            AccessibilityServiceSetting.containsAgent(readServices(direct))
                         } catch (_: Exception) {
                             null
                         }
@@ -83,9 +87,12 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
                 if (!toggled) return
             }
         }
-        if (channel.exec("settings put secure accessibility_enabled 1", SETTINGS_TIMEOUT_MS).exitCode != 0) {
-            throw IOException("Cannot enable accessibility")
+        val enabled = if (direct) {
+            Settings.Secure.putString(app.contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, "1")
+        } else {
+            channel.exec("settings put secure accessibility_enabled 1", SETTINGS_TIMEOUT_MS).exitCode == 0
         }
+        if (!enabled) throw IOException("Cannot enable accessibility")
         for (poll in 1..20) {
             if (AgentService.instance != null) break
             delay(500)
@@ -97,37 +104,33 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         }
     }
 
-    private suspend fun readServices(): String {
+    private suspend fun readServices(direct: Boolean): String? {
+        if (direct) {
+            return Settings.Secure.getString(app.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+        }
         val result = channel.exec(READ_SERVICES, SETTINGS_TIMEOUT_MS)
         if (result.exitCode != 0 || result.truncated || !result.stdout.endsWith('\n')) {
             throw IOException("Cannot read enabled services")
         }
-        return result.stdout
+        return result.stdout.removeSuffix("\n")
     }
 
-    private suspend fun updateServices(agentExpected: Boolean): Boolean {
+    private suspend fun updateServices(direct: Boolean, agentExpected: Boolean): Boolean {
         val operation = if (agentExpected) "add" else "remove"
         repeat(3) { attempt ->
             try {
-                val raw = readServices()
-                val current = raw.removeSuffix("\n")
+                val current = readServices(direct)
                 val before = AccessibilityServiceSetting.entries(current)
                 val merged = if (agentExpected) AccessibilityServiceSetting.withAgent(current)
-                    else AccessibilityServiceSetting.withoutAgent(current)
+                    else AccessibilityServiceSetting.withoutAgent(current.orEmpty())
                 if (!AccessibilityServiceSetting.verifyUpdate(before, merged, merged, agentExpected)) {
                     Log.e(TAG, "Enabled-services $operation aborted: cannot preserve existing entries")
                     return false
                 }
-                // Settings has no compare-and-set shell command. Compare again next to the
-                // put, preserving trailing newlines with a sentinel, then verify independently.
-                val command = "current=\$($READ_SERVICES && printf .) || exit 1; " +
-                    "[ \"\$current\" = ${shellQuote(raw + ".")} ] || exit 2; " +
-                    "settings put secure enabled_accessibility_services ${shellQuote(merged)}"
-                val written = channel.exec(command, SETTINGS_TIMEOUT_MS)
-                if (written.exitCode == 0 && AccessibilityServiceSetting.verifyUpdate(
+                if (writeServices(direct, current, merged) && AccessibilityServiceSetting.verifyUpdate(
                     before,
                     merged,
-                    readServices().removeSuffix("\n"),
+                    readServices(direct),
                     agentExpected,
                 )) return true
                 Log.w(TAG, "Enabled-services $operation attempt ${attempt + 1} failed guard or read-back")
@@ -140,6 +143,19 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         }
         Log.e(TAG, "Enabled-services $operation aborted after three attempts")
         return false
+    }
+
+    private suspend fun writeServices(direct: Boolean, expected: String?, value: String): Boolean {
+        // Android Settings has no compare-and-set. Re-read immediately before the put.
+        if (direct) {
+            return readServices(direct = true) == expected &&
+                Settings.Secure.putString(app.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, value)
+        }
+        // Preserve trailing newlines in the shell's comparison by adding a sentinel.
+        val command = "current=\$($READ_SERVICES && printf .) || exit 1; " +
+            "[ \"\$current\" = ${shellQuote(checkNotNull(expected) + "\n.")} ] || exit 2; " +
+            "settings put secure enabled_accessibility_services ${shellQuote(value)}"
+        return channel.exec(command, SETTINGS_TIMEOUT_MS).exitCode == 0
     }
 
     private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
