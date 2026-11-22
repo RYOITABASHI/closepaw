@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.PixelFormat
 import android.media.ImageReader
+import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.view.SurfaceView
@@ -23,12 +24,63 @@ import ai.closepaw.protocol.SessionConfig
 import ai.closepaw.trace.TraceRecorder
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
 import ai.closepaw.util.recycleCompat
+import java.util.WeakHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import rikka.shizuku.Shizuku
+
+/**
+ * The Shizuku heal claims this gate before diagnosing and holds it until the heal completes.
+ * VD activation waits for the heal and marks itself in flight while it creates a display.
+ * This keeps heal dispatch and VD creation from overlapping. The heal dispatch guard treats
+ * an in-flight activation like a live session.
+ */
+internal object ShizukuHealGate {
+    @Volatile var healInFlight = false
+        private set
+    @Volatile var vdActivationInFlight = false
+        private set
+
+    private val lock = Any()
+    private var vdActivations = 0
+
+    fun tryClaimHeal(): Boolean = synchronized(lock) {
+        if (healInFlight || vdActivationInFlight) return false
+        healInFlight = true
+        true
+    }
+
+    fun releaseHeal() {
+        synchronized(lock) { healInFlight = false }
+    }
+
+    fun beginVdActivation() {
+        synchronized(lock) {
+            vdActivations++
+            vdActivationInFlight = true
+        }
+    }
+
+    fun endVdActivation() {
+        synchronized(lock) {
+            vdActivations--
+            vdActivationInFlight = vdActivations > 0
+        }
+    }
+
+    suspend fun awaitHealIdle(timeoutMs: Long): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (healInFlight) {
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining <= 0) return false
+            delay(minOf(remaining, 50L))
+        }
+        return true
+    }
+}
 
 /**
  * VIRTUAL_DISPLAY_FLAG_OWN_FOCUS (1 shl 14) | VIRTUAL_DISPLAY_FLAG_STEAL_TOP_FOCUS_DISABLED
@@ -75,6 +127,13 @@ class VirtualDisplayPlatform(
     companion object {
         private const val TAG = "VirtualDisplayPlatform"
 
+        private val registryLock = Any()
+        private val instances = WeakHashMap<VirtualDisplayPlatform, Unit>()
+
+        fun anySessionActive(): Boolean = synchronized(registryLock) {
+            instances.keys.any { it.isSessionActive }
+        }
+
         /**
          * Virtual display flags bitmask:
          *   0x001 = VIRTUAL_DISPLAY_FLAG_PUBLIC
@@ -96,6 +155,7 @@ class VirtualDisplayPlatform(
         private const val DISPLAY_IME_POLICY_HIDE = 2
 
         private const val SURFACE_READY_DELAY_MS = 200L
+        private const val VD_START_HEAL_WAIT_MS = 30_000L
         private const val IMAGE_READER_MAX_IMAGES = 2
     }
 
@@ -218,6 +278,10 @@ class VirtualDisplayPlatform(
     // ── Lifecycle ────────────────────────────────────────────────
 
     override suspend fun start() {
+        val healWaitDeadline = SystemClock.elapsedRealtime() + VD_START_HEAL_WAIT_MS
+        if (!ShizukuHealGate.awaitHealIdle(VD_START_HEAL_WAIT_MS)) {
+            throw IllegalStateException("Shizuku heal in flight; virtual display start deferred")
+        }
         arbiter.withLifecycleTransition { previous ->
             if (previous is VdState.Running) {
                 // A new run (Hot Idle follow-up) needs the VD: a deferred display-0 restore is
@@ -243,96 +307,107 @@ class VirtualDisplayPlatform(
                 return@withLifecycleTransition
             }
 
-            // Clean up leaked resources from a Broken state before allocating new ones
-            if (previous is VdState.Broken) {
-                Log.w(TAG, "start() from Broken state — cleaning up old resources first")
-                binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
-                binderDeadListener = null
-                surfaceController.reset()
-                shizuku.releaseVirtualDisplay(previous.displayId)
-                previous.imageReader.close()
-                shizuku.clearCachedProxies()
-            }
-
-            shizuku.bypassHiddenApis()
-
-            val reader =
-                    ImageReader.newInstance(
-                            config.width,
-                            config.height,
-                            PixelFormat.RGBA_8888,
-                            IMAGE_READER_MAX_IMAGES
-                    )
-
-            val id =
-                    try {
-                        shizuku.createVirtualDisplay(
-                                name = "closepaw_agent_display",
-                                width = config.width,
-                                height = config.height,
-                                densityDpi = config.densityDpi,
-                                surface = reader.surface,
-                                flags = DISPLAY_FLAGS,
-                                imePolicy = DISPLAY_IME_POLICY_HIDE,
-                                optionalFlags = vdOptionalDisplayFlags(
-                                        android.os.Build.VERSION.SDK_INT,
-                                        backgroundRun = sessionConfig.preserveMainDisplayTasks ||
-                                                sessionConfig.isolateFocus,
-                                )
-                        )
-                    } catch (e: Exception) {
-                        reader.close()
-                        throw e
-                    }
-
-            if (id < 0) {
-                reader.close()
-                throw IllegalStateException("Failed to create virtual display (returned $id)")
-            }
-
-            // IME policy before anything can launch on the VD (the IME display is resolved at
-            // startInput time). Fail-open: a missing API or permission only loses this layer.
-            val atCreation = try {
-                shizuku.imePolicyAppliedAtCreation(id)
-            } catch (e: Exception) {
-                false
-            }
-            synchronized(imePolicyLock) {
-                appliedImePolicy = if (atCreation) DISPLAY_IME_POLICY_HIDE else null
-            }
-            reconcileImePolicy(id)
-
-            // Resources allocated — register binder death listener and commit state.
-            // If anything fails here, roll back: release display, close reader, reset state.
+            ShizukuHealGate.beginVdActivation()
             try {
-                val listener =
-                        Shizuku.OnBinderDeadListener {
-                            Log.e(TAG, "Shizuku binder died! displayId=$id")
-                            arbiter.markBroken("Shizuku binder died")
-                            shizuku.clearCachedProxies()
+                // A heal may have claimed the gate while we were entering the transition.
+                val remaining = healWaitDeadline - SystemClock.elapsedRealtime()
+                if (!ShizukuHealGate.awaitHealIdle(remaining)) {
+                    throw IllegalStateException("Shizuku heal in flight; virtual display start deferred")
+                }
+
+                // Clean up leaked resources from a Broken state before allocating new ones
+                if (previous is VdState.Broken) {
+                    Log.w(TAG, "start() from Broken state — cleaning up old resources first")
+                    binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
+                    binderDeadListener = null
+                    surfaceController.reset()
+                    shizuku.releaseVirtualDisplay(previous.displayId)
+                    previous.imageReader.close()
+                    shizuku.clearCachedProxies()
+                }
+
+                shizuku.bypassHiddenApis()
+
+                val reader =
+                        ImageReader.newInstance(
+                                config.width,
+                                config.height,
+                                PixelFormat.RGBA_8888,
+                                IMAGE_READER_MAX_IMAGES
+                        )
+
+                val id =
+                        try {
+                            shizuku.createVirtualDisplay(
+                                    name = "closepaw_agent_display",
+                                    width = config.width,
+                                    height = config.height,
+                                    densityDpi = config.densityDpi,
+                                    surface = reader.surface,
+                                    flags = DISPLAY_FLAGS,
+                                    imePolicy = DISPLAY_IME_POLICY_HIDE,
+                                    optionalFlags = vdOptionalDisplayFlags(
+                                            android.os.Build.VERSION.SDK_INT,
+                                            backgroundRun = sessionConfig.preserveMainDisplayTasks ||
+                                                    sessionConfig.isolateFocus,
+                                    )
+                            )
+                        } catch (e: Exception) {
+                            reader.close()
+                            throw e
                         }
-                binderDeadListener = listener
-                shizuku.addBinderDeadListener(listener)
 
-                arbiter.transitionTo(VdState.Running(id, reader))
-                // A viewer open/close that arrived before Running was published saw no running
-                // display and only recorded its state: apply the latest one now.
+                if (id < 0) {
+                    reader.close()
+                    throw IllegalStateException("Failed to create virtual display (returned $id)")
+                }
+
+                // IME policy before anything can launch on the VD (the IME display is resolved at
+                // startInput time). Fail-open: a missing API or permission only loses this layer.
+                val atCreation = try {
+                    shizuku.imePolicyAppliedAtCreation(id)
+                } catch (e: Exception) {
+                    false
+                }
+                synchronized(imePolicyLock) {
+                    appliedImePolicy = if (atCreation) DISPLAY_IME_POLICY_HIDE else null
+                }
                 reconcileImePolicy(id)
-                delay(SURFACE_READY_DELAY_MS)
 
-                Log.i(
-                        TAG,
-                        "Started: displayId=$id, " +
-                                "${config.width}x${config.height}@${config.densityDpi}dpi"
-                )
-            } catch (e: Exception) {
-                binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
-                binderDeadListener = null
-                shizuku.releaseVirtualDisplay(id)
-                reader.close()
-                shizuku.clearCachedProxies()
-                arbiter.transitionTo(VdState.Stopped)
-                throw e
+                // Resources allocated — register binder death listener and commit state.
+                // If anything fails here, roll back: release display, close reader, reset state.
+                try {
+                    val listener =
+                            Shizuku.OnBinderDeadListener {
+                                Log.e(TAG, "Shizuku binder died! displayId=$id")
+                                arbiter.markBroken("Shizuku binder died")
+                                shizuku.clearCachedProxies()
+                            }
+                    binderDeadListener = listener
+                    shizuku.addBinderDeadListener(listener)
+
+                    arbiter.transitionTo(VdState.Running(id, reader))
+                    // A viewer open/close that arrived before Running was published saw no running
+                    // display and only recorded its state: apply the latest one now.
+                    reconcileImePolicy(id)
+                    delay(SURFACE_READY_DELAY_MS)
+
+                    Log.i(
+                            TAG,
+                            "Started: displayId=$id, " +
+                                    "${config.width}x${config.height}@${config.densityDpi}dpi"
+                    )
+                } catch (e: Exception) {
+                    binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
+                    binderDeadListener = null
+                    shizuku.releaseVirtualDisplay(id)
+                    reader.close()
+                    shizuku.clearCachedProxies()
+                    arbiter.transitionTo(VdState.Stopped)
+                    throw e
+                }
+            } finally {
+                ShizukuHealGate.endVdActivation()
             }
         }
     }
@@ -513,6 +588,13 @@ class VirtualDisplayPlatform(
      * launched on [deferralScope] needs a Running lease or Running state and does nothing.
      */
     val isStopped: Boolean get() = arbiter.state == VdState.Stopped
+
+    /** A VD session is live (Running or Draining): privileged-backend restarts must not disturb it. */
+    val isSessionActive: Boolean
+        get() {
+            val state = arbiter.state
+            return state is VdState.Running || state is VdState.Draining
+        }
 
     /**
      * The VD viewer closed: re-evaluate a pending deferral. Screen on -> stay deferred (or clear
@@ -1098,5 +1180,9 @@ class VirtualDisplayPlatform(
         } catch (_: Exception) {
             false
         }
+    }
+
+    init {
+        synchronized(registryLock) { instances[this] = Unit }
     }
 }

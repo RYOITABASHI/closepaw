@@ -117,7 +117,7 @@ class AgentService : AccessibilityService() {
      */
     internal val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val serviceLifecycleOwner = ServiceLifecycleOwner()
-    private var session: AgentSession? = null
+    @Volatile private var session: AgentSession? = null // Read off main via isVirtualDisplaySessionActive().
     private var overlayController: ServiceOverlayController? = null
     private var actionVisualizer: ActionVisualizerManager? = null
     private var currentPlatformMode: PlatformMode = PlatformMode.ACCESSIBILITY
@@ -131,6 +131,11 @@ class AgentService : AccessibilityService() {
             finishViewerActivity = { _viewerFinishSignal.tryEmit(Unit) },
         )
     }
+    internal fun isVirtualDisplaySessionActive(): Boolean =
+        (session?.getServices()?.platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform)
+            ?.isSessionActive == true ||
+            ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform.anySessionActive()
+
     private val eventHandler =
             AgentServiceEventHandler(
                     logTag = TAG,

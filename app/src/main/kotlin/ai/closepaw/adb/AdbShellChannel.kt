@@ -113,7 +113,7 @@ internal class AdbShellChannel(context: Context) {
                 if (manager.connect(port)) manager.adbConnection else null
             } ?: return false
             val nonce = UUID.randomUUID().toString()
-            val probe = runShell(connection, "echo $nonce && id -u", 5_000) {}
+            val probe = checkNotNull(runShell(connection, "echo $nonce && id -u", 5_000) {})
             // This checks shell behavior and UID. A full shell impostor can answer both probes
             // and is outside the scope of this check.
             if (!isShellIdentityProbeValid(probe, nonce)) return false
@@ -139,7 +139,20 @@ internal class AdbShellChannel(context: Context) {
     }
 
     suspend fun exec(command: String, timeoutMs: Long = 20_000): ShellResult =
-        shell(command, timeoutMs) {}
+        checkNotNull(shell(command, timeoutMs) {})
+
+    /**
+     * Returns null when [guard] rejects dispatch without opening a shell stream.
+     * The guard runs under the channel mutex immediately before dispatch. It must be
+     * fast and non-blocking, using only in-process state reads.
+     * Binder transactions (including Shizuku or other Binder pings), I/O, blocking,
+     * sleeping, and callbacks into this channel are prohibited. The mutex is non-reentrant.
+     */
+    suspend fun execGuarded(
+        command: String,
+        timeoutMs: Long = 20_000,
+        guard: () -> Boolean,
+    ): ShellResult? = shell(command, timeoutMs, guard) {}
 
     /** A length-delimited raw shell transfer leaves the stream open for the remote exit marker. */
     suspend fun writeToRemote(path: String, bytes: InputStream, size: Long) {
@@ -160,27 +173,32 @@ internal class AdbShellChannel(context: Context) {
                 remaining -= count
             }
         }
-        if (result.exitCode != 0) throw IOException("ADB upload failed")
+        if (checkNotNull(result).exitCode != 0) throw IOException("ADB upload failed")
     }
 
     private suspend fun shell(
         command: String,
         timeoutMs: Long,
+        guard: (() -> Boolean)? = null,
         write: (AdbStream) -> Unit,
-    ): ShellResult = mutex.withLock {
+    ): ShellResult? = mutex.withLock {
         val connection = activeConnection ?: throw IOException("ADB channel is disconnected")
-        runShell(connection, command, timeoutMs, write)
+        runShell(connection, command, timeoutMs, guard, write)
     }
 
     private suspend fun runShell(
         connection: AdbConnection,
         command: String,
         timeoutMs: Long,
+        guard: (() -> Boolean)? = null,
         write: (AdbStream) -> Unit,
-    ): ShellResult = withTimeoutOrNull(timeoutMs) {
+    ): ShellResult? = (withTimeoutOrNull<Result<ShellResult?>>(timeoutMs) {
         runInterruptible(Dispatchers.IO) {
             val markerSuffix = ":" + UUID.randomUUID().toString()
-            connection.open("shell:" + withExitCode(command, markerSuffix)).use { stream ->
+            val service = "shell:" + withExitCode(command, markerSuffix)
+            // Wrap the result so guard rejection stays distinct from a timeout.
+            if (guard?.invoke() == false) return@runInterruptible Result.success(null)
+            val result = connection.open(service).use { stream ->
                 write(stream)
                 val capture = ShellOutput(markerSuffix)
                 val buffer = ByteArray(8192)
@@ -200,6 +218,7 @@ internal class AdbShellChannel(context: Context) {
                 }
                 capture.result()
             }
+            Result.success(result)
         }
-    } ?: throw SocketTimeoutException("ADB shell timed out")
+    } ?: throw SocketTimeoutException("ADB shell timed out")).getOrThrow()
 }

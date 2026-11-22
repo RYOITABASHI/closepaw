@@ -134,6 +134,7 @@ internal class AgentServiceMcpBackend(
         val settingOn = accessibilitySettingOn(app)
         if (!settingOn || !bound) maintenance.checkAccessibility()
         maintenance.rediscover()
+        maintenance.checkShizuku()
         return McpBackend.Status(
             version = BuildConfig.VERSION_NAME,
             virtualDisplayReady = probeVirtualDisplayReady(app, adbChannel),
