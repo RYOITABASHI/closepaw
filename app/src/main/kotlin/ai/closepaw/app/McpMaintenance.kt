@@ -104,14 +104,40 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         }
 
         if (vdBusy() || pingShizukuBinder()) return
-        val probe = channel.exec(ShizukuHealPlan.IDENTITY_PROBE_COMMAND, IDENTITY_TIMEOUT_MS)
-        val identity = ShizukuHealPlan.parseServerIdentity(probe.stdout)
-        if (probe.exitCode != 0 || identity == null) {
-            Log.w(TAG, "Shizuku heal skipped: cannot read server identity")
-            return
+        val disposition = try {
+            val probe = channel.exec(ShizukuHealPlan.IDENTITY_PROBE_COMMAND, IDENTITY_TIMEOUT_MS)
+            val identity = if (probe.exitCode == 0 && !probe.truncated) {
+                ShizukuHealPlan.parseServerIdentity(probe.stdout)
+            } else null
+            val startRoutePresent = if (identity == ShizukuServerIdentity.Absent) {
+                val routeProbe = channel.exec(ShizukuHealPlan.START_ROUTE_PROBE_COMMAND, IDENTITY_TIMEOUT_MS)
+                if (routeProbe.exitCode == 0 && !routeProbe.truncated) {
+                    ShizukuHealPlan.parseStartRoutePresent(routeProbe.stdout)
+                } else null
+            } else null
+            ShizukuHealPlan.disposition(identity, startRoutePresent)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            ShizukuHealDisposition.PROBE_UNKNOWN
+        }
+        when (disposition) {
+            ShizukuHealDisposition.START_SERVER -> Log.i(TAG, "Shizuku heal disposition: start_server")
+            ShizukuHealDisposition.ALIVE_BUT_UNREACHABLE -> {
+                Log.w(TAG, "Shizuku heal report-only: alive_but_unreachable")
+                return
+            }
+            ShizukuHealDisposition.START_ROUTE_MISSING -> {
+                Log.w(TAG, "Shizuku heal report-only: start_route_missing")
+                return
+            }
+            ShizukuHealDisposition.PROBE_UNKNOWN -> {
+                Log.w(TAG, "Shizuku heal report-only: probe_unknown")
+                return
+            }
         }
         val result = channel.execGuarded(
-            ShizukuHealPlan.buildHealCommand(identity, SHIZUKU_START_COMMAND),
+            ShizukuHealPlan.buildHealCommand(SHIZUKU_START_COMMAND),
             START_TIMEOUT_MS,
         ) {
             val sample = lastShizukuPing
@@ -355,7 +381,7 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         private const val IDENTITY_TIMEOUT_MS = 5_000L
         private const val START_TIMEOUT_MS = 15_000L
         private const val STARTUP_POLL_TIMEOUT_MS = 10_000L
-        private const val SHIZUKU_START_COMMAND = "sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh"
+        private const val SHIZUKU_START_COMMAND = "sh $SHIZUKU_START_SCRIPT_PATH"
     }
 }
 

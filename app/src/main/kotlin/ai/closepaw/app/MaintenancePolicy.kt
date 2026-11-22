@@ -32,7 +32,14 @@ internal sealed interface ShizukuServerIdentity {
     data class Present(val pid: Int, val startTicks: Long) : ShizukuServerIdentity
 }
 
-internal enum class ShizukuHealAction { RUN_STARTER, KILL_THEN_STARTER, ABORT }
+internal enum class ShizukuHealDisposition {
+    START_SERVER,
+    ALIVE_BUT_UNREACHABLE,
+    START_ROUTE_MISSING,
+    PROBE_UNKNOWN,
+}
+
+internal const val SHIZUKU_START_SCRIPT_PATH = "/sdcard/Android/data/moe.shizuku.privileged.api/start.sh"
 
 internal enum class ShizukuHealPlan {
     NO_OP, START;
@@ -62,34 +69,34 @@ internal enum class ShizukuHealPlan {
             return ShizukuServerIdentity.Present(pid, startTicks)
         }
 
-        fun healAction(
-            diagnosed: ShizukuServerIdentity,
-            current: ShizukuServerIdentity?,
-        ): ShizukuHealAction = when {
-            current == null -> ShizukuHealAction.ABORT
-            current == ShizukuServerIdentity.Absent -> ShizukuHealAction.RUN_STARTER
-            current == diagnosed -> ShizukuHealAction.KILL_THEN_STARTER
-            else -> ShizukuHealAction.ABORT
+        // identity is the tri-state serverProcessAlive input: Present = alive, Absent = dead, null = unknown.
+        fun disposition(
+            identity: ShizukuServerIdentity?,
+            startRoutePresent: Boolean?,
+        ): ShizukuHealDisposition = when (identity) {
+            null -> ShizukuHealDisposition.PROBE_UNKNOWN
+            is ShizukuServerIdentity.Present -> ShizukuHealDisposition.ALIVE_BUT_UNREACHABLE
+            ShizukuServerIdentity.Absent -> when (startRoutePresent) {
+                null -> ShizukuHealDisposition.PROBE_UNKNOWN
+                true -> ShizukuHealDisposition.START_SERVER
+                false -> ShizukuHealDisposition.START_ROUTE_MISSING
+            }
         }
 
-        fun postKillAction(observed: ShizukuServerIdentity?): ShizukuHealAction =
-            if (observed == ShizukuServerIdentity.Absent) ShizukuHealAction.RUN_STARTER
-            else ShizukuHealAction.ABORT
+        const val START_ROUTE_PROBE_COMMAND =
+            "if [ -f $SHIZUKU_START_SCRIPT_PATH ]; then echo PRESENT; else echo MISSING; fi"
 
-        fun buildHealCommand(identity: ShizukuServerIdentity, startCommand: String): String =
-            "current=\$($IDENTITY_PROBE_COMMAND); " + when (identity) {
-                ShizukuServerIdentity.Absent ->
-                    "case \"\$current\" in ABSENT) $startCommand;; *) echo $HEAL_ABORT_MARKER;; esac"
-                is ShizukuServerIdentity.Present ->
-                    "proceed=; case \"\$current\" in ABSENT) proceed=1;; " +
-                        "'${identity.pid}'\\ '${identity.startTicks}') kill -9 ${identity.pid} 2>/dev/null; " +
-                        "n=0; while [ \$n -lt 20 ]; do pidof shizuku_server >/dev/null 2>&1 || break; " +
-                        "n=\$((n+1)); sleep 0.1; done; " +
-                        "after=\$($IDENTITY_PROBE_COMMAND); " +
-                        "case \"\$after\" in ABSENT) proceed=1;; *) echo $HEAL_ABORT_MARKER;; esac;; " +
-                        "*) echo $HEAL_ABORT_MARKER;; esac; " +
-                        "if [ -n \"\$proceed\" ]; then $startCommand; fi"
-            }
+        fun parseStartRoutePresent(output: String): Boolean? = when (output.trim()) {
+            "PRESENT" -> true
+            "MISSING" -> false
+            else -> null
+        }
+
+        fun buildHealCommand(startCommand: String): String {
+            require(startCommand == "sh $SHIZUKU_START_SCRIPT_PATH")
+            return "current=\$($IDENTITY_PROBE_COMMAND) || current=; " +
+                "case \"\$current\" in ABSENT) $startCommand;; *) echo $HEAL_ABORT_MARKER;; esac"
+        }
 
         fun shouldDispatch(
             cachedBinderAlive: Boolean,
