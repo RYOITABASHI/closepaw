@@ -1,6 +1,9 @@
 package ai.closepaw.app
 
 import ai.closepaw.adb.AdbShellChannel
+import ai.closepaw.platform.virtualdisplay.ShizukuClient
+import ai.closepaw.platform.virtualdisplay.ShizukuHealGate
+import ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
 import android.content.Context
 import android.os.SystemClock
 import android.provider.Settings
@@ -15,7 +18,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
+import rikka.shizuku.Shizuku
 
 /** Background work scoped to one MCP listener. */
 internal class McpMaintenance(private val app: Context, private val channel: AdbShellChannel) {
@@ -24,11 +29,145 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
     private var lastScan: Long? = null
     private var activeScan: CompletableDeferred<Unit>? = null
 
-    fun stop() = scope.cancel()
+    private val shizuku = ShizukuClient()
+    private data class ShizukuPingSample(val alive: Boolean, val atMs: Long)
+
+    @Volatile private var lastShizukuPing: ShizukuPingSample? = null
+    private val shizukuBinderDeadListener = Shizuku.OnBinderDeadListener {
+        lastShizukuPing = ShizukuPingSample(false, SystemClock.elapsedRealtime())
+        checkShizuku()
+    }
+    private val shizukuCheck = Mutex()
+    private val shizukuAttempts = ArrayDeque<Long>()
+
+    fun stop() {
+        try {
+            shizuku.removeBinderDeadListener(shizukuBinderDeadListener)
+        } finally {
+            scope.cancel()
+        }
+    }
 
     fun onServerStarted() {
+        shizuku.addBinderDeadListener(shizukuBinderDeadListener)
         checkAccessibility()
         rediscover()
+        checkShizuku()
+    }
+
+    fun checkShizuku() {
+        scope.launch {
+            if (!shizukuCheck.tryLock()) return@launch
+            try {
+                healShizuku()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.w(TAG, "Shizuku heal failed: ${e.javaClass.simpleName}")
+            } finally {
+                shizukuCheck.unlock()
+            }
+        }
+    }
+
+    private suspend fun healShizuku() {
+        if (!ShizukuHealGate.tryClaimHeal()) return
+        try {
+            healShizukuClaimed()
+        } finally {
+            ShizukuHealGate.releaseHeal()
+        }
+    }
+
+    private suspend fun healShizukuClaimed() {
+        if (awaitShizukuBinder(CONFIRM_DOWN_MS, pollMs = 100L)) return
+        val now = SystemClock.elapsedRealtime()
+        val plan = ShizukuHealPlan.decide(
+            binderAlive = false,
+            vdSessionActive = vdBusy(),
+            channelPaired = channel.paired,
+            attemptsInLastHour = attemptsInLastHour(shizukuAttempts, now),
+            msSinceLastAttempt = shizukuAttempts.lastOrNull()?.let { now - it },
+        )
+        if (plan == ShizukuHealPlan.NO_OP) return
+
+        // The check mutex guards the history. Only the most recent four claims can affect the gate.
+        if (shizukuAttempts.size == ShizukuHealPlan.MAX_ATTEMPTS_PER_HOUR) shizukuAttempts.removeFirst()
+        shizukuAttempts.addLast(now)
+        Log.i(TAG, "Shizuku heal attempt claimed")
+        if (!channel.isConnected()) {
+            if (channel.paired) ensureRecentScan()
+            if (!channel.paired || !channel.connectKnownPorts()) {
+                Log.w(TAG, "Shizuku heal skipped: ADB unavailable")
+                return
+            }
+        }
+
+        if (vdBusy() || pingShizukuBinder()) return
+        val probe = channel.exec(ShizukuHealPlan.IDENTITY_PROBE_COMMAND, IDENTITY_TIMEOUT_MS)
+        val identity = ShizukuHealPlan.parseServerIdentity(probe.stdout)
+        if (probe.exitCode != 0 || identity == null) {
+            Log.w(TAG, "Shizuku heal skipped: cannot read server identity")
+            return
+        }
+        val result = channel.execGuarded(
+            ShizukuHealPlan.buildHealCommand(identity, SHIZUKU_START_COMMAND),
+            START_TIMEOUT_MS,
+        ) {
+            val sample = lastShizukuPing
+            ShizukuHealPlan.shouldDispatch(
+                cachedBinderAlive = sample?.alive ?: true,
+                pingAgeMs = sample?.let { SystemClock.elapsedRealtime() - it.atMs } ?: Long.MAX_VALUE,
+                maxPingAgeMs = ShizukuHealPlan.MAX_PING_AGE_MS,
+                vdSessionActive = vdBusy(),
+            )
+        }
+        if (result == null) {
+            Log.i(TAG, "Shizuku heal dispatch aborted: binder or VD state changed while queued")
+            return
+        }
+        if (result.stdout.contains(ShizukuHealPlan.HEAL_ABORT_MARKER)) {
+            Log.i(TAG, "Shizuku heal aborted: server probe did not permit the restart")
+            return
+        }
+        if (result.exitCode != 0) {
+            Log.w(TAG, "Shizuku start.sh failed with exit code ${result.exitCode}")
+            return
+        }
+        Log.i(TAG, "Shizuku start.sh exited successfully")
+
+        if (!awaitShizukuBinder(STARTUP_POLL_TIMEOUT_MS, pollMs = 250L)) {
+            Log.w(TAG, "Shizuku did not come up after start.sh")
+            return
+        }
+        if (!shizuku.hasPermission()) {
+            Log.w(TAG, "Shizuku server is running but permission is not granted for the current UID; not requesting automatically")
+            return
+        }
+        Log.i(TAG, "Shizuku healed via adb start.sh")
+        shizukuAttempts.clear()
+    }
+
+    private fun vdBusy(): Boolean = isVirtualDisplaySessionActive() || ShizukuHealGate.vdActivationInFlight
+
+    private fun isVirtualDisplaySessionActive(): Boolean =
+        (AgentService.instance?.isVirtualDisplaySessionActive() ?: false) ||
+            VirtualDisplayPlatform.anySessionActive()
+
+    private fun pingShizukuBinder(): Boolean {
+        val alive = shizuku.isAvailable()
+        lastShizukuPing = ShizukuPingSample(alive, SystemClock.elapsedRealtime())
+        return alive
+    }
+
+    private suspend fun awaitShizukuBinder(timeoutMs: Long, pollMs: Long): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (!pingShizukuBinder()) {
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining <= 0) return false
+            delay(minOf(remaining, pollMs))
+        }
+        return true
     }
 
     fun checkAccessibility() {
@@ -212,6 +351,11 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         private const val READ_SERVICES = "settings get secure enabled_accessibility_services"
         private const val SETTINGS_TIMEOUT_MS = 5_000L
         private const val RECOVERY_INTERVAL_MS = 5 * 60_000L
+        private const val CONFIRM_DOWN_MS = 2_000L
+        private const val IDENTITY_TIMEOUT_MS = 5_000L
+        private const val START_TIMEOUT_MS = 15_000L
+        private const val STARTUP_POLL_TIMEOUT_MS = 10_000L
+        private const val SHIZUKU_START_COMMAND = "sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh"
     }
 }
 
