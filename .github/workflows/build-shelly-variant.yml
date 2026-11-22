@@ -48,6 +48,12 @@ jobs:
           --tests 'ai.closepaw.app.VirtualDisplayReadinessTest'
           --tests 'ai.closepaw.mcp.McpStatusTest'
           --tests 'ai.closepaw.llm.EffectiveMaxCompletionTokensTest'
+          --tests 'ai.closepaw.app.BrainOwnershipTest'
+          --tests 'ai.closepaw.app.BrainSessionAdmissionTest'
+          --tests 'ai.closepaw.mcp.BrainSessionPolicyTest'
+          --tests 'ai.closepaw.mcp.BrainTranscriptTest'
+          --tests 'ai.closepaw.mcp.McpSessionToolsTest'
+          --tests 'ai.closepaw.session.SessionCoordinatorTest'
 
   build:
     runs-on: ubuntu-latest
