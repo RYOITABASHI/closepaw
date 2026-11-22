@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.net.URI
+import java.net.URISyntaxException
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -28,11 +30,17 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class ChatCompletionClient(
     apiKey: String,
-    baseUrl: String? = null
+    private val baseUrl: String? = null
 ) : LLMClient() {
 
     companion object {
         private const val TAG = "ChatCompletionClient"
+
+        /** OpenRouter prices an uncapped request against the model's max output and
+         *  rejects it when the key's remaining limit can't cover prompt + max output
+         *  (HTTP 402). Cap the default so a normal turn fits a limited key: at the
+         *  observed 31,904-token allowance this leaves ~15.5k tokens of prompt room. */
+        const val OPENROUTER_DEFAULT_MAX_COMPLETION_TOKENS: Long = 16_384
     }
 
     init {
@@ -287,12 +295,30 @@ class ChatCompletionClient(
             .messages(messages)
             .tools(chatTools)
 
-        maxOutputTokens?.let { builder.maxCompletionTokens(it) }
+        effectiveMaxCompletionTokens(baseUrl, maxOutputTokens)?.let { builder.maxCompletionTokens(it) }
 
         return builder.build()
     }
 
     override suspend fun cleanup() {
         Log.d(TAG, "Cleanup requested (no-op for cloud client)")
+    }
+}
+
+internal fun effectiveMaxCompletionTokens(baseUrl: String?, requested: Long?): Long? {
+    if (requested != null) return requested
+    if (baseUrl == null) return null
+
+    val uri = try {
+        URI(baseUrl)
+    } catch (_: URISyntaxException) {
+        return null
+    }
+    val scheme = uri.scheme
+    val isHttp = scheme.equals("http", ignoreCase = true) || scheme.equals("https", ignoreCase = true)
+    return if (isHttp && uri.host.equals("openrouter.ai", ignoreCase = true)) {
+        ChatCompletionClient.OPENROUTER_DEFAULT_MAX_COMPLETION_TOKENS
+    } else {
+        null
     }
 }
