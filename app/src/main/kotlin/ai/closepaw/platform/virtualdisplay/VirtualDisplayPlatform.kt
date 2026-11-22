@@ -165,8 +165,7 @@ class VirtualDisplayPlatform(
                     displayIdProvider = displayIdProvider,
                     nodeActionPerformer = nodeActionPerformer,
                     inputInjector = inputInjector,
-                    // Unattended runs never use the clipboard (gate fix round 1, finding 5).
-                    allowClipboardPaste = !sessionConfig.unattended,
+                    unattended = sessionConfig.unattended,
             )
     private val screenshotProcessor =
             VirtualDisplayScreenshotProcessor(

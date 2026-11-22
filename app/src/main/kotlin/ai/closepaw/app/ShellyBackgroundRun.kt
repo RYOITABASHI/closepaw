@@ -148,6 +148,14 @@ object ShellyBackgroundRun {
     }
 }
 
+enum class ShellyRunOrigin {
+    SHELLY,
+    MCP;
+
+    fun shouldNotify(state: ShellyRunState): Boolean =
+        this == SHELLY || state !is ShellyRunState.Finished
+}
+
 /** What the user should be told about a running Shelly background run. */
 sealed interface ShellyRunState {
     /** Agent is working. [onMainDisplay] = it is driving the real screen (do not touch). */
@@ -184,6 +192,7 @@ class ShellyRunTracker(
      * (startup failure / cancellation / destroy) can never both report.
      */
     val result: ShellyPendingResult = ShellyPendingResult(correlation),
+    val origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
 ) {
     /** True once the final state was reported to Shelly (by any path of this start). */
     val resultReported: Boolean get() = result.isClaimed

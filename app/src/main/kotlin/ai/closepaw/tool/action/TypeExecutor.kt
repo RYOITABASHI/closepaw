@@ -21,7 +21,7 @@ import kotlinx.coroutines.delay
  *   Without target:
  *     Attempt 1: SetTextOnFocused(text, clear)
  *   Virtual display (allowTapToFocus() == false): tap-to-focus is replaced by
- *     InjectText(text, clear, x, y) — a11y focus + Shizuku key/paste injection into the VD.
+ *     InjectText(text, clear, x, y) — a11y focus and set-text, with VD shell and paste fallbacks.
  *
  * Type success = ACTION_SET_TEXT returns true. UI change detection is supplementary.
  */
@@ -278,11 +278,11 @@ class TypeExecutor(
             UIAction.InjectText(inputText, clear, focusPoint?.x, focusPoint?.y)
         )
         if (result is ActionResult.Success) {
-            attemptTrail.add("InjectText: success")
+            attemptTrail.add("InjectText: success (${result.message})")
             val analysis = capturePostActionAnalysis(snapshot, platform, UI_SETTLE_DELAY_MS, appClassifier)
             return ActionOutcome.Success(
                 message = formatActionMessage(
-                    "Typed via keyboard injection$where",
+                    "Typed on the virtual display$where",
                     resolverWarnings + analysis.warnings
                 ),
                 observation = analysis.observation,

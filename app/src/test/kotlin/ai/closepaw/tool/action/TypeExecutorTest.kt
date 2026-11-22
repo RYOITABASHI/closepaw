@@ -167,7 +167,7 @@ class TypeExecutorTest {
         val platform = TypeRecordingPlatform(
             actionResults = listOf(
                 ActionResult.Failure("ACTION_SET_TEXT failed"),
-                ActionResult.Success("Typed via keyboard injection")
+                ActionResult.Success("Typed on the VD [focus:a11y,text:a11y-focused-set:verified]")
             ),
             capturedSnapshots = listOf(snapshot),
             allowTapToFocus = false
@@ -185,14 +185,16 @@ class TypeExecutorTest {
         assertThat(outcome).isInstanceOf(ActionOutcome.Success::class.java)
         val success = outcome as ActionOutcome.Success
         assertThat(success.attemptTrail).contains("TapToFocus: skipped (VD mode)")
-        assertThat(success.attemptTrail).contains("InjectText: success")
+        assertThat(success.attemptTrail).contains(
+            "InjectText: success (Typed on the VD [focus:a11y,text:a11y-focused-set:verified])"
+        )
         assertThat(platform.performedActions).hasSize(2)
         assertThat(platform.performedActions[0]).isInstanceOf(UIAction.SetTextOnNodeAt::class.java)
         val inject = platform.performedActions[1] as UIAction.InjectText
         assertThat(inject.text).isEqualTo("Smells Like 1991")
         assertThat(inject.focusX).isEqualTo(editBounds.centerX)
         assertThat(inject.focusY).isEqualTo(editBounds.centerY)
-        // Never a TapAt / SetTextOnFocused on the VD path (IME would land on the main display).
+        // Focus and typing stay inside the VD injector.
         assertThat(platform.performedActions.none { it is UIAction.TapAt }).isTrue()
     }
 

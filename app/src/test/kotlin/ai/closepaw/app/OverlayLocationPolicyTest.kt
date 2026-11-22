@@ -768,4 +768,19 @@ class OverlayLocationPolicyTest {
             )
         ).isTrue()
     }
+
+    @Test
+    fun `MCP errors are hidden on the main display but visible in the viewer`() {
+        val error = CapsuleMode.Error("failed")
+        for (location in listOf(OverlayUserLocation.MAIN_APP, OverlayUserLocation.OTHER_APP)) {
+            assertThat(shouldSuppressForShellyBackgroundRun(
+                PlatformMode.VIRTUAL_DISPLAY, location, error, true, false,
+                ShellyRunOrigin.MCP,
+            )).isTrue()
+        }
+        assertThat(shouldSuppressForShellyBackgroundRun(
+            PlatformMode.VIRTUAL_DISPLAY, OverlayUserLocation.VD_VIEWER, error, true, false,
+            ShellyRunOrigin.MCP,
+        )).isFalse()
+    }
 }

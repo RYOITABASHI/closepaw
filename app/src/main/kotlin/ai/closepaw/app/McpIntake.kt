@@ -51,7 +51,7 @@ internal object McpRunStatus {
 
     /** Message returned to the MCP client for a refused start. */
     fun refusalMessage(block: ShellyBackgroundRun.Block): String = when (block) {
-        ShellyBackgroundRun.Block.ACCESSIBILITY_OFF -> "ClosePaw's accessibility service is not enabled"
+        ShellyBackgroundRun.Block.ACCESSIBILITY_OFF -> "ClosePaw's accessibility service is not bound"
         ShellyBackgroundRun.Block.ONBOARDING_REQUIRED -> "ClosePaw setup is not finished"
         ShellyBackgroundRun.Block.OVERLAY_PERMISSION_MISSING -> "ClosePaw lacks the display-over-other-apps permission"
         ShellyBackgroundRun.Block.CREDENTIALS_MISSING -> "No credentials for ClosePaw's selected model"
@@ -65,6 +65,7 @@ internal object McpRunStatus {
 internal class AgentServiceMcpBackend(
     private val app: Context,
     private val registry: McpRunRegistry,
+    private val maintenance: McpMaintenance,
 ) : McpBackend {
     private val main = Handler(Looper.getMainLooper())
 
@@ -105,7 +106,9 @@ internal class AgentServiceMcpBackend(
                 McpBackend.StartResult.Refused(decision.block.name, McpRunStatus.refusalMessage(decision.block))
             is ShellyBackgroundRun.Decision.Start -> {
                 val handle = registry.issue()
-                val guard = service!!.startShellyRun(goal, decision.platformMode, correlation = null) { finished ->
+                val guard = service!!.startShellyRun(
+                    goal, decision.platformMode, origin = ShellyRunOrigin.MCP,
+                ) { finished ->
                     McpRunStatus.complete(registry, handle, finished)
                     guards.remove(handle)
                 }
@@ -126,11 +129,18 @@ internal class AgentServiceMcpBackend(
         return mainCall.call<Boolean> { AgentService.instance?.stopIntakeRun(guard) == true } == true
     }
 
-    override fun status(): McpBackend.Status = McpBackend.Status(
-        version = BuildConfig.VERSION_NAME,
-        shizukuReady = shizukuReady(),
-        accessibilityReady = AgentService.instance != null,
-    )
+    override fun status(): McpBackend.Status {
+        val bound = AgentService.instance != null
+        val settingOn = accessibilitySettingOn(app)
+        if (!settingOn || !bound) maintenance.checkAccessibility()
+        maintenance.rediscover()
+        return McpBackend.Status(
+            version = BuildConfig.VERSION_NAME,
+            shizukuReady = shizukuReady(),
+            accessibilityReady = bound,
+            accessibilitySettingOn = settingOn,
+        )
+    }
 
     private class Probes(
         val onboardingCompleted: Boolean,
@@ -180,8 +190,8 @@ internal class AgentServiceMcpBackend(
 
 /**
  * Owns the MCP HTTP server. The server runs only while the settings toggle is ON (default OFF):
- * [sync] is called when AgentService connects and whenever the toggle changes. Call off the main
- * thread (Keystore-backed token read, socket bind).
+ * [sync] is called when AgentService is created or connects, and whenever the toggle changes.
+ * Call off the main thread (Keystore-backed token read, socket bind).
  */
 internal object McpServerController {
     private var adbChannel: AdbShellChannel? = null
@@ -202,6 +212,7 @@ internal object McpServerController {
     @Volatile private var token: String? = null
     private var server: McpHttpServer? = null
     private var handler: McpHandler? = null
+    private var maintenance: McpMaintenance? = null
 
     @Synchronized
     fun sync(context: Context) {
@@ -214,13 +225,26 @@ internal object McpServerController {
         if (server?.isRunning == true) return
         token = store.tokenOrCreate()
         val channel = adbChannel ?: AdbShellChannel(app).also { adbChannel = it }
+        maintenance?.stop()
+        val worker = McpMaintenance(app, channel)
         val h = McpHandler(
             expectedToken = { token },
             registry = registry,
-            backend = AgentServiceMcpBackend(app, registry),
+            backend = AgentServiceMcpBackend(app, registry, worker),
             audit = { line -> Log.i(AUDIT_TAG, line) },
             serverVersion = BuildConfig.VERSION_NAME,
-            adbStatus = { McpHandler.AdbStatus(channel.paired, channel.isConnected(), channel.lastPort) },
+            adbStatus = {
+                val ports = channel.portStatus()
+                McpHandler.AdbStatus(
+                    paired = channel.paired,
+                    connected = channel.isConnected(),
+                    lastPort = ports.lastPort,
+                    lastSuccessfulAt = ports.lastSuccessfulAt,
+                    discoveredPort = ports.discoveredPort,
+                    discoveredAt = ports.discoveredAt,
+                    discoverySource = ports.discoverySource,
+                )
+            },
             selfUpdate = SelfUpdate.mcpHook(app, channel),
         )
         val s = McpHttpServer(h, onError = { Log.w(TAG, it) })
@@ -228,9 +252,12 @@ internal object McpServerController {
             s.start()
             server = s
             handler = h
+            maintenance = worker
+            worker.onServerStarted()
             _state.value = State.Running(s.boundPort)
             Log.i(TAG, "MCP server listening on 0.0.0.0:${s.boundPort}")
         } catch (e: IOException) {
+            worker.stop()
             Log.w(TAG, "MCP server failed to start: ${e.javaClass.simpleName}")
             _state.value = State.Failed(e.javaClass.simpleName)
         }
@@ -257,6 +284,8 @@ internal object McpServerController {
     }
 
     private fun stopLocked() {
+        maintenance?.stop()
+        maintenance = null
         server?.stop()
         server = null
         handler = null

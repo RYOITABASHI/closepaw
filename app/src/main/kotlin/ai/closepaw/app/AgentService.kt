@@ -255,6 +255,7 @@ class AgentService : AccessibilityService() {
         isServiceActive = true
         instance = this
         Log.i(TAG, "AgentService connected")
+        syncMcpListener()
 
         val info = serviceInfo
         if (info != null) {
@@ -324,8 +325,6 @@ class AgentService : AccessibilityService() {
         Log.i(TAG, "ActionVisualizerManager initialized")
 
         registerDebugStopReceiverIfNeeded(this, stopReceiver)
-        // MCP intake server: runs only while its settings toggle is ON (Keystore read: off main).
-        serviceScope.launch(Dispatchers.IO) { McpServerController.sync(applicationContext) }
         registerDebugExecReceiverIfNeeded(this, debugExecReceiver)
         registerDebugMobileActionReceiverIfNeeded(this, debugMobileActionReceiver)
     }
@@ -354,13 +353,22 @@ class AgentService : AccessibilityService() {
         Log.w(TAG, "AgentService interrupted")
     }
 
-    override fun onDestroy() {
+    private fun clearAccessibilityBinding() {
         isServiceActive = false
-        instance = null
+        if (instance === this) instance = null
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        clearAccessibilityBinding()
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        clearAccessibilityBinding()
 
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
-            shellyNotifier.render(it.state)
+            shellyNotifier.render(it.state, it.origin)
             reportShellyResult(it)
         }
         shellyRun = null
@@ -409,6 +417,21 @@ class AgentService : AccessibilityService() {
     override fun onCreate() {
         super.onCreate()
         serviceLifecycleOwner.onCreate()
+        // Start listening even if Android creates the service but delays the bind callback.
+        // onServiceConnected also syncs, so it can retry a failed early start.
+        syncMcpListener()
+    }
+
+    private fun syncMcpListener() {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                McpServerController.sync(applicationContext)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "MCP startup failed: ${e.javaClass.simpleName}")
+            }
+        }
     }
 
     private fun submitOp(op: Op) {
@@ -450,8 +473,12 @@ class AgentService : AccessibilityService() {
                             try {
                                 // Tracker first: the overlay may resolve an approval synchronously
                                 // (auto-deny), which must find the tracker already waiting.
-                                onShellyRunEvent(agentSession, event)
-                                eventHandler.handleEvent(event, recordingService)
+                                val releaseMcpOverlay = onShellyRunEvent(agentSession, event)
+                                try {
+                                    eventHandler.handleEvent(event, recordingService)
+                                } finally {
+                                    if (releaseMcpOverlay) overlayController?.releaseShellyBackgroundRunWhenIdle()
+                                }
                             } catch (e: Exception) {
                                 Log.e(
                                         TAG,
@@ -483,7 +510,7 @@ class AgentService : AccessibilityService() {
         stopDraftForForegroundSession()
         shellyRun?.let {
             it.finish(ShellyRunState.Finished.Kind.STOPPED)
-            shellyNotifier.render(it.state)
+            shellyNotifier.render(it.state, it.origin)
             reportShellyResult(it)
             shellyRun = null
         }
@@ -576,6 +603,7 @@ class AgentService : AccessibilityService() {
             goal: String,
             platformMode: PlatformMode,
             correlation: ShellyBackgroundRun.ResultCorrelation? = null,
+            origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
             /**
              * MCP intake only (Shelly passes null): called once on the main thread with the run's
              * terminal state, from the same report-once paths that send the Shelly result.
@@ -583,14 +611,14 @@ class AgentService : AccessibilityService() {
             onTerminal: ((ShellyRunState.Finished) -> Unit)? = null,
     ): ShellyPendingResult? {
         if (!isServiceActive) {
-            shellyNotifier.showBlocked(ShellyBackgroundRun.Block.ACCESSIBILITY_OFF, goal)
+            shellyNotifier.showBlocked(ShellyBackgroundRun.Block.ACCESSIBILITY_OFF, goal, origin)
             reportShellyStartFailure(correlation, "ClosePaw's accessibility service is not active")
             onTerminal?.invoke(ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, "ClosePaw's accessibility service is not active"))
             return null
         }
         if (shellyStartInFlight) {
             Log.w(TAG, "Shelly run already starting; refusing a second start")
-            shellyNotifier.showBlocked(ShellyBackgroundRun.Block.BUSY, goal)
+            shellyNotifier.showBlocked(ShellyBackgroundRun.Block.BUSY, goal, origin)
             reportShellyStartFailure(correlation, "ClosePaw is busy with another task")
             onTerminal?.invoke(ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, "ClosePaw is busy with another task"))
             return null
@@ -619,8 +647,8 @@ class AgentService : AccessibilityService() {
         val onMainDisplay = platformMode != PlatformMode.VIRTUAL_DISPLAY
         currentPlatformMode = platformMode
         overlayController?.setPlatformMode(platformMode)
-        overlayController?.onBackgroundRunRequested(onMainDisplay)
-        shellyNotifier.render(ShellyRunState.Working(onMainDisplay, emptyList()))
+        overlayController?.onBackgroundRunRequested(onMainDisplay, origin)
+        shellyNotifier.render(ShellyRunState.Working(onMainDisplay, emptyList()), origin)
 
         val startJob = serviceScope.launch {
             try {
@@ -676,7 +704,7 @@ class AgentService : AccessibilityService() {
                     Log.w(TAG, "Shelly run: virtual display lost during setup; not starting")
                     serviceScope.launch { newSession.submit(Op.Shutdown) }
                     shellyNotifier.cancel()
-                    shellyNotifier.showBlocked(ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE, goal)
+                    shellyNotifier.showBlocked(ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE, goal, origin)
                     reportShellyStartFailure(pending, "ClosePaw's virtual display became unavailable")
                     overlayController?.clearShellyBackgroundRun()
                     overlayController?.hideAll()
@@ -708,6 +736,7 @@ class AgentService : AccessibilityService() {
                         ignoredPackages = ignored,
                         correlation = pending.correlation,
                         result = pending,
+                        origin = origin,
                 )
                 // Defensive: never leave a different session running unobserved (it would keep
                 // driving the virtual display with no capsule / notification attached).
@@ -742,7 +771,8 @@ class AgentService : AccessibilityService() {
                 Log.e(TAG, "Shelly run failed to start", e)
                 shellyRun = null
                 shellyNotifier.render(
-                        ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, e.message)
+                        ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, e.message),
+                        origin,
                 )
                 reportShellyStartFailure(pending, "ClosePaw failed to start the task")
                 overlayController?.clearShellyBackgroundRun()
@@ -1160,21 +1190,21 @@ class AgentService : AccessibilityService() {
     }
 
     private fun renderShellyRun() {
-        shellyRun?.let { shellyNotifier.render(it.state) }
+        shellyRun?.let { shellyNotifier.render(it.state, it.origin) }
     }
 
     private fun retireShellyRunUnlessFor(newSession: AgentSession) {
         val tracker = shellyRun ?: return
         if (tracker.sessionId == newSession.sessionId.value) return
         tracker.finish(ShellyRunState.Finished.Kind.STOPPED)
-        shellyNotifier.render(tracker.state)
+        shellyNotifier.render(tracker.state, tracker.origin)
         reportShellyResult(tracker)
         shellyRun = null
     }
 
-    private fun onShellyRunEvent(agentSession: AgentSession, event: ai.closepaw.protocol.AgentEvent) {
-        val tracker = shellyRun ?: return
-        if (tracker.sessionId != agentSession.sessionId.value) return
+    private fun onShellyRunEvent(agentSession: AgentSession, event: ai.closepaw.protocol.AgentEvent): Boolean {
+        val tracker = shellyRun ?: return false
+        if (tracker.sessionId != agentSession.sessionId.value) return false
         if (tracker.onEvent(event)) renderShellyRun()
         if (tracker.isFinished) {
             reportShellyResult(tracker)
@@ -1184,9 +1214,12 @@ class AgentService : AccessibilityService() {
             // Build 59: it may DEFER the return when the user has moved on (no flash while they look).
             (agentSession.getServices().platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform)
                     ?.onRunResultReported()
-            // The overlay handles this terminal event right after: keep its Done invisible.
+            // MCP can receive an error while the capsule is still Hidden. Retain its
+            // origin until that event has updated the overlay.
+            if (tracker.origin == ShellyRunOrigin.MCP) return true
             overlayController?.releaseShellyBackgroundRunWhenIdle()
         }
+        return false
     }
 
     /**
