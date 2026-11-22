@@ -4,6 +4,7 @@ import ai.closepaw.model.Bounds
 import ai.closepaw.model.PerceptionElement
 import ai.closepaw.model.Point
 import ai.closepaw.model.ScreenSnapshot
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,6 +14,52 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BrainSessionPolicyTest {
+    @Test
+    fun freshBrainActivityKeepsTheSession() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+
+        assertFalse(BrainStaleness.shouldTerminate(1L, false, 1L, bound))
+        assertFalse(BrainStaleness.shouldTerminate(1L, false, bound, bound))
+    }
+
+    @Test
+    fun staleIdleBrainTerminatesTheSession() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+
+        assertTrue(BrainStaleness.shouldTerminate(1L, false, bound + 2L, bound))
+        assertTrue(BrainStaleness.shouldTerminate(1L, false, bound * 10, bound))
+    }
+
+    @Test
+    fun brainIdleExactlyAtTheBoundKeepsTheSession() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+
+        assertFalse(BrainStaleness.shouldTerminate(1L, false, 1L + bound, bound))
+    }
+
+    @Test
+    fun staleBrainWithACallInFlightKeepsTheSession() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+
+        assertFalse(BrainStaleness.shouldTerminate(1L, true, bound * 10, bound))
+    }
+
+    @Test
+    fun unseededBrainTimestampsKeepTheSession() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+
+        assertFalse(BrainStaleness.shouldTerminate(0L, false, Long.MAX_VALUE, bound))
+        assertFalse(BrainStaleness.shouldTerminate(-1L, false, bound * 10, bound))
+    }
+
+    @Test
+    fun brainStalenessBoundIsFiveMinutesAndBelowTheWallClockLimit() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+
+        assertEquals(300_000L, bound)
+        assertTrue(bound < BrainSessionLimits.MAX_SESSION_WALL_CLOCK_MS)
+    }
+
     @Test
     fun differentResourceIdsProduceUnequalIdentities() {
         val first = button("example:id/first")
@@ -305,4 +352,100 @@ class BrainSessionPolicyTest {
             ),
         ),
     )
+
+    @Test
+    fun callStartingAfterTheStalenessSamplePreventsTheClaim() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+        val gate = BrainTerminalGate()
+        val tracker = BrainActivityTracker(gate)
+        tracker.seed(1L)
+
+        assertTrue(BrainStaleness.shouldTerminate(tracker.lastSeenMs(), tracker.hasCallInFlight(), bound + 2L, bound))
+        tracker.noteCallStarted(bound + 2L)
+        assertFalse(guardedStalenessClaim(tracker, gate, bound + 2L, bound))
+        assertNull(gate.claimedKind())
+
+        tracker.noteCallFinished(bound + 2L)
+        assertFalse(guardedStalenessClaim(tracker, gate, bound + 2L, bound))
+        assertTrue(guardedStalenessClaim(tracker, gate, 2L * bound + 3L, bound))
+        assertEquals(BrainTerminalKind.FAILED, gate.claimedKind())
+    }
+
+    @Test
+    fun callInFlightAtClaimTimeIsNeverStalenessTerminated() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+        val gate = BrainTerminalGate()
+        val tracker = BrainActivityTracker(gate)
+        tracker.seed(1L)
+        tracker.noteCallStarted(1L)
+
+        assertFalse(guardedStalenessClaim(tracker, gate, bound * 10, bound))
+        assertNull(gate.claimedKind())
+    }
+
+    @Test
+    fun guardedStalenessClaimRefusesOnceTheGateIsClaimed() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+        val gate = BrainTerminalGate()
+        val tracker = BrainActivityTracker(gate)
+        tracker.seed(1L)
+        assertTrue(gate.claim(BrainTerminalKind.STOPPED))
+
+        assertFalse(guardedStalenessClaim(tracker, gate, bound * 10, bound))
+        assertEquals(BrainTerminalKind.STOPPED, gate.claimedKind())
+    }
+
+    @Test
+    fun concurrentCallStartsNeverOverlapAStalenessClaim() {
+        val bound = BrainSessionLimits.BRAIN_STALENESS_MS
+        val gate = BrainTerminalGate()
+        val tracker = BrainActivityTracker(gate)
+        tracker.seed(1L)
+        val staleNow = 1L
+        val now = bound + 2L
+        val mirror = AtomicBoolean()
+        val violation = AtomicBoolean()
+        val claimed = AtomicBoolean()
+        val caller = Thread {
+            repeat(300) {
+                tracker.noteCallStarted(staleNow)
+                mirror.set(true)
+                Thread.sleep(1)
+                mirror.set(false)
+                tracker.noteCallFinished(staleNow)
+            }
+        }
+        val watcher = Thread {
+            while (caller.isAlive && !claimed.get()) {
+                // Sample the mirror before a later call can acquire the gate.
+                synchronized(gate) {
+                    if (guardedStalenessClaim(tracker, gate, now, bound)) {
+                        claimed.set(true)
+                        if (mirror.get()) violation.set(true)
+                    }
+                }
+            }
+        }
+        caller.start()
+        watcher.start()
+        caller.join(10_000L)
+        watcher.join(10_000L)
+        assertFalse(caller.isAlive)
+        assertFalse(watcher.isAlive)
+        assertFalse(violation.get())
+    }
+
+    private fun guardedStalenessClaim(
+        tracker: BrainActivityTracker,
+        gate: BrainTerminalGate,
+        nowMs: Long,
+        boundMs: Long,
+    ): Boolean = synchronized(gate) {
+        if (gate.isClaimed()) return@synchronized false
+        if (!BrainStaleness.shouldTerminate(
+                tracker.lastSeenMs(), tracker.hasCallInFlight(), nowMs, boundMs,
+            )
+        ) return@synchronized false
+        gate.claim(BrainTerminalKind.FAILED)
+    }
 }
