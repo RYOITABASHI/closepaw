@@ -93,34 +93,49 @@ class MaintenancePolicyTest {
         )
     }
 
-    @Test fun shizukuHealActionMatchesTheEffectTimeIdentity() {
-        val diagnosed = ShizukuServerIdentity.Present(123, 456)
-        val absent = ShizukuServerIdentity.Absent
-        val cases = listOf(
-            Triple(absent, absent, ShizukuHealAction.RUN_STARTER),
-            Triple(absent, diagnosed, ShizukuHealAction.ABORT),
-            Triple(diagnosed, absent, ShizukuHealAction.RUN_STARTER),
-            Triple(diagnosed, diagnosed, ShizukuHealAction.KILL_THEN_STARTER),
-            Triple(diagnosed, ShizukuServerIdentity.Present(124, 456), ShizukuHealAction.ABORT),
-            Triple(diagnosed, ShizukuServerIdentity.Present(123, 457), ShizukuHealAction.ABORT),
-            Triple(absent, null, ShizukuHealAction.ABORT),
-            Triple(diagnosed, null, ShizukuHealAction.ABORT),
-        )
-        for ((previous, current, expected) in cases) {
-            assertEquals("$previous -> $current", expected, ShizukuHealPlan.healAction(previous, current))
+    @Test fun shizukuUnknownIdentityHasUnknownDispositionRegardlessOfStartRoute() {
+        for (route in listOf(true, false, null)) {
+            assertEquals(ShizukuHealDisposition.PROBE_UNKNOWN, ShizukuHealPlan.disposition(null, route))
         }
     }
 
-    @Test fun shizukuPostKillActionRequiresAbsence() {
-        val cases = listOf(
-            ShizukuServerIdentity.Absent to ShizukuHealAction.RUN_STARTER,
-            ShizukuServerIdentity.Present(123, 456) to ShizukuHealAction.ABORT,
-            ShizukuServerIdentity.Present(124, 456) to ShizukuHealAction.ABORT,
-            null to ShizukuHealAction.ABORT,
-        )
-        for ((observed, expected) in cases) {
-            assertEquals("$observed", expected, ShizukuHealPlan.postKillAction(observed))
+    @Test fun shizukuPresentServerIsAliveButUnreachableRegardlessOfStartRoute() {
+        val identity = ShizukuServerIdentity.Present(123, 456)
+        for (route in listOf(true, false, null)) {
+            assertEquals(ShizukuHealDisposition.ALIVE_BUT_UNREACHABLE, ShizukuHealPlan.disposition(identity, route))
         }
+    }
+
+    @Test fun shizukuAbsentServerWithUnknownRouteHasUnknownDisposition() {
+        assertEquals(
+            ShizukuHealDisposition.PROBE_UNKNOWN,
+            ShizukuHealPlan.disposition(ShizukuServerIdentity.Absent, null),
+        )
+    }
+
+    @Test fun shizukuAbsentServerWithPresentRouteCanStart() {
+        assertEquals(
+            ShizukuHealDisposition.START_SERVER,
+            ShizukuHealPlan.disposition(ShizukuServerIdentity.Absent, true),
+        )
+    }
+
+    @Test fun shizukuAbsentServerWithMissingRouteReportsMissingRoute() {
+        assertEquals(
+            ShizukuHealDisposition.START_ROUTE_MISSING,
+            ShizukuHealPlan.disposition(ShizukuServerIdentity.Absent, false),
+        )
+    }
+
+    @Test fun shizukuStartRouteParsing() {
+        assertEquals(true, ShizukuHealPlan.parseStartRoutePresent("PRESENT\n"))
+        assertEquals(false, ShizukuHealPlan.parseStartRoutePresent("MISSING\n"))
+        assertEquals(null, ShizukuHealPlan.parseStartRoutePresent("garbage"))
+        assertEquals(null, ShizukuHealPlan.parseStartRoutePresent(""))
+    }
+
+    @Test fun shizukuStartRouteProbeReferencesTheStartScript() {
+        assertEquals(true, ShizukuHealPlan.START_ROUTE_PROBE_COMMAND.contains(SHIZUKU_START_SCRIPT_PATH))
     }
 
     @Test fun shizukuIdentityParsing() {
@@ -132,22 +147,13 @@ class MaintenancePolicyTest {
     }
 
     @Test fun shizukuHealCommandRevalidatesIdentityOnDevice() {
-        val starter = "RUN_STARTER_SENTINEL"
-        val present = ShizukuHealPlan.buildHealCommand(ShizukuServerIdentity.Present(123, 456), starter)
-        val absent = ShizukuHealPlan.buildHealCommand(ShizukuServerIdentity.Absent, starter)
-        assertEquals(true, present.contains("'123'"))
-        assertEquals(true, present.contains("'456'"))
-        assertEquals(false, absent.contains("123"))
-        assertEquals(1, Regex("kill -9 123").findAll(present).count())
-        assertEquals(true, present.contains("-lt 20"))
-        assertEquals(false, absent.contains("kill"))
-        for (forbidden in listOf("pkill", "killall", "kill \$(")) {
-            assertEquals(forbidden, false, present.contains(forbidden))
-        }
-        for (command in listOf(present, absent)) {
-            assertEquals(true, command.contains(ShizukuHealPlan.HEAL_ABORT_MARKER))
-            assertEquals(1, Regex(starter).findAll(command).count())
-        }
+        val starter = "sh $SHIZUKU_START_SCRIPT_PATH"
+        val command = ShizukuHealPlan.buildHealCommand(starter)
+        assertEquals(true, command.contains(ShizukuHealPlan.IDENTITY_PROBE_COMMAND))
+        assertEquals(true, command.contains("ABSENT) $starter"))
+        assertEquals(true, command.contains(ShizukuHealPlan.HEAL_ABORT_MARKER))
+        assertEquals(1, Regex(Regex.escape(starter)).findAll(command).count())
+        assertEquals(false, command.contains("kill"))
         assertEquals(true, ShizukuHealPlan.IDENTITY_PROBE_COMMAND.contains("pidof shizuku_server"))
         assertEquals(true, ShizukuHealPlan.IDENTITY_PROBE_COMMAND.contains("/proc/"))
     }
