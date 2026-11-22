@@ -76,6 +76,7 @@ class McpHandler(
     private val newSessionId: () -> String = { UUID.randomUUID().toString() },
     private val adbStatus: () -> AdbStatus = { AdbStatus(false, false, null) },
     private val selfUpdate: McpSelfUpdate? = null,
+    private val typedOps: ((String, JsonObject) -> JsonObject)? = null,
 ) {
     data class AdbStatus(
         val paired: Boolean,
@@ -87,8 +88,16 @@ class McpHandler(
         val discoverySource: String? = null,
     )
 
-    private val tools = if (selfUpdate == null) TOOLS else JsonArray(TOOLS + SELF_UPDATE_TOOL)
-    private val toolNames = if (selfUpdate == null) TOOL_NAMES else TOOL_NAMES + TOOL_SELF_UPDATE
+    private val tools = JsonArray(buildList {
+        addAll(TOOLS)
+        if (selfUpdate != null) add(SELF_UPDATE_TOOL)
+        if (typedOps != null) addAll(TYPED_OP_TOOLS)
+    })
+    private val toolNames = buildSet {
+        addAll(TOOL_NAMES)
+        if (selfUpdate != null) add(TOOL_SELF_UPDATE)
+        if (typedOps != null) addAll(TYPED_OP_NAMES)
+    }
     private val sessionsLock = Any()
 
     /** Live session ids, access-ordered so the eldest is evicted first. */
@@ -187,6 +196,12 @@ class McpHandler(
                     audit("mcp tool=$name handle=- outcome=invalid_params")
                     return jsonResponse(200, rpcError(id, INVALID_PARAMS, "self_update arguments must be an object"))
                 }
+                if (name in TYPED_OP_NAMES && arguments != null && arguments !is JsonObject) {
+                    audit("mcp tool=$name handle=- outcome=invalid_params")
+                    return jsonResponse(200, rpcResult(
+                        id, toolError(null, "invalid_params", "$name arguments must be an object", "invalid_params").result,
+                    ))
+                }
                 val args = arguments as? JsonObject ?: JsonObject(emptyMap())
                 jsonResponse(200, rpcResult(id, callTool(name, args)))
             }
@@ -205,10 +220,19 @@ class McpHandler(
             TOOL_STOP_RUN -> stopRun(args)
             TOOL_STATUS -> status()
             TOOL_SELF_UPDATE -> selfUpdate(args)
+            in TYPED_OP_NAMES -> typedOp(name, args)
             else -> error("unreachable")
         }
         audit("mcp tool=$name handle=${out.handle ?: "-"} outcome=${out.outcome}")
         return out.result
+    }
+
+    private fun typedOp(name: String, args: JsonObject): ToolOutcome = try {
+        ToolOutcome(null, "ok", toolOk(checkNotNull(typedOps)(name, args)))
+    } catch (e: McpTypedOpError) {
+        toolError(null, e.code, e.message, e.code)
+    } catch (e: Exception) {
+        toolError(null, "operation_failed", "$name failed (${e.javaClass.simpleName})", "operation_failed")
     }
 
     private fun runGoal(args: JsonObject): ToolOutcome {
@@ -293,7 +317,11 @@ class McpHandler(
         if (args.keys.any { it != "connectPort" }) {
             return toolError(null, "invalid_params", "Unexpected self_update argument")
         }
-        return ToolOutcome(null, "ok", toolOk(update.start(port)))
+        val result = update.start(port)
+        if (result["error"] == JsonPrimitive("adb_channel_unavailable")) {
+            return toolError(null, "adb_channel_unavailable", "Built-in ADB channel is unavailable", "adb_channel_unavailable")
+        }
+        return ToolOutcome(null, "ok", toolOk(result))
     }
 
     private fun handleArg(args: JsonObject): String? =
@@ -457,6 +485,124 @@ class McpHandler(
                 }
             })
         }
+        private val TYPED_OP_NAMES = setOf("secure_setting", "read_logcat", "capture_screen", "get_ui_tree")
+
+        private val TYPED_OP_TOOLS = buildJsonArray {
+            add(buildJsonObject {
+                put("name", "secure_setting")
+                put("description", "Reads or writes an allowlisted Android setting.")
+                putJsonObject("inputSchema") {
+                    put("type", "object")
+                    putJsonObject("properties") {
+                        putJsonObject("action") {
+                            put("type", "string")
+                            putJsonArray("enum") {
+                                add(JsonPrimitive("get"))
+                                add(JsonPrimitive("put"))
+                            }
+                        }
+                        putJsonObject("key") {
+                            put("type", "string")
+                            putJsonArray("enum") { secureSettingKeys.forEach { add(JsonPrimitive(it)) } }
+                        }
+                        put("value", stringProp("Value for put. accessibility_enabled accepts 0 or 1."))
+                    }
+                    putJsonArray("required") {
+                        add(JsonPrimitive("action"))
+                        add(JsonPrimitive("key"))
+                    }
+                    putJsonArray("anyOf") {
+                        for (accessibility in listOf(false, true)) {
+                            add(buildJsonObject {
+                                putJsonObject("properties") {
+                                    putJsonObject("action") {
+                                        putJsonArray("enum") { add(JsonPrimitive("put")) }
+                                    }
+                                    putJsonObject("key") {
+                                        putJsonArray("enum") {
+                                            secureSettingKeys.filter {
+                                                (it == "accessibility_enabled") == accessibility
+                                            }.forEach { add(JsonPrimitive(it)) }
+                                        }
+                                    }
+                                    if (accessibility) {
+                                        putJsonObject("value") {
+                                            putJsonArray("enum") {
+                                                add(JsonPrimitive("0"))
+                                                add(JsonPrimitive("1"))
+                                            }
+                                        }
+                                    }
+                                }
+                                putJsonArray("required") {
+                                    add(JsonPrimitive("action"))
+                                    add(JsonPrimitive("key"))
+                                    add(JsonPrimitive("value"))
+                                }
+                            })
+                        }
+                        add(buildJsonObject {
+                            putJsonObject("properties") {
+                                putJsonObject("action") {
+                                    putJsonArray("enum") { add(JsonPrimitive("get")) }
+                                }
+                            }
+                            putJsonArray("required") {
+                                add(JsonPrimitive("action"))
+                                add(JsonPrimitive("key"))
+                            }
+                            putJsonObject("not") {
+                                putJsonArray("required") { add(JsonPrimitive("value")) }
+                            }
+                        })
+                    }
+                    put("additionalProperties", false)
+                }
+            })
+            add(buildJsonObject {
+                put("name", "read_logcat")
+                put("description", "Reads a bounded snapshot of Android logcat.")
+                putJsonObject("inputSchema") {
+                    put("type", "object")
+                    putJsonObject("properties") {
+                        putJsonObject("lines") {
+                            put("type", "integer")
+                            put("description", "Recent lines, must be between 1 and 1000. Defaults to 200.")
+                            put("minimum", 1)
+                            put("maximum", 1000)
+                        }
+                        putJsonObject("filter") {
+                            put("type", "string")
+                            put("description", "Optional logcat message regex (-e).")
+                            put("maxLength", 512)
+                            put("pattern", "^[^-\\u0000-\\u001F\\u007F-\\u009F][^\\u0000-\\u001F\\u007F-\\u009F]*$")
+                        }
+                        putJsonObject("packageName") {
+                            put("type", "string")
+                            put("description", "Optional package whose main process logs should be read.")
+                            put("maxLength", 255)
+                            put("pattern", "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)*$")
+                        }
+                    }
+                    put("additionalProperties", false)
+                }
+            })
+            for ((name, description) in listOf(
+                "capture_screen" to "Captures the default display as a bounded base64 JPEG.",
+                "get_ui_tree" to "Reads the bounded accessibility tree of the active window.",
+            )) {
+                add(buildJsonObject {
+                    put("name", name)
+                    put("description", description)
+                    putJsonObject("inputSchema") {
+                        put("type", "object")
+                        putJsonObject("properties") {}
+                        put("additionalProperties", false)
+                    }
+                })
+            }
+        }
+
         private val SELF_UPDATE_TOOL = buildJsonObject {
             put("name", TOOL_SELF_UPDATE)
             put("description", "Reinstall this ClosePaw build from its release APK. Poll closepaw_status for progress.")

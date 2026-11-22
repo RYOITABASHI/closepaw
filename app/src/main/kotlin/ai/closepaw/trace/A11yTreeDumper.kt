@@ -49,9 +49,7 @@ internal object A11yTreeDumper {
     }
 
     private fun dumpNode(node: AccessibilityNodeInfo, shouldRecycle: Boolean): A11yNodeDump {
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
-
+        val rect = Rect().also(node::getBoundsInScreen)
         val children =
             buildList {
                 for (i in 0 until node.childCount) {
@@ -60,43 +58,60 @@ internal object A11yTreeDumper {
                 }
             }
 
-        val viewId = node.viewIdResourceName?.take(MAX_ID_LEN)
-        val className = node.className?.toString()?.take(MAX_CLASS_LEN)
-        val text = node.text?.toString()?.take(MAX_TEXT_LEN)
-        val desc = node.contentDescription?.toString()?.take(MAX_DESC_LEN)
+        val dump = describe(node, rect, children, markTruncation = false)
+        if (shouldRecycle) {
+            node.recycleCompat()
+        }
+        return dump
+    }
+
+    /** Format the current node without traversing its children. */
+    fun describe(node: AccessibilityNodeInfo): A11yNodeDump =
+        describe(node, Rect().also(node::getBoundsInScreen), emptyList(), markTruncation = true)
+
+    private fun describe(
+        node: AccessibilityNodeInfo,
+        rect: Rect,
+        children: List<A11yNodeDump>,
+        markTruncation: Boolean,
+    ): A11yNodeDump {
+        val viewId = clip(node.viewIdResourceName, MAX_ID_LEN, markTruncation)
+        val className = clip(node.className, MAX_CLASS_LEN, markTruncation)
+        val text = clip(node.text, MAX_TEXT_LEN, markTruncation)
+        val desc = clip(node.contentDescription, MAX_DESC_LEN, markTruncation)
         val rangeInfo =
             node.rangeInfo?.let {
                 A11yRangeInfo(current = it.current, min = it.min, max = it.max)
             }
 
-        val dump =
-            A11yNodeDump(
-                className = className,
-                packageName = node.packageName?.toString(),
-                viewIdResourceName = viewId,
-                text = text,
-                contentDescription = desc,
-                bounds = listOf(rect.left, rect.top, rect.right, rect.bottom),
-                clickable = node.isClickable,
-                enabled = node.isEnabled,
-                focusable = node.isFocusable,
-                focused = node.isFocused,
-                scrollable = node.isScrollable,
-                editable = node.isEditable,
-                checkable = node.isCheckable,
-                checked = node.isCheckedCompat(),
-                rangeInfo = rangeInfo,
-                selected = node.isSelected,
-                password = node.isPassword,
-                visibleToUser = node.isVisibleToUser,
-                childCount = node.childCount,
-                children = children
-            )
+        return A11yNodeDump(
+            className = className,
+            packageName = node.packageName?.toString(),
+            viewIdResourceName = viewId,
+            text = text,
+            contentDescription = desc,
+            bounds = listOf(rect.left, rect.top, rect.right, rect.bottom),
+            clickable = node.isClickable,
+            enabled = node.isEnabled,
+            focusable = node.isFocusable,
+            focused = node.isFocused,
+            scrollable = node.isScrollable,
+            editable = node.isEditable,
+            checkable = node.isCheckable,
+            checked = node.isCheckedCompat(),
+            rangeInfo = rangeInfo,
+            selected = node.isSelected,
+            password = node.isPassword,
+            visibleToUser = node.isVisibleToUser,
+            childCount = node.childCount,
+            children = children,
+        )
+    }
 
-        if (shouldRecycle) {
-            node.recycleCompat()
-        }
-
-        return dump
+    private fun clip(value: CharSequence?, limit: Int, markTruncation: Boolean): String? {
+        if (value == null || value.length <= limit) return value?.toString()
+        if (!markTruncation) return value.toString().take(limit)
+        val end = if (Character.isHighSurrogate(value[limit - 1])) limit - 1 else limit
+        return value.subSequence(0, end).toString() + " [truncated]"
     }
 }

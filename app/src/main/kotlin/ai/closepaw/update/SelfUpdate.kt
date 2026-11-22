@@ -20,6 +20,10 @@ import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
@@ -32,6 +36,7 @@ import rikka.shizuku.ShizukuBinderWrapper
 /** Reinstalls this ClosePaw build using its Shelly release APK. */
 internal object SelfUpdate {
     private const val TAG = "ClosePawSelfUpdate"
+    private const val ADB_CONNECT_TIMEOUT_MS = 10_000L
     const val STAGE_FILE = "spike-result.json"
     const val ACTION_RESULT = "ai.closepaw.action.SPIKE_INSTALL_RESULT"
     private const val TARGET_PACKAGE = "ai.closepaw"
@@ -110,7 +115,7 @@ internal object SelfUpdate {
 
     // ── Entry point ──
 
-    /** Starts the flow on a background thread; returns the current stage at once. */
+    /** Starts the update worker after a bounded ADB connection check for explicit requests. */
     private fun start(
         ctx: Context,
         adb: AdbShellChannel,
@@ -123,6 +128,12 @@ internal object SelfUpdate {
         }
         var decision = UpdateStartDecision(false)
         try {
+            if (!recoverOnly && !connectForUpdate(adb, manualPort)) {
+                return JsonObject(mapOf(
+                    "accepted" to JsonPrimitive(false),
+                    "error" to JsonPrimitive("adb_channel_unavailable"),
+                ))
+            }
             decision = synchronized(fileLock) {
                 startUpdateIfReady(
                     readShizuku = { readRecords(app) },
@@ -135,10 +146,9 @@ internal object SelfUpdate {
                         try {
                             runBlocking {
                                 if (recoverAdb) {
-                                    AdbSelfUpdate.collectResult(app, adb, manualPort)
+                                    AdbSelfUpdate.collectResult(app, adb)
                                 } else if (!recoverOnly) {
-                                    val connected = adb.connectAuto() || (manualPort != null && adb.connect(manualPort))
-                                    runFlow(app, adb.takeIf { connected })
+                                    runFlow(app, adb)
                                 }
                             }
                         } catch (t: Throwable) {
@@ -162,6 +172,28 @@ internal object SelfUpdate {
             JsonObject(status + result + if (error != null) mapOf("error" to JsonPrimitive(error)) else emptyMap())
         } catch (t: Throwable) {
             JsonObject(result + ("error" to UpdateStageLog.field(decision.error ?: UpdateStageLog.describe(t))))
+        }
+    }
+
+    private fun connectForUpdate(adb: AdbShellChannel, manualPort: Int?): Boolean {
+        if (adb.isConnected()) return true
+        if (!adb.paired) return false
+        val attempt = FutureTask {
+            runBlocking {
+                withTimeoutOrNull(ADB_CONNECT_TIMEOUT_MS) {
+                    adb.connectAuto() || (manualPort != null && adb.connect(manualPort))
+                } ?: false
+            }
+        }
+        Thread(attempt, "closepaw-self-update-connect").apply { isDaemon = true }.start()
+        return try {
+            attempt.get(ADB_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            false
+        } catch (_: ExecutionException) {
+            false
+        } finally {
+            attempt.cancel(true)
         }
     }
 
@@ -444,7 +476,7 @@ internal object SelfUpdate {
             override fun start(connectPort: Int?): JsonObject = start(app, adb, connectPort)
 
             override fun status(): JsonObject {
-                if (!running.get()) {
+                if (!running.get() && adb.isConnected()) {
                     try {
                         if (AdbSelfUpdate.pending(app)) start(app, adb, null, recoverOnly = true)
                     } catch (_: UnreadableUpdateStageStore) {

@@ -3,6 +3,7 @@ package ai.closepaw.update
 import ai.closepaw.adb.AdbShellChannel
 import android.content.Context
 import android.util.AtomicFile
+import android.util.Log
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -59,16 +60,22 @@ internal object AdbSelfUpdate {
 
     fun pending(context: Context): Boolean = AdbUpdateStages.pendingTicket(records(context).lastOrNull()) != null
 
-    suspend fun collectResult(context: Context, adb: AdbShellChannel, manualPort: Int? = null) {
+    suspend fun collectResult(context: Context, adb: AdbShellChannel) {
         val stage = records(context).lastOrNull() ?: return
         val ticket = AdbUpdateStages.pendingTicket(stage) ?: return
         val output = outputFile(ticket)
-        val terminal = awaitAdbUpdateResult(stage, ::now) {
-            val connected = adb.isConnected() || adb.connectAuto() ||
-                (manualPort != null && adb.connect(manualPort))
-            if (!connected) return@awaitAdbUpdateResult null
-            val result = adb.exec("if [ -f $output ]; then cat $output; else exit 75; fi")
-            result.stdout.takeIf { result.exitCode == 0 && !result.truncated }
+        val terminal = try {
+            collectAdbUpdateResult(stage, ::now) {
+                if (!adb.isConnected()) throw AdbChannelUnavailable()
+                val result = guardAdbResultRead(adb::isConnected) {
+                    adb.exec("if [ -f $output ]; then cat $output; else exit 75; fi")
+                }
+                result.stdout.takeIf { result.exitCode == 0 && !result.truncated }
+            }
+        } catch (_: AdbChannelUnavailable) {
+            // Keep the ticket for status recovery once the channel reconnects.
+            Log.w("ClosePawMcpAudit", "self_update result collection deferred: adb_channel_unavailable")
+            return
         }
         save(context, terminal)
         if (terminal.last().fields.containsKey("exitCode")) {

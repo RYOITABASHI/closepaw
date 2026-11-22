@@ -306,6 +306,44 @@ internal object AdbUpdateStages {
 
 private const val ADB_RESULT_WINDOW_MS = 180_000L
 
+private fun adbResultDeadline(stage: UpdateStageRecord): Long =
+    (stage.fields["stagedAtMs"]?.longOrNull ?: stage.atMs) + ADB_RESULT_WINDOW_MS
+
+internal class AdbChannelUnavailable(cause: IOException? = null) :
+    CancellationException("adb_channel_unavailable") {
+    init {
+        if (cause != null) initCause(cause)
+    }
+}
+
+internal suspend fun <T> guardAdbResultRead(connected: () -> Boolean, read: suspend () -> T): T =
+    try {
+        read()
+    } catch (e: IOException) {
+        if (!connected()) throw AdbChannelUnavailable(e)
+        throw e
+    }
+
+/** Checks once for a persisted installer result when collection starts after polling has expired. */
+internal suspend fun collectAdbUpdateResult(
+    stage: UpdateStageRecord,
+    now: () -> Long,
+    pause: suspend (Long) -> Unit = { delay(it) },
+    read: suspend () -> String?,
+): List<UpdateStageRecord> {
+    if (now() < adbResultDeadline(stage)) return awaitAdbUpdateResult(stage, now, pause, read)
+
+    val payload = try {
+        read()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+    val atMs = now()
+    return payload?.let { AdbUpdateStages.completed(atMs, it) } ?: listOf(AdbUpdateStages.expired(atMs))
+}
+
 /** Bounds the whole recovery loop, including connection attempts, reads, and retry delays. */
 internal suspend fun awaitAdbUpdateResult(
     stage: UpdateStageRecord,
@@ -313,7 +351,7 @@ internal suspend fun awaitAdbUpdateResult(
     pause: suspend (Long) -> Unit = { delay(it) },
     read: suspend () -> String?,
 ): List<UpdateStageRecord> {
-    val deadline = (stage.fields["stagedAtMs"]?.longOrNull ?: stage.atMs) + ADB_RESULT_WINDOW_MS
+    val deadline = adbResultDeadline(stage)
     val remaining = (deadline - now()).coerceIn(0L, ADB_RESULT_WINDOW_MS)
     return withTimeoutOrNull(remaining) {
         while (now() < deadline) {

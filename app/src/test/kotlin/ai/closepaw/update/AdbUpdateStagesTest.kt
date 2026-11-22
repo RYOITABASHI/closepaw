@@ -1,6 +1,8 @@
 package ai.closepaw.update
 
 import java.io.File
+import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -257,4 +259,82 @@ class AdbUpdateStagesTest {
         }.last()
         assertEquals(JsonPrimitive("unknown"), terminal.fields["outcome"])
     }
+
+    @Test fun lateCollectionReadsCompletedInstallerOutputOnce() = runBlocking {
+        val staged = AdbUpdateStages.staged(100, 10, "00000000-0000-0000-0000-000000000000")
+        val launch = AdbUpdateStages.launch(200, staged, null, "ADB shell timed out")
+        var probes = 0
+        val terminal = collectAdbUpdateResult(launch, now = { 180_100L }, pause = { error("Unexpected pause") }) {
+            probes++
+            "Success\n__rc=0\n"
+        }
+        assertEquals(listOf("install-output", "result"), terminal.map { it.stage })
+        assertEquals(JsonPrimitive(true), terminal.last().fields["success"])
+        assertEquals(JsonPrimitive(0), terminal.last().fields["exitCode"])
+        assertEquals(1, probes)
+    }
+
+    @Test fun lateCollectionExpiresAfterOneMissingOrInvalidRead() = runBlocking {
+        val staged = AdbUpdateStages.staged(100, 10, "00000000-0000-0000-0000-000000000000")
+        for (read in listOf({ null }, { "Success\n" }, { throw java.io.IOException("read failed") })) {
+            var probes = 0
+            val terminal = collectAdbUpdateResult(staged, now = { 180_101L }, pause = { error("Unexpected pause") }) {
+                probes++
+                read()
+            }.single()
+            assertEquals(JsonPrimitive("unknown"), terminal.fields["outcome"])
+            assertEquals(1, probes)
+        }
+    }
+
+    @Test fun lateCollectionDefersWhenReadFailsAfterDisconnect() {
+        val staged = AdbUpdateStages.staged(100, 10, "00000000-0000-0000-0000-000000000000")
+        val failure = IOException("ADB channel is disconnected")
+        val thrown = assertThrows(CancellationException::class.java) {
+            runBlocking {
+                collectAdbUpdateResult(staged, now = { 180_101L }, pause = { error("Unexpected pause") }) {
+                    guardAdbResultRead(connected = { false }) { throw failure }
+                }
+            }
+        }
+        assertEquals(failure, thrown.cause)
+    }
+
+    @Test fun lateCollectionExpiresWhenReadFailsWhileConnected() = runBlocking {
+        val staged = AdbUpdateStages.staged(100, 10, "00000000-0000-0000-0000-000000000000")
+        val terminal = collectAdbUpdateResult(staged, now = { 180_101L }, pause = { error("Unexpected pause") }) {
+            guardAdbResultRead(connected = { true }) { throw IOException("ADB shell timed out") }
+        }
+        assertEquals(listOf(AdbUpdateStages.expired(180_101L)), terminal)
+    }
+
+    @Test fun lateCollectionPropagatesCancellation() {
+        val staged = AdbUpdateStages.staged(100, 10, "00000000-0000-0000-0000-000000000000")
+        val disconnected = CancellationException("adb_channel_unavailable")
+        var probes = 0
+        val thrown = assertThrows(CancellationException::class.java) {
+            runBlocking {
+                collectAdbUpdateResult(staged, now = { 180_101L }, pause = { error("Unexpected pause") }) {
+                    probes++
+                    throw disconnected
+                }
+            }
+        }
+        assertEquals(disconnected, thrown)
+        assertEquals(1, probes)
+    }
+
+    @Test fun inWindowCollectionPollsForInstallerOutput() = runBlocking {
+        val staged = AdbUpdateStages.staged(100, 10, "00000000-0000-0000-0000-000000000000")
+        var now = 100L
+        var probes = 0
+        val terminal = collectAdbUpdateResult(staged, now = { now }, pause = { now += it }) {
+            if (++probes == 2) "Success\n__rc=0\n" else null
+        }.last()
+        assertEquals(JsonPrimitive(true), terminal.fields["success"])
+        assertEquals(JsonPrimitive(0), terminal.fields["exitCode"])
+        assertEquals(2, probes)
+        assertEquals(1_100L, now)
+    }
+
 }
