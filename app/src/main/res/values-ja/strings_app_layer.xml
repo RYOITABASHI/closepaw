@@ -126,6 +126,7 @@
     <string name="main_activity_missing_credentials">認証情報が不足しています: %1$s</string>
     <string name="main_activity_battery_settings_unavailable">電池の設定を開けませんでした</string>
     <string name="main_activity_browser_sign_in_unavailable">ログイン用のブラウザを開けませんでした</string>
+    <string name="main_activity_busy_with_another_task">ClosePawは別のタスクを実行中です</string>
 
     <!-- MainActivityModelValidation -->
     <string name="main_activity_model_validation_refresh_model">このエンドポイントのモデルを更新するか、選択してください</string>

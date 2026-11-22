@@ -611,7 +611,7 @@ class MainActivity : ComponentActivity() {
                 }
                 SubmitResult.QUEUED -> return@launch
                 SubmitResult.BUSY -> {
-                    Toast.makeText(this@MainActivity, "ClosePaw is busy with another task", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, getString(R.string.main_activity_busy_with_another_task), Toast.LENGTH_SHORT).show()
                     return@launch
                 }
                 SubmitResult.NO_SESSION, SubmitResult.SESSION_DEAD -> { /* create new session */ }
@@ -704,7 +704,7 @@ class MainActivity : ComponentActivity() {
     ): AgentSession? {
         val creation = InternalSessionCreation()
         if (!creation.claim()) {
-            Toast.makeText(this, "ClosePaw is busy with another task", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.main_activity_busy_with_another_task), Toast.LENGTH_SHORT).show()
             return null
         }
         try {
