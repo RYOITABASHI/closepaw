@@ -2,9 +2,11 @@ package ai.closepaw.app
 
 import ai.closepaw.agent.cognition.context.ScreenSignature
 import ai.closepaw.mcp.BrainActionRecord
+import ai.closepaw.mcp.BrainActivityTracker
 import ai.closepaw.mcp.BrainGuardTrip
 import ai.closepaw.mcp.BrainSessionGuard
 import ai.closepaw.mcp.BrainSessionLimits
+import ai.closepaw.mcp.BrainStaleness
 import ai.closepaw.mcp.BrainTerminalGate
 import ai.closepaw.mcp.BrainTerminalKind
 import ai.closepaw.mcp.BrainTranscript
@@ -156,6 +158,16 @@ internal class AgentServiceBrainSessions(
         var healthWatcher: Job? = null
         var completion: Deferred<McpRunRegistry.Status>? = null
 
+        val activity = BrainActivityTracker(terminalGate).also { it.seed(startedAtMs) }
+
+        fun noteCallStarted() = activity.noteCallStarted(SystemClock.elapsedRealtime())
+
+        fun noteCallFinished() = activity.noteCallFinished(SystemClock.elapsedRealtime())
+
+        fun hasCallInFlight(): Boolean = activity.hasCallInFlight()
+
+        fun lastSeenMs(): Long = activity.lastSeenMs()
+
         fun deadlineExceeded() = SystemClock.elapsedRealtime() - guard.startedAtMs >=
             BrainSessionLimits.MAX_SESSION_WALL_CLOCK_MS
 
@@ -180,20 +192,29 @@ internal class AgentServiceBrainSessions(
             }
             throw McpTypedOpError("unknown_handle", "No external session owns this handle")
         }
+        brain.noteCallStarted()
+        try {
+            dispatch(brain, name, args)
+        } finally {
+            brain.noteCallFinished()
+        }
+    }
+
+    private suspend fun dispatch(brain: BrainSession, name: String, args: JsonObject): JsonObject {
         // Only the immutable approval header is read without the action mutex.
         if (name != McpHandler.TOOL_FINISH_RUN) {
             brain.pendingApproval?.let {
                 checkLive(brain)
-                return@runBlocking awaitingApproval(brain, it)
+                return awaitingApproval(brain, it)
             }
         }
         if (name == McpHandler.TOOL_OBSERVE) {
             if (!brain.mutex.tryLock()) {
                 checkLive(brain)
-                brain.pendingApproval?.let { return@runBlocking awaitingApproval(brain, it) }
+                brain.pendingApproval?.let { return awaitingApproval(brain, it) }
                 throw McpTypedOpError("action_in_progress", "An external session operation is in progress")
             }
-            return@runBlocking try {
+            return try {
                 checkLive(brain)
                 observe(brain, McpSessionArgs.includeImage(args))
             } finally {
@@ -208,17 +229,17 @@ internal class AgentServiceBrainSessions(
                     brain.mutex.lock()
                     locked = true
                 } ?: run {
-                    results[handle]?.let { return@runBlocking finishResult(handle, it.status) }
+                    results[brain.handle]?.let { return finishResult(brain.handle, it.status) }
                     throw McpTypedOpError(
                         "action_in_progress", "An action is still running; retry finish_run shortly.",
                     )
                 }
-                return@runBlocking finish(brain, args)
+                return finish(brain, args)
             } finally {
                 if (locked) brain.mutex.unlock()
             }
         }
-        act(brain, name, args)
+        return act(brain, name, args)
     }
 
     private suspend fun start(args: JsonObject): JsonObject {
@@ -476,6 +497,30 @@ internal class AgentServiceBrainSessions(
                 terminate(brain, displayLostMessage(it))
                 return
             }
+            // The claim revalidates activity under the terminalGate monitor (see
+            // claimTerminal's guard): a call that starts after any earlier
+            // observation but before the claim increments the in-flight count and
+            // stamps fresh activity under that same monitor, so the guard
+            // observes it and stands the termination down — a session is never
+            // staleness-terminated while a call is executing. The guard's first
+            // conjunct also keeps the staleness predicate itself from being
+            // evaluated once the gate has been claimed by a competing terminal
+            // path. When the guard stands down, terminate returns false and the
+            // watch loop continues.
+            if (terminate(
+                    brain,
+                    "Brain stopped responding",
+                    preClaimGuard = {
+                        !brain.terminalGate.isClaimed() &&
+                            BrainStaleness.shouldTerminate(
+                                lastSeenMs = brain.lastSeenMs(),
+                                inFlight = brain.hasCallInFlight(),
+                                nowMs = SystemClock.elapsedRealtime(),
+                                boundMs = BrainSessionLimits.BRAIN_STALENESS_MS,
+                            )
+                    },
+                )
+            ) return
         }
     }
 
@@ -623,33 +668,38 @@ internal class AgentServiceBrainSessions(
             throw McpTypedOpError("action_in_progress", "An external session operation is in progress")
         }
         scope.launch {
-            val outcome = try {
-                checkLive(brain)
-                enforceCaps(brain)
-                val result = executeAction(brain, name, args, approval)
-                completed.complete(Result.success(result))
-                result
-            } catch (e: Exception) {
-                completed.complete(Result.failure(e))
-                buildJsonObject {
-                    if (e is CancellationException) {
-                        put("status", "cancelled")
-                    } else {
-                        put("status", "failed")
-                        put("error", "action_exception")
-                        put("exception", e.javaClass.simpleName)
+            brain.noteCallStarted()
+            try {
+                val outcome = try {
+                    checkLive(brain)
+                    enforceCaps(brain)
+                    val result = executeAction(brain, name, args, approval)
+                    completed.complete(Result.success(result))
+                    result
+                } catch (e: Exception) {
+                    completed.complete(Result.failure(e))
+                    buildJsonObject {
+                        if (e is CancellationException) {
+                            put("status", "cancelled")
+                        } else {
+                            put("status", "failed")
+                            put("error", "action_exception")
+                            put("exception", e.javaClass.simpleName)
+                        }
                     }
                 }
-            }
-            try {
-                withContext(NonCancellable) {
-                    if (returnInBackground.await()) synchronized(brain.terminalGate) {
-                        if (!brain.terminalGate.isClaimed()) brain.backgroundOutcomes.addLast(outcome)
+                try {
+                    withContext(NonCancellable) {
+                        if (returnInBackground.await()) synchronized(brain.terminalGate) {
+                            if (!brain.terminalGate.isClaimed()) brain.backgroundOutcomes.addLast(outcome)
+                        }
                     }
+                } finally {
+                    brain.pendingApproval = null
+                    brain.mutex.unlock()
                 }
             } finally {
-                brain.pendingApproval = null
-                brain.mutex.unlock()
+                brain.noteCallFinished()
             }
         }
         var background = true
@@ -995,12 +1045,16 @@ internal class AgentServiceBrainSessions(
         if (vdLost) put("error", "virtual_display_lost")
     }
 
-    private suspend fun terminate(brain: BrainSession, reason: String) {
+    private suspend fun terminate(
+        brain: BrainSession,
+        reason: String,
+        preClaimGuard: () -> Boolean = { true },
+    ): Boolean {
         if (stopIfOwnerLost(brain)) {
             awaitTerminal(brain)
-        } else {
-            end(brain, ShellyRunState.Finished.Kind.FAILED, reason)
+            return true
         }
+        return end(brain, ShellyRunState.Finished.Kind.FAILED, reason, preClaimGuard)
     }
 
     fun stop(handle: String): Boolean {
@@ -1045,16 +1099,33 @@ internal class AgentServiceBrainSessions(
         brain: BrainSession,
         kind: ShellyRunState.Finished.Kind,
         message: String?,
-    ): McpRunRegistry.Status = withContext(NonCancellable) {
-        claimTerminal(brain, kind, message)
-        awaitTerminal(brain)
+        preClaimGuard: () -> Boolean = { true },
+    ): Boolean = withContext(NonCancellable) {
+        claimTerminal(brain, kind, message, preClaimGuard)
+        // brain.completion is assigned by whichever claim landed (ours or a
+        // competitor's) inside the same monitor block; it is null only when
+        // the guard stood our claim down and no terminal claim exists — the
+        // session is still live and there is nothing to await.
+        val completion = synchronized(brain.terminalGate) { brain.completion }
+        if (completion == null) {
+            false
+        } else {
+            awaitTerminal(brain)
+            true
+        }
     }
 
     private fun claimTerminal(
         brain: BrainSession,
         kind: ShellyRunState.Finished.Kind,
         message: String?,
+        preClaimGuard: () -> Boolean = { true },
     ): Boolean = synchronized(brain.terminalGate) {
+        // The guard is evaluated under the same monitor that serializes
+        // call-start bookkeeping (BrainActivityTracker), immediately before
+        // the claim, so a call that starts after any earlier observation but
+        // before this claim is observed by the guard and stands it down.
+        if (!preClaimGuard()) return@synchronized false
         if (!brain.terminalGate.claim(kind.toBrainTerminalKind())) return@synchronized false
         val event = brain.event(
             BrainTranscript.TYPE_SESSION_FINISHED,

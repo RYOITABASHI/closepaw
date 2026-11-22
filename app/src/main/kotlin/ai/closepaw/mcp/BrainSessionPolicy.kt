@@ -28,12 +28,29 @@ internal fun PerceptionElement.identity() =
 object BrainSessionLimits {
     const val MAX_ACTIONS_PER_SESSION = 100
     const val MAX_SESSION_WALL_CLOCK_MS = 30 * 60 * 1000L
+    /**
+     * Brain-liveness bound (5 min). A session is terminated as unresponsive when its brain
+     * makes no tool call for longer than this bound and no call is in flight.
+     * [MAX_SESSION_WALL_CLOCK_MS] is the separate 30-minute absolute expiry.
+     */
+    const val BRAIN_STALENESS_MS = 300_000L
+
     const val MAX_WAIT_MS = 30_000L
     const val MAX_TYPE_TEXT_CHARS = 4_000
     const val MAX_APP_NAME_CHARS = 200
     const val MAX_SUMMARY_CHARS = 2_000
     const val LOOP_WINDOW = 5
     const val LOOP_SIMILARITY_THRESHOLD = 0.95
+}
+
+internal object BrainStaleness {
+    /**
+     * An in-flight call always exempts the session. The manager seeds [lastSeenMs] at
+     * session creation, so a non-positive timestamp is a bookkeeping error and keeps
+     * the session alive. Otherwise the idle interval must strictly exceed [boundMs].
+     */
+    fun shouldTerminate(lastSeenMs: Long, inFlight: Boolean, nowMs: Long, boundMs: Long): Boolean =
+        !inFlight && lastSeenMs > 0 && nowMs - lastSeenMs > boundMs
 }
 
 /**
@@ -115,6 +132,43 @@ internal class BrainTerminalGate {
     fun claimedKind(): BrainTerminalKind? = claimed
 
     fun isClaimed(): Boolean = synchronized(this) { claimed != null }
+}
+
+/**
+ * Activity bookkeeping for one brain session: the last tool-call timestamp and
+ * the number of calls currently executing. Every read and write is serialized
+ * on the terminal [gate]'s monitor — the same monitor the manager's claim path
+ * (claimTerminal) holds while it claims on that gate. A call start/finish and
+ * a guarded staleness claim therefore cannot interleave: whichever enters the
+ * monitor first is fully observed by the other.
+ */
+internal class BrainActivityTracker(private val gate: BrainTerminalGate) {
+    private var lastSeenMs: Long = 0L
+    private var callsInFlight: Int = 0
+
+    /** Seed at session creation: a session that never receives a call is measured from creation. */
+    fun seed(startedAtMs: Long) {
+        synchronized(gate) { lastSeenMs = startedAtMs }
+    }
+
+    fun noteCallStarted(nowMs: Long) {
+        synchronized(gate) {
+            callsInFlight++
+            lastSeenMs = nowMs
+        }
+    }
+
+    /** The completion stamp is written before the in-flight count is decremented. */
+    fun noteCallFinished(nowMs: Long) {
+        synchronized(gate) {
+            lastSeenMs = nowMs
+            callsInFlight--
+        }
+    }
+
+    fun lastSeenMs(): Long = synchronized(gate) { lastSeenMs }
+
+    fun hasCallInFlight(): Boolean = synchronized(gate) { callsInFlight > 0 }
 }
 
 /**
