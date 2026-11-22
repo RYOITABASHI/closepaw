@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Shelly background runs: status / approval / "don't open <app>" notification -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- MCP degraded mode: declarations only; each takes effect after an adb pm grant -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <uses-permission android:name="android.permission.READ_LOGS" />
 
     <!-- Package visibility: Allow querying launchable apps and Termux RUN_COMMAND (Android 11+) -->
     <queries>
