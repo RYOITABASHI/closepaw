@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import ai.closepaw.platform.ActionResult
@@ -11,6 +12,7 @@ import ai.closepaw.platform.AppInfo
 import ai.closepaw.platform.AppManager
 import ai.closepaw.browser.setup.ChromeFlagDeepLink
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /** App-level operations on the virtual display (launch/list apps). */
@@ -189,6 +191,7 @@ internal class VirtualDisplayAppController(
                                         return true
                                 }
 
+                                var dispatchedMessage: String? = null
                                 if (component != null && shizukuAvailable) {
                                         Log.d(TAG, "Launching $component on display $displayId via shell")
                                         val mustDuplicate = requiresSeparateTask()
@@ -206,28 +209,30 @@ internal class VirtualDisplayAppController(
                                         }
                                         val code = shizuku.executeShellCommand(cmd)
                                         if (code == 0) {
-                                                return@withContext ActionResult.Success(
-                                                        "Launched $component on display $displayId (shell)"
+                                                dispatchedMessage = "Launched $component on display $displayId (shell)"
+                                        } else {
+                                                Log.w(
+                                                        TAG,
+                                                        "Shell launch failed (code $code), falling back to intent"
                                                 )
                                         }
-                                        Log.w(
-                                                TAG,
-                                                "Shell launch failed (code $code), falling back to intent"
-                                        )
                                 }
 
-                                launchIntent.addFlags(
-                                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                                                Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-                                )
-                                requiresSeparateTask()
-                                if (isDispatchCancelled?.invoke() == true) {
-                                        return@withContext ActionResult.Cancelled("Cancelled before launch")
+                                if (dispatchedMessage == null) {
+                                        launchIntent.addFlags(
+                                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                                        )
+                                        requiresSeparateTask()
+                                        if (isDispatchCancelled?.invoke() == true) {
+                                                return@withContext ActionResult.Cancelled("Cancelled before launch")
+                                        }
+                                        shizuku.launchOnDisplay(service, launchIntent, displayId)
+                                        dispatchedMessage = "Launched $packageName on display $displayId (intent)"
                                 }
-                                shizuku.launchOnDisplay(service, launchIntent, displayId)
-                                ActionResult.Success(
-                                        "Launched $packageName on display $displayId (intent)"
-                                )
+
+                                verifyLaunchSurfaced(packageName, displayId)?.let { return@withContext it }
+                                ActionResult.Success(dispatchedMessage)
                         } catch (e: LaunchRefusedException) {
                                 ActionResult.Failure(e.reason)
                         } catch (e: Exception) {
@@ -235,5 +240,63 @@ internal class VirtualDisplayAppController(
                                 ActionResult.Failure("Failed to launch $packageName: ${e.message}")
                         }
                 }
+        }
+
+        /**
+         * An `am start` exit code of 0 confirms intent delivery. When the app has an existing
+         * task, Android can reparent it to the virtual display while leaving another task on top.
+         * Require an observation of the target in front before reporting launch success.
+         * [LaunchSurfacingLimits.TIMEOUT_MS] is a wall-clock window on the elapsed-time clock.
+         * No observation starts at or after the deadline, and observations completed at or
+         * after it are discarded. Verification may return after the deadline by at most the
+         * latency of one observation or move already in flight when the deadline passed.
+         */
+        private suspend fun verifyLaunchSurfaced(packageName: String, displayId: Int): ActionResult? {
+                val deadlineMs = LaunchSurfacing.deadlineMs(SystemClock.elapsedRealtime())
+                val cancelledMessage = "Cancelled while verifying launch of $packageName"
+                var sawTargetTask = false
+                var sawReadableObservation = false
+                while (true) {
+                        if (isDispatchCancelled?.invoke() == true) {
+                                return ActionResult.Cancelled(cancelledMessage)
+                        }
+                        if (!LaunchSurfacing.mayStartOperation(SystemClock.elapsedRealtime(), deadlineMs)) break
+
+                        val tasks = shizuku.rootTasksOnDisplay(displayId)
+                        val completedMs = SystemClock.elapsedRealtime()
+                        if (!LaunchSurfacing.observationCounts(completedMs, deadlineMs)) break
+                        if (tasks != null) {
+                                sawReadableObservation = true
+                                when (val assessment = LaunchSurfacing.assess(tasks, packageName)) {
+                                        LaunchSurfacingAssessment.Surfaced -> return null
+                                        is LaunchSurfacingAssessment.PresentNotFront -> {
+                                                sawTargetTask = true
+                                                if (!LaunchSurfacing.mayStartOperation(SystemClock.elapsedRealtime(), deadlineMs)) break
+                                                moveTaskToFront(assessment.taskId)
+                                        }
+                                        LaunchSurfacingAssessment.Absent -> Unit
+                                }
+                        }
+
+                        val delayMs = LaunchSurfacing.nextPollDelayMs(SystemClock.elapsedRealtime(), deadlineMs)
+                        if (delayMs <= 0) break
+                        delay(delayMs)
+                        if (isDispatchCancelled?.invoke() == true) {
+                                return ActionResult.Cancelled(cancelledMessage)
+                        }
+                }
+
+                if (isDispatchCancelled?.invoke() == true) {
+                        return ActionResult.Cancelled(cancelledMessage)
+                }
+                val message = when (LaunchSurfacing.failureKind(sawTargetTask, sawReadableObservation)) {
+                        LaunchSurfacingFailure.NEVER_APPEARED ->
+                                "Launch delivered but $packageName never appeared on display $displayId"
+                        LaunchSurfacingFailure.NOT_BROUGHT_TO_FRONT ->
+                                "Launch delivered but $packageName did not come to the front on display $displayId"
+                        LaunchSurfacingFailure.UNVERIFIABLE ->
+                                "Launch delivered but surfacing of $packageName on display $displayId could not be verified"
+                }
+                return ActionResult.Failure(message)
         }
 }
