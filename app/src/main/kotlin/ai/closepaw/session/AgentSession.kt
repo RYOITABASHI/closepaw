@@ -14,11 +14,14 @@ import ai.closepaw.platform.OverlayTouchGate
 import ai.closepaw.platform.PlatformFactory
 import ai.closepaw.protocol.*
 import ai.closepaw.tool.AppClassifierHolder
+import ai.closepaw.trace.NoopTraceRecorder
+import ai.closepaw.trace.TraceRecorder
 import ai.closepaw.trace.TraceRecorderFactory
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.DisposableHandle
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -49,7 +52,8 @@ private constructor(
         private val config: SessionConfig,
         private val service: AccessibilityService,
         private val scope: CoroutineScope,
-        private val services: SessionServices
+        private val services: SessionServices,
+        internal val externalDriver: Boolean = false,
 ) {
     companion object {
         private const val TAG = "AgentSession"
@@ -71,29 +75,42 @@ private constructor(
                 baseUrlOverrides: Map<ai.closepaw.llm.LLMProvider, String> = emptyMap(),
                 visualizer: ActionVisualizerManager? = null,
                 overlayTouchGate: OverlayTouchGate? = null,
+                externalDriver: Boolean = false,
+                onTraceRecorderCreated: ((TraceRecorder) -> Unit)? = null,
+                isDispatchCancelled: (() -> Boolean)? = null,
         ): AgentSession {
             val sessionId = SessionId.generate()
-            val traceRecorder = TraceRecorderFactory.create(service, config, sessionId)
+            val traceRecorder = TraceRecorderFactory.create(service, config, sessionId, boundedCleanup = externalDriver)
+            onTraceRecorderCreated?.invoke(traceRecorder)
             val appClassifier = AppClassifierHolder.get(service.applicationContext)
             val platform: AndroidPlatform =
                     PlatformFactory.create(
                             config = config,
                             service = service,
                             visualizer = visualizer,
-                            traceRecorder = traceRecorder,
+                            // External runs trace only their fingerprint-based transcript.
+                            traceRecorder = if (externalDriver) NoopTraceRecorder else traceRecorder,
                             overlayTouchGate = overlayTouchGate,
                             isPackageBlocked = { appClassifier.classify(it) == AppTier.BLOCKED },
+                            externalDriver = externalDriver,
+                            isDispatchCancelled = isDispatchCancelled.takeIf { externalDriver },
                     )
+            // SessionServices requires an LLM client. Its unloaded local client avoids
+            // cloud credential/model checks for a session that will never run a turn.
+            val bootstrapConfig = if (externalDriver) {
+                config.copy(llm = config.llm.copy(backendType = LLMBackendType.LOCAL))
+            } else config
             val services =
                     SessionServices.create(
-                            config = config,
+                            config = bootstrapConfig,
                             platform = platform,
-                            authStore = authStore,
+                            authStore = if (externalDriver) null else authStore,
                             baseUrlOverrides = baseUrlOverrides,
                             context = service,
                             scope = scope,
                             traceRecorder = traceRecorder,
-                            appClassifier = appClassifier
+                            appClassifier = appClassifier,
+                            externalDriver = externalDriver,
                     )
 
             return AgentSession(
@@ -101,7 +118,8 @@ private constructor(
                     config = config,
                     service = service,
                     scope = scope,
-                    services = services
+                    services = services,
+                    externalDriver = externalDriver,
             )
         }
 
@@ -138,6 +156,10 @@ private constructor(
                 visualizer: ActionVisualizerManager? = null,
                 overlayTouchGate: OverlayTouchGate? = null,
         ): AgentSession? {
+            if (snapshot.externalDriver) {
+                Log.w(TAG, "External-driver sessions cannot be reloaded")
+                return null
+            }
             if (snapshot.schemaVersion != 2) {
                 Log.w(TAG, "Session from previous version — start a new session. (schema=${snapshot.schemaVersion})")
                 return null
@@ -255,7 +277,8 @@ private constructor(
             config = config,
             historyManager = services.historyManager,
             sessionState = services.sessionState,
-            recordingService = services.recordingService
+            recordingService = services.recordingService,
+            externalDriver = externalDriver,
     )
 
     init {
@@ -306,7 +329,48 @@ private constructor(
         }
     }
 
+    private val admissionToken = Any()
+    private var admissionClaimHeld = false
+    @Volatile private var admissionFenced = false
+    private var admissionScopeHandle: DisposableHandle? = null
+
+    internal fun tryClaimInternalAdmission(): Boolean = synchronized(admissionToken) {
+        val scopeJob = scope.coroutineContext[Job]
+        if (externalDriver) return@synchronized false
+        if (admissionFenced) return@synchronized false
+        if (state.value == SessionState.Shutdown || scopeJob?.isActive == false) {
+            return@synchronized !ai.closepaw.app.BrainSessionAdmission.gate.isBrainActive()
+        }
+        if (!ai.closepaw.app.BrainSessionAdmission.tryClaimInternal(admissionToken)) return@synchronized false
+        admissionClaimHeld = true
+        if (admissionScopeHandle == null) {
+            // Replaced sessions can outlive service observation. Retire their claim if
+            // their owning scope ends before they reach normal shutdown.
+            admissionScopeHandle = scopeJob?.invokeOnCompletion {
+                releaseInternalAdmission()
+            }
+        }
+        true
+    }
+
+    internal fun releaseInternalAdmission() = synchronized(admissionToken) {
+        if (admissionClaimHeld) {
+            ai.closepaw.app.BrainSessionAdmission.releaseInternal(admissionToken)
+            admissionClaimHeld = false
+        }
+        admissionScopeHandle?.dispose()
+        admissionScopeHandle = null
+    }
+
+    internal fun terminallyResolveAdmissionForReplacement(): Boolean = synchronized(admissionToken) {
+        admissionFenced = true
+        val claimWasHeld = admissionClaimHeld
+        if (claimWasHeld) releaseInternalAdmission()
+        claimWasHeld
+    }
+
     private suspend fun handleUserInput(op: Op.UserInput) {
+        if (externalDriver) return
         when (_state.value) {
             SessionState.Running, SessionState.Paused, SessionState.TakeoverPending -> {
                 Log.w(TAG, "Rejecting UserInput: Session is busy")
@@ -318,13 +382,36 @@ private constructor(
                 return
             }
             SessionState.Created -> {
-                if (!initializeForFirstTask()) {
-                    emitBootstrapFailure(op.text, "Platform initialization failed")
+                if (!tryClaimInternalAdmission()) {
+                    emitBootstrapFailure(op.text, "ClosePaw is busy with another task")
                     return
                 }
-                emit(SessionStarted(sessionId = sessionId, timestamp = now(), goal = op.text))
+                cancelIdleTimeout()
+                try {
+                    if (!initializeForFirstTask()) {
+                        emitBootstrapFailure(op.text, "Platform initialization failed")
+                        return
+                    }
+                    if (admissionFenced) {
+                        Log.w(TAG, "Rejecting UserInput: Session was replaced")
+                        return
+                    }
+                    emit(SessionStarted(sessionId = sessionId, timestamp = now(), goal = op.text))
+                    if (admissionFenced) {
+                        Log.w(TAG, "Rejecting UserInput: Session was replaced")
+                        return
+                    }
+                    startTask(op.text)
+                } finally {
+                    if (_state.value == SessionState.Created) scheduleIdleTimeout()
+                }
+                return
             }
             SessionState.Idle -> {
+                if (!tryClaimInternalAdmission()) {
+                    emitBootstrapFailure(op.text, "ClosePaw is busy with another task")
+                    return
+                }
                 if (!reacquirePlatform()) {
                     emitBootstrapFailure(op.text, "Platform start failed")
                     if (consecutiveReacquireFailures >= MAX_REACQUIRE_FAILURES) {
@@ -334,6 +421,10 @@ private constructor(
                     return
                 }
             }
+        }
+        if (admissionFenced) {
+            Log.w(TAG, "Rejecting UserInput: Session was replaced")
+            return
         }
         startTask(op.text)
     }
@@ -360,6 +451,19 @@ private constructor(
                         message = reason
                 )
         )
+    }
+
+    /**
+     * Starts the platform without a task for an external MCP driver. No turn runs.
+     * Op.Approve still resolves through the tool router.
+     */
+    suspend fun startForExternalDriver(): Unit = lifecycleMutex.withLock {
+        check(_state.value == SessionState.Created)
+        check(externalDriver)
+        check(withContext(Dispatchers.Default) { initializeForFirstTask() }) {
+            "Could not initialize the external driver platform"
+        }
+        _state.value = SessionState.Running
     }
 
     /** Initialize recording + platform on first [Op.UserInput]. Returns false on failure. */
@@ -574,6 +678,11 @@ private constructor(
             return
         }
 
+        if (!externalDriver && !tryClaimInternalAdmission()) {
+            emitStatus("⚠️ Agent is busy. Please wait.")
+            return
+        }
+
         _state.value = SessionState.Running
 
         agentRunner.resume()
@@ -656,37 +765,41 @@ private constructor(
         }
 
         _state.value = SessionState.Shutdown
-        currentTaskId = null
+        try {
+            currentTaskId = null
 
-        // When shutdown is driven by the idle-timeout job itself, cancelling that job here
-        // cancels the coroutine we are currently running in. The next suspension point
-        // (flushClosed → recordingService IO) then throws CancellationException and the rest of
-        // this method — including services.cleanup() → platform.stop() — never runs. On the
-        // virtual-display platform that leaks the Shizuku VirtualDisplay (and the DeX launcher /
-        // app tasks parked on it) until the process dies. Only cancel the job when we are NOT
-        // that job; otherwise just drop the reference.
-        if (cause == ShutdownCause.IdleTimeout) {
-            idleTimeoutJob = null
-        } else {
-            cancelIdleTimeout()
-        }
+            // When shutdown is driven by the idle-timeout job itself, cancelling that job here
+            // cancels the coroutine we are currently running in. The next suspension point
+            // (flushClosed → recordingService IO) then throws CancellationException and the rest of
+            // this method — including services.cleanup() → platform.stop() — never runs. On the
+            // virtual-display platform that leaks the Shizuku VirtualDisplay (and the DeX launcher /
+            // app tasks parked on it) until the process dies. Only cancel the job when we are NOT
+            // that job; otherwise just drop the reference.
+            if (cause == ShutdownCause.IdleTimeout) {
+                idleTimeoutJob = null
+            } else {
+                cancelIdleTimeout()
+            }
 
-        val closedCheckpointSaved = checkpointCoordinator.flushClosed()
-        if (!closedCheckpointSaved) {
-            Log.w(TAG, "Failed to flush CLOSED checkpoint for $sessionId")
-        }
+            val closedCheckpointSaved = checkpointCoordinator.flushClosed()
+            if (!closedCheckpointSaved) {
+                Log.w(TAG, "Failed to flush CLOSED checkpoint for $sessionId")
+            }
 
-        disableCheckpointMutationListeners()
-        services.userResponseChannel.cancel()
+            disableCheckpointMutationListeners()
+            services.userResponseChannel.cancel()
 
-        agentRunner.shutdown()
-        agentRunner.completions.close()
+            agentRunner.shutdown()
+            agentRunner.completions.close()
 
-        // Resource release must survive cancellation of the calling coroutine (scope teardown,
-        // idle-timeout job, etc.). Without this a cancelled shutdown leaks the virtual display.
-        val cleanupResult = withContext(NonCancellable) { services.cleanup() }
-        if (cleanupResult is CleanupResult.PartialFailure) {
-            Log.w(TAG, "Cleanup partial failure: ${cleanupResult.failures.joinToString(", ") { it.step }}")
+            // Resource release must survive cancellation of the calling coroutine (scope teardown,
+            // idle-timeout job, etc.). Without this a cancelled shutdown leaks the virtual display.
+            val cleanupResult = withContext(NonCancellable) { services.cleanup() }
+            if (cleanupResult is CleanupResult.PartialFailure) {
+                Log.w(TAG, "Cleanup partial failure: ${cleanupResult.failures.joinToString(", ") { it.step }}")
+            }
+        } finally {
+            releaseInternalAdmission()
         }
 
         val reason = when (cause) {
@@ -754,7 +867,9 @@ private constructor(
 
     // ===== Idle Timeout =====
 
+    /** External sessions use MCP limits and explicit shutdown instead of Hot Idle expiry. */
     private fun scheduleIdleTimeout() {
+        if (externalDriver) return
         idleTimeoutJob?.cancel()
         idleTimeoutJob = scope.launch {
             delay(IDLE_TIMEOUT_MS)

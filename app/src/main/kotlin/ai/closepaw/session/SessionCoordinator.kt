@@ -80,6 +80,7 @@ class SessionCoordinator(private val scope: CoroutineScope) {
                     SubmitResult.QUEUED
                 }
                 else -> {
+                    if (!session.tryClaimInternalAdmission()) return SubmitResult.BUSY
                     session.submit(Op.UserInput(text))
                     SubmitResult.SENT
                 }
@@ -128,7 +129,7 @@ class SessionCoordinator(private val scope: CoroutineScope) {
                 pendingInputs.clear()
                 throw t
             }
-            if (session == null) {
+            if (session == null || !session.tryClaimInternalAdmission()) {
                 _currentSessionState.value = null
                 pendingInputs.clear()
                 return CreateResult.Aborted
@@ -259,6 +260,7 @@ class SessionCoordinator(private val scope: CoroutineScope) {
         while (pendingInputs.isNotEmpty()) {
             val state = session.state.value
             if (state != SessionState.Idle && state != SessionState.Created) break
+            if (!session.tryClaimInternalAdmission()) break
             session.submit(Op.UserInput(pendingInputs.removeAt(0)))
         }
     }
@@ -273,7 +275,9 @@ enum class SubmitResult {
     /** No session exists; caller should create one. */
     NO_SESSION,
     /** Session was dead (shutdown); caller should create a new one. */
-    SESSION_DEAD
+    SESSION_DEAD,
+    /** Brain admission prevented the session from accepting the input. */
+    BUSY
 }
 
 /** Result of [SessionCoordinator.createAndSubmit]. */

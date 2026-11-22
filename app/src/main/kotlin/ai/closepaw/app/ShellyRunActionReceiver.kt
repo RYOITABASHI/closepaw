@@ -16,11 +16,11 @@ class ShellyRunActionReceiver : BroadcastReceiver() {
         val service = AgentService.instance
         if (service == null) {
             Log.w(TAG, "no AgentService for ${intent.action}")
-            ShellyRunNotifier(context).cancel()
+            if (intent.action != ACTION_STOP) ShellyRunNotifier(context).cancel()
             return
         }
         when (intent.action) {
-            ACTION_STOP -> service.stopShellyRun()
+            ACTION_STOP -> intent.getStringExtra(EXTRA_STOP_IDENTITY)?.let(service::stopShellyRun)
             ACTION_RESUME -> service.resumeShellyRun()
             ACTION_ALLOW_ALWAYS -> approve(service, intent, ApprovalDecision.APPROVED, ApprovalScope.ALWAYS)
             ACTION_ALLOW_SESSION -> approve(service, intent, ApprovalDecision.APPROVED, ApprovalScope.SESSION)
@@ -31,7 +31,8 @@ class ShellyRunActionReceiver : BroadcastReceiver() {
     private fun approve(service: AgentService, intent: Intent, decision: ApprovalDecision, scope: ApprovalScope) {
         val callId = intent.getStringExtra(EXTRA_CALL_ID) ?: return
         val pkg = intent.getStringExtra(EXTRA_PACKAGE) ?: return
-        service.resolveShellyApproval(callId, decision, scope, pkg)
+        val sessionId = intent.getStringExtra(EXTRA_SESSION_ID) ?: return
+        service.resolveShellyApproval(sessionId, callId, decision, scope, pkg)
     }
 
     companion object {
@@ -41,6 +42,8 @@ class ShellyRunActionReceiver : BroadcastReceiver() {
         const val ACTION_ALLOW_ALWAYS = "ai.closepaw.shelly.ALLOW_ALWAYS"
         const val ACTION_ALLOW_SESSION = "ai.closepaw.shelly.ALLOW_SESSION"
         const val ACTION_REJECT = "ai.closepaw.shelly.REJECT"
+        const val EXTRA_STOP_IDENTITY = "stop_identity"
+        const val EXTRA_SESSION_ID = "session_id"
         const val EXTRA_CALL_ID = "call_id"
         const val EXTRA_PACKAGE = "package_name"
     }

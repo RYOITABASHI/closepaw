@@ -4,6 +4,8 @@ import android.util.Log
 import ai.closepaw.model.ScreenSnapshot
 import ai.closepaw.platform.AndroidPlatform
 import ai.closepaw.tool.impl.AppAliases
+import ai.closepaw.tool.impl.OpenAppResolution
+import ai.closepaw.tool.impl.resolveOpenApp
 import ai.closepaw.protocol.ApprovalDecision
 import ai.closepaw.protocol.ApprovalDetails
 import ai.closepaw.protocol.AppTier
@@ -106,7 +108,14 @@ class ToolRouter(
         var approvalWasRequired = false
         
         // === POLICY CHECK ===
-        val destinationPackage = if (toolName == "open_app") {
+        val openAppResolution = if (context.externalDriver && toolName == "open_app") {
+            context.openAppResolution ?: resolveOpenApp(
+                params.optString("app_name").trim(), context.platform.getInstalledApps(),
+            )
+        } else null
+        val destinationPackage = if (openAppResolution != null) {
+            openAppResolution.match?.packageName
+        } else if (toolName == "open_app") {
             resolveOpenAppDestination(params, context.platform)
         } else null
         val approvalPackageName = destinationPackage ?: packageName
@@ -271,23 +280,58 @@ class ToolRouter(
         updateState(state, onStateChange)
         
         // Re-capture snapshot if approval was required (UI may have changed during wait)
+        var recapturedPackage: String? = null
         val executionSnapshot = if (approvalWasRequired) {
             Log.d(TAG, "Re-capturing snapshot after approval wait")
             val raw = context.platform.captureScreen()
-            // Perception gate: mask if user navigated to BLOCKED app during approval wait
-            policyEngine.appClassifier.maskIfBlocked(raw, packageName)
+            if (context.externalDriver) {
+                val currentPkg = context.platform.getCurrentPackageName()
+                recapturedPackage = currentPkg
+                val masked = policyEngine.appClassifier.maskIfBlocked(raw, currentPkg)
+                val elements = masked.elements.filterNot {
+                    it.packageName.isNotEmpty() &&
+                        policyEngine.appClassifier.classify(it.packageName) == AppTier.BLOCKED
+                }
+                masked.copy(elements = elements, image = masked.image.takeIf { elements.size == masked.elements.size })
+            } else {
+                // Perception gate: mask if user navigated to BLOCKED app during approval wait
+                policyEngine.appClassifier.maskIfBlocked(raw, packageName)
+            }
         } else {
             context.currentSnapshot
         }
         
+        if (context.externalDriver) {
+            val dispatchPackage = if (approvalWasRequired) context.platform.getCurrentPackageName() else packageName
+            val reason = when {
+                context.deadlineExceeded?.invoke() == true -> "Session wall-clock limit exceeded"
+                context.isCancelled() || token.isCancelled() -> "Cancelled before execution"
+                approvalWasRequired && (recapturedPackage != packageName || dispatchPackage != packageName ||
+                    policyEngine.appClassifier.classify(dispatchPackage) == AppTier.BLOCKED) ->
+                    "App changed or blocked during approval recapture"
+                approvalWasRequired && executionSnapshot != null &&
+                    context.snapshotTargetMatches?.invoke(executionSnapshot) == false -> "element_changed"
+                else -> null
+            }
+            if (reason != null) {
+                updateState(ToolCallState.Cancelled(resolvedCallId, toolName, params, reason), onStateChange)
+                cleanupCall(resolvedCallId)
+                return ToolCallResult.Cancelled(resolvedCallId, reason)
+            }
+        }
+
         // Execute the tool (with finally block to ensure cleanup on abnormal exit - M1)
         val executionResult = try {
             val execContext = object : ToolExecutionContext {
                 override val callId: String = resolvedCallId
                 override val platform: AndroidPlatform = context.platform
                 override val currentSnapshot: ScreenSnapshot? = executionSnapshot
+                override val externalDriver: Boolean = context.externalDriver
+                override val externalOpenAppResolution = openAppResolution
                 override val appClassifier: AppClassifier = policyEngine.appClassifier
-                override fun isCancelled(): Boolean = context.isCancelled() || token.isCancelled()
+                override val suppressPostActionObservation: Boolean = context.suppressPostActionObservation
+                override fun isCancelled(): Boolean = context.isCancelled() || token.isCancelled() ||
+                    (externalDriver && context.deadlineExceeded?.invoke() == true)
             }
             invocation.execute(execContext)
         } catch (e: Exception) {
@@ -438,6 +482,11 @@ class ToolRouter(
 interface ToolRouterContext {
     val platform: AndroidPlatform
     val currentSnapshot: ScreenSnapshot?
+    val suppressPostActionObservation: Boolean get() = false
+    val externalDriver: Boolean get() = false
+    val deadlineExceeded: (() -> Boolean)? get() = null
+    val openAppResolution: OpenAppResolution? get() = null
+    val snapshotTargetMatches: ((ScreenSnapshot) -> Boolean)? get() = null
     fun isCancelled(): Boolean
 }
 
@@ -447,8 +496,15 @@ interface ToolRouterContext {
 class SimpleToolRouterContext(
     override val platform: AndroidPlatform,
     override val currentSnapshot: ScreenSnapshot? = null,
-    private val cancellationFlag: AtomicBoolean = AtomicBoolean(false)
+    private val cancellationFlag: AtomicBoolean = AtomicBoolean(false),
+    private val suppressObservation: Boolean = false,
+    private val external: Boolean = false,
+    override val deadlineExceeded: (() -> Boolean)? = null,
+    override val openAppResolution: OpenAppResolution? = null,
+    override val snapshotTargetMatches: ((ScreenSnapshot) -> Boolean)? = null,
 ) : ToolRouterContext {
+    override val suppressPostActionObservation: Boolean get() = suppressObservation
+    override val externalDriver: Boolean get() = external
     override fun isCancelled(): Boolean = cancellationFlag.get()
     
     fun cancel() {

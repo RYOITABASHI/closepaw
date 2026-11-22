@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference
  *  4. tool == browser_script                        → browser script matrix (NORMAL override does NOT bypass)
  *  5. mode != ALWAYS_ASK && session-allowed         → Allow      (session allow-list, gated by ALWAYS_ASK)
  *  6. ApprovalMode dispatch on the effective tier
+ * Strict mode applies the BLOCKED denial before step 2.
  */
 class PolicyEngine(
     initialApprovalMode: ApprovalMode = ApprovalMode.SMART,
@@ -38,6 +39,7 @@ class PolicyEngine(
      * launcher, rather than parking an approval prompt the user did not expect.
      */
     private val denySystemSurfaceActions: Boolean = false,
+    val strictBlockedFloor: Boolean = false,
 ) {
     private val approvalMode = AtomicReference(initialApprovalMode)
 
@@ -84,6 +86,10 @@ class PolicyEngine(
 
         // 1. Non-screen-changing tools → always allow.
         if (!tool.isScreenChanging) return PolicyDecision.Allow
+
+        if (strictBlockedFloor && effectiveTier == AppTier.BLOCKED) {
+            return PolicyDecision.Deny("Blocked: financial/auth app ($packageName)")
+        }
 
         // 2. Escape actions (back/home) → always allow (agent must not be trapped).
         if (isEscape(tool, params)) return PolicyDecision.Allow

@@ -2,6 +2,8 @@ package ai.closepaw.platform.virtualdisplay
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.util.Log
 import android.view.Display
 import ai.closepaw.platform.ActionResult
@@ -18,6 +20,8 @@ internal class VirtualDisplayAppController(
         private val displayIdProvider: () -> Int,
         /** Shelly background runs only: keeps display 0's tasks where the user left them. */
         private val mainDisplayTasks: MainDisplayTaskRestorer? = null,
+        private val strictIsolation: Boolean = false,
+        private val isDispatchCancelled: (() -> Boolean)? = null,
 ) {
         companion object {
                 private const val TAG = "VDAppController"
@@ -91,9 +95,59 @@ internal class VirtualDisplayAppController(
 
         suspend fun launchApp(packageName: String): ActionResult {
                 val displayId = displayIdProvider()
-                val restorer = mainDisplayTasks ?: return launchApp(packageName, displayId, newTask = false)
-                return restorer.aroundLaunch(packageName, displayId) { newTask ->
-                        launchApp(packageName, displayId, newTask)
+                var forceNewTask = false
+                if (strictIsolation) {
+                        val mainTaskIds = withContext(Dispatchers.IO) {
+                                shizuku.rootTaskIdsOnDisplay(Display.DEFAULT_DISPLAY, packageName)
+                        } ?: return ActionResult.Failure(
+                                "Could not verify main-display tasks for an isolated session: $packageName"
+                        )
+                        if (mainTaskIds.isNotEmpty()) {
+                                val canDuplicate = withContext(Dispatchers.IO) {
+                                        canLaunchInSeparateTask(packageName)
+                                } ?: return ActionResult.Failure(
+                                        "Could not verify the launch activity for an isolated session: $packageName"
+                                )
+                                if (!canDuplicate) {
+                                        return ActionResult.Failure(
+                                                "App is open on the main display; refusing to move it for an isolated session: $packageName"
+                                        )
+                                }
+                                forceNewTask = true
+                        }
+                }
+                val restorer = mainDisplayTasks ?: return launchApp(packageName, displayId, newTask = forceNewTask)
+                return try {
+                        restorer.aroundLaunch(
+                                packageName,
+                                displayId,
+                                launchGate = if (strictIsolation) { mainTasks ->
+                                        if (mainTasks.any { it.packageName == packageName } &&
+                                                canLaunchInSeparateTask(packageName) != true
+                                        ) {
+                                                "App is open on the main display; refusing to move it for an isolated session: $packageName"
+                                        } else null
+                                } else null,
+                        ) { newTask ->
+                                launchApp(packageName, displayId, forceNewTask || newTask)
+                        }
+                } catch (e: LaunchRefusedException) {
+                        ActionResult.Failure(e.reason)
+                }
+        }
+
+        private fun canLaunchInSeparateTask(packageName: String): Boolean? {
+                val pm = service.packageManager
+                val component = pm.getLaunchIntentForPackage(packageName)?.component ?: return null
+                val activity = try {
+                        pm.getActivityInfo(component, 0)
+                } catch (_: PackageManager.NameNotFoundException) {
+                        return null
+                }
+                return when (activity.launchMode) {
+                        ActivityInfo.LAUNCH_SINGLE_TASK, ActivityInfo.LAUNCH_SINGLE_INSTANCE -> false
+                        ActivityInfo.LAUNCH_SINGLE_INSTANCE_PER_TASK -> true
+                        else -> activity.documentLaunchMode != ActivityInfo.DOCUMENT_LAUNCH_NEVER
                 }
         }
 
@@ -118,8 +172,26 @@ internal class VirtualDisplayAppController(
                                         "launchApp: component=$component, shizukuAvailable=$shizukuAvailable"
                                 )
 
+                                // The restorer's sample precedes this dispatcher hop and intent lookup.
+                                // Check again on the launch thread before each possible dispatch.
+                                fun requiresSeparateTask(): Boolean {
+                                        if (!strictIsolation) return false
+                                        val tasks = shizuku.rootTaskIdsOnDisplay(Display.DEFAULT_DISPLAY, packageName)
+                                                ?: throw LaunchRefusedException(
+                                                        "Could not revalidate main-display tasks for an isolated launch"
+                                                )
+                                        if (tasks.isEmpty()) return false
+                                        if (canLaunchInSeparateTask(packageName) != true) {
+                                                throw LaunchRefusedException(
+                                                        "App is open on the main display; refusing to move it for an isolated session: $packageName"
+                                                )
+                                        }
+                                        return true
+                                }
+
                                 if (component != null && shizukuAvailable) {
                                         Log.d(TAG, "Launching $component on display $displayId via shell")
+                                        val mustDuplicate = requiresSeparateTask()
                                         val cmd =
                                                 arrayOf(
                                                         "am",
@@ -128,7 +200,10 @@ internal class VirtualDisplayAppController(
                                                         component,
                                                         "--display",
                                                         "$displayId"
-                                                ) + (if (newTask) arrayOf("--activity-multiple-task") else emptyArray<String>())
+                                                ) + (if (newTask || mustDuplicate) arrayOf("--activity-multiple-task") else emptyArray<String>())
+                                        if (isDispatchCancelled?.invoke() == true) {
+                                                return@withContext ActionResult.Cancelled("Cancelled before launch")
+                                        }
                                         val code = shizuku.executeShellCommand(cmd)
                                         if (code == 0) {
                                                 return@withContext ActionResult.Success(
@@ -145,10 +220,16 @@ internal class VirtualDisplayAppController(
                                         Intent.FLAG_ACTIVITY_NEW_TASK or
                                                 Intent.FLAG_ACTIVITY_MULTIPLE_TASK
                                 )
+                                requiresSeparateTask()
+                                if (isDispatchCancelled?.invoke() == true) {
+                                        return@withContext ActionResult.Cancelled("Cancelled before launch")
+                                }
                                 shizuku.launchOnDisplay(service, launchIntent, displayId)
                                 ActionResult.Success(
                                         "Launched $packageName on display $displayId (intent)"
                                 )
+                        } catch (e: LaunchRefusedException) {
+                                ActionResult.Failure(e.reason)
                         } catch (e: Exception) {
                                 Log.e(TAG, "Failed to launch $packageName on display $displayId", e)
                                 ActionResult.Failure("Failed to launch $packageName: ${e.message}")

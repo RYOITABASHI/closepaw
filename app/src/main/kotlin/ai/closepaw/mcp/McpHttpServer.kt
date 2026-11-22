@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
  * Minimal HTTP/1.1 transport for [McpHandler]: one request per connection (`Connection: close`),
  * `Content-Length` bodies only, JSON responses. No dependency on an HTTP library (same reasoning as
  * Shelly's dependency-free server). Bounded everywhere: header block [MAX_HEADER_BYTES], body
- * [MAX_BODY_BYTES], [WORKERS] worker threads + a small queue (excess connections are closed),
+ * [MAX_BODY_BYTES], bounded parser and handler pools and queues (excess connections are closed),
  * [READ_TIMEOUT_MS] socket read timeout.
  *
  * Pure JVM; [start] binds [bindAddress]:[port] (port 0 = ephemeral, used by tests).
@@ -33,6 +33,8 @@ class McpHttpServer(
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var acceptThread: Thread? = null
     private var pool: ThreadPoolExecutor? = null
+    private var parsePool: ThreadPoolExecutor? = null
+    private var stopPool: ThreadPoolExecutor? = null
 
     val isRunning: Boolean get() = serverSocket?.isClosed == false
 
@@ -54,9 +56,18 @@ class McpHttpServer(
         val executor = ThreadPoolExecutor(
             WORKERS, WORKERS, 30, TimeUnit.SECONDS, ArrayBlockingQueue(QUEUE),
         ) { r -> Thread(r, "closepaw-mcp-worker").apply { isDaemon = true } }
+        // Keep request routing available while all the handler workers are busy.
+        val parser = ThreadPoolExecutor(
+            WORKERS, WORKERS, 30, TimeUnit.SECONDS, ArrayBlockingQueue(QUEUE),
+        ) { r -> Thread(r, "closepaw-mcp-parser").apply { isDaemon = true } }
+        val stopExecutor = ThreadPoolExecutor(
+            1, 1, 30, TimeUnit.SECONDS, ArrayBlockingQueue(4),
+        ) { r -> Thread(r, "closepaw-mcp-stop").apply { isDaemon = true } }
         serverSocket = socket
         pool = executor
-        acceptThread = Thread({ acceptLoop(socket, executor) }, "closepaw-mcp-accept").apply {
+        parsePool = parser
+        stopPool = stopExecutor
+        acceptThread = Thread({ acceptLoop(socket, parser, executor, stopExecutor) }, "closepaw-mcp-accept").apply {
             isDaemon = true
             start()
         }
@@ -70,11 +81,28 @@ class McpHttpServer(
         }
         serverSocket = null
         acceptThread = null
-        pool?.shutdownNow()
+        shutdown(parsePool)
+        shutdown(pool)
+        shutdown(stopPool)
+        parsePool = null
         pool = null
+        stopPool = null
     }
 
-    private fun acceptLoop(socket: ServerSocket, executor: ThreadPoolExecutor) {
+    private class SocketJob(val client: Socket, private val action: () -> Unit) : Runnable {
+        override fun run() = action()
+    }
+
+    private fun shutdown(executor: ThreadPoolExecutor?) {
+        executor?.shutdownNow()?.forEach { closeQuietly((it as SocketJob).client) }
+    }
+
+    private fun acceptLoop(
+        socket: ServerSocket,
+        parser: ThreadPoolExecutor,
+        executor: ThreadPoolExecutor,
+        stopExecutor: ThreadPoolExecutor,
+    ) {
         while (!socket.isClosed) {
             val client = try {
                 socket.accept()
@@ -85,34 +113,73 @@ class McpHttpServer(
                 continue
             }
             try {
-                executor.execute { serve(client) }
+                parser.execute(SocketJob(client) { serve(client, executor, stopExecutor) })
             } catch (e: RejectedExecutionException) {
                 closeQuietly(client)
             }
         }
     }
 
-    private fun serve(client: Socket) {
-        client.use { s ->
+    private fun serve(client: Socket, executor: ThreadPoolExecutor, stopExecutor: ThreadPoolExecutor) {
+        var handedOff = false
+        try {
+            withRequestErrors(client) {
+                client.soTimeout = READ_TIMEOUT_MS
+                val input = BufferedInputStream(client.getInputStream())
+                when (val parsed = readRequest(input)) {
+                    is Parsed.Ok -> {
+                        val job = SocketJob(client) { respond(client, parsed.request) }
+                        if (isStopRequest(parsed.request)) {
+                            try {
+                                stopExecutor.execute(job)
+                                handedOff = true
+                            } catch (_: RejectedExecutionException) {
+                                // Stop lane full: handle inline.
+                                handedOff = true
+                                job.run()
+                            }
+                        } else {
+                            try {
+                                executor.execute(job)
+                                handedOff = true
+                            } catch (_: RejectedExecutionException) {
+                                // Main lane full: close the connection.
+                            }
+                        }
+                    }
+                    is Parsed.Error -> write(
+                        client, McpHttpResponse(parsed.status, """{"error":"${parsed.message}"}"""),
+                    )
+                }
+            }
+        } finally {
+            if (!handedOff) closeQuietly(client)
+        }
+    }
+
+    private fun respond(client: Socket, request: McpHttpRequest) {
+        client.use {
+            withRequestErrors(it) { write(it, handler.handle(request)) }
+        }
+    }
+
+    private inline fun withRequestErrors(client: Socket, action: () -> Unit) {
+        try {
+            action()
+        } catch (_: IOException) {
+            // Client went away / timed out: nothing to answer.
+        } catch (e: Exception) {
+            onError("request failed: ${e.javaClass.simpleName}")
             try {
-                s.soTimeout = READ_TIMEOUT_MS
-                val input = BufferedInputStream(s.getInputStream())
-                val response = when (val parsed = readRequest(input)) {
-                    is Parsed.Ok -> handler.handle(parsed.request)
-                    is Parsed.Error -> McpHttpResponse(parsed.status, """{"error":"${parsed.message}"}""")
-                }
-                write(s, response)
-            } catch (e: IOException) {
-                // Client went away / timed out: nothing to answer.
-            } catch (e: Exception) {
-                onError("request failed: ${e.javaClass.simpleName}")
-                try {
-                    write(s, McpHttpResponse(500, """{"error":"internal error"}"""))
-                } catch (_: IOException) {
-                }
+                write(client, McpHttpResponse(500, """{"error":"internal error"}"""))
+            } catch (_: IOException) {
             }
         }
     }
+
+    // Lane routing only; a false positive merely runs that request on the reserved thread.
+    private fun isStopRequest(request: McpHttpRequest): Boolean =
+        TOOLS_CALL.containsMatchIn(request.body) && STOP_RUN.containsMatchIn(request.body)
 
     private sealed interface Parsed {
         data class Ok(val request: McpHttpRequest) : Parsed
@@ -200,6 +267,9 @@ class McpHttpServer(
     }
 
     companion object {
+        private val TOOLS_CALL = Regex(""""method"\s*:\s*"tools/call"""")
+        private val STOP_RUN = Regex(""""name"\s*:\s*"stop_run"""")
+
         const val MAX_HEADER_BYTES = 16 * 1024
         const val MAX_BODY_BYTES = 64 * 1024
         const val READ_TIMEOUT_MS = 15_000

@@ -28,7 +28,8 @@ internal class SessionCheckpointCoordinator(
     private val config: SessionConfig,
     private val historyManager: HistoryManager,
     private val sessionState: AgentSessionState,
-    private val recordingService: SessionRecordingService
+    private val recordingService: SessionRecordingService,
+    private val externalDriver: Boolean = false,
 ) {
     companion object {
         private const val TAG = "CheckpointCoordinator"
@@ -78,7 +79,8 @@ internal class SessionCheckpointCoordinator(
             scratchpadJson = scratchpadJson,
             checkpointState = state,
             lastCheckpointAt = System.currentTimeMillis(),
-            lastTaskOutcome = recordingService.getLastTaskOutcome()?.name
+            lastTaskOutcome = recordingService.getLastTaskOutcome()?.name,
+            externalDriver = externalDriver,
         )
     }
 }

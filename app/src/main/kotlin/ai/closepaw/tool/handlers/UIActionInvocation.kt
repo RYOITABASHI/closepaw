@@ -57,6 +57,7 @@ class UIActionInvocation(
     private suspend fun capturePostActionObservation(
         context: ToolExecutionContext
     ): ToolObservation? {
+        if (context.suppressPostActionObservation) return null
         return try {
             delay(UI_SETTLE_DELAY_MS)
             val snapshot = context.platform.captureScreen()

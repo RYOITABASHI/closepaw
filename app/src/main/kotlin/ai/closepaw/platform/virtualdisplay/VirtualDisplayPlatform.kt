@@ -119,7 +119,9 @@ class VirtualDisplayPlatform(
         private val sessionConfig: SessionConfig,
         private val traceRecorder: TraceRecorder,
         private val visualizer: ActionVisualizerManager? = null,
-        private val isPackageBlocked: (String?) -> Boolean = { false }
+        private val isPackageBlocked: (String?) -> Boolean = { false },
+        private val externalDriver: Boolean = false,
+        private val isDispatchCancelled: (() -> Boolean)? = null,
 ) : AndroidPlatform {
 
     override val mode: ai.closepaw.protocol.PlatformMode = ai.closepaw.protocol.PlatformMode.VIRTUAL_DISPLAY
@@ -162,6 +164,9 @@ class VirtualDisplayPlatform(
     // ── Lifecycle State ──────────────────────────────────────────
 
     private val arbiter = VdLifecycleArbiter()
+    @Volatile private var hasRunDisplay = false
+    @Volatile private var startFailure: String? = null
+    @Volatile private var lastCaptureFailure: String? = null
     private var binderDeadListener: Shizuku.OnBinderDeadListener? = null
 
     /** The VD viewer is open (takeover typing needs the IME on display 0). */
@@ -212,10 +217,15 @@ class VirtualDisplayPlatform(
         }
     }
 
-    private val windowAccessor = VirtualDisplayWindowAccessor(service, displayIdProvider)
+    private val windowAccessor =
+            VirtualDisplayWindowAccessor(service, displayIdProvider, contentFreeLogs = externalDriver)
 
     private val nodeActionPerformer =
-            NodeActionPerformer(rootProvider = { windowAccessor.getRootOnDisplay() })
+            NodeActionPerformer(
+                    rootProvider = { windowAccessor.getRootOnDisplay() },
+                    contentFreeLogs = externalDriver,
+                    isDispatchCancelled = isDispatchCancelled,
+            )
 
     private val inputInjector = VirtualDisplayInputInjector(shizuku, displayIdProvider)
     private val textInjector =
@@ -226,6 +236,7 @@ class VirtualDisplayPlatform(
                     nodeActionPerformer = nodeActionPerformer,
                     inputInjector = inputInjector,
                     unattended = sessionConfig.unattended,
+                    isDispatchCancelled = isDispatchCancelled,
             )
     private val screenshotProcessor =
             VirtualDisplayScreenshotProcessor(
@@ -241,6 +252,7 @@ class VirtualDisplayPlatform(
                         homePackages = ai.closepaw.session.SystemSurfaces.resolve(service) -
                                 ai.closepaw.session.SystemSurfaces.SYSTEM_UI,
                         context = service,
+                        strictIsolation = externalDriver,
                 )
             } else null
 
@@ -250,6 +262,8 @@ class VirtualDisplayPlatform(
                     shizuku = shizuku,
                     displayIdProvider = displayIdProvider,
                     mainDisplayTasks = mainDisplayTasks,
+                    strictIsolation = externalDriver,
+                    isDispatchCancelled = isDispatchCancelled,
             )
     private val surfaceController =
             VirtualDisplaySurfaceController(
@@ -353,11 +367,13 @@ class VirtualDisplayPlatform(
                                     )
                             )
                         } catch (e: Exception) {
+                            startFailure = "virtual display creation failed: ${e.javaClass.simpleName}"
                             reader.close()
                             throw e
                         }
 
                 if (id < 0) {
+                    startFailure = "virtual display creation failed (returned $id)"
                     reader.close()
                     throw IllegalStateException("Failed to create virtual display (returned $id)")
                 }
@@ -387,6 +403,8 @@ class VirtualDisplayPlatform(
                     shizuku.addBinderDeadListener(listener)
 
                     arbiter.transitionTo(VdState.Running(id, reader))
+                    hasRunDisplay = true
+                    startFailure = null
                     // A viewer open/close that arrived before Running was published saw no running
                     // display and only recorded its state: apply the latest one now.
                     reconcileImePolicy(id)
@@ -398,6 +416,7 @@ class VirtualDisplayPlatform(
                                     "${config.width}x${config.height}@${config.densityDpi}dpi"
                     )
                 } catch (e: Exception) {
+                    startFailure = "virtual display startup failed: ${e.javaClass.simpleName}"
                     binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
                     binderDeadListener = null
                     shizuku.releaseVirtualDisplay(id)
@@ -588,6 +607,14 @@ class VirtualDisplayPlatform(
      * launched on [deferralScope] needs a Running lease or Running state and does nothing.
      */
     val isStopped: Boolean get() = arbiter.state == VdState.Stopped
+
+    internal fun vdFailure(): String? {
+        val state = arbiter.state
+        if (state is VdState.Broken) return state.reason
+        return startFailure ?: if (state == VdState.Stopped && hasRunDisplay) "virtual display stopped" else null
+    }
+
+    internal fun lastCaptureFailure(): String? = lastCaptureFailure
 
     /** A VD session is live (Running or Draining): privileged-backend restarts must not disturb it. */
     val isSessionActive: Boolean
@@ -845,6 +872,7 @@ class VirtualDisplayPlatform(
 
         // Null package = unknown foreground app — skip capture to avoid leaking artifacts
         if (currentPkg == null) {
+            lastCaptureFailure = null
             return ScreenSnapshot(
                 timestamp = System.currentTimeMillis(),
                 elements = emptyList(),
@@ -854,6 +882,7 @@ class VirtualDisplayPlatform(
 
         // Privacy gate: BLOCKED apps get masked snapshot — no artifacts created
         if (isPackageBlocked(currentPkg)) {
+            lastCaptureFailure = null
             return ScreenSnapshot(
                 timestamp = System.currentTimeMillis(),
                 elements = emptyList(),
@@ -863,6 +892,7 @@ class VirtualDisplayPlatform(
 
         return try {
             arbiter.withRunningLease {
+            lastCaptureFailure = null
             val timestamp = System.currentTimeMillis()
             val pc = sessionConfig.perceptionConfig
 
@@ -874,6 +904,8 @@ class VirtualDisplayPlatform(
                             VirtualDisplayCaptureCoordinator.A11yCaptureResult(
                                     emptyList(), null, null
                             )
+
+            lastCaptureFailure = a11yResult.failure
 
             // 2. Screenshot capture (when config requires it OR trace is enabled)
             val shouldCaptureScreenshot = pc.capturesScreenshot || traceRecorder.enabled
@@ -928,6 +960,9 @@ class VirtualDisplayPlatform(
                 try {
                     // Owner-present ordering signal (build 61): display 0 just before the action.
                     mainDisplayTasks?.beforeAgentAction()
+                    if (isDispatchCancelled?.invoke() == true) {
+                        return@withRunningLease ActionResult.Cancelled("Cancelled before input dispatch")
+                    }
                     dispatchAction(action)
                 } finally {
                     if (suppressIme) setKeyboardAuto()

@@ -48,12 +48,14 @@ internal object SessionToolingBootstrapper {
         context: Context? = null,
         systemSurfacePackages: Set<String> = emptySet(),
         denySystemSurfaceActions: Boolean = false,
+        strictBlockedFloor: Boolean = false,
     ): SessionToolingBootstrap {
         val policyEngine = PolicyEngine(
             initialApprovalMode = approvalMode,
             appClassifier = appClassifier,
             systemSurfacePackages = systemSurfacePackages,
             denySystemSurfaceActions = denySystemSurfaceActions,
+            strictBlockedFloor = strictBlockedFloor,
         )
         val sessionState = AgentSessionState()
         val allowedToolNames = resolveAllowedToolNames(

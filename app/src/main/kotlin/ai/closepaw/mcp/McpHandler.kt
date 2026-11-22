@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -58,6 +59,12 @@ interface McpBackend {
     fun status(): Status
 }
 
+interface McpExternalResults {
+    fun snapshot(runHandle: String): McpRunRegistry.Snapshot?
+    fun await(runHandle: String, waitMs: Long): McpRunRegistry.Snapshot?
+    fun activeCount(): Int
+}
+
 /**
  * MCP Streamable HTTP endpoint logic (POST /mcp, JSON responses, no SSE), protocol 2025-06-18
  * with the `initialize` + `Mcp-Session-Id` session, modelled on Shelly's legacy-era handler
@@ -77,6 +84,8 @@ class McpHandler(
     private val adbStatus: () -> AdbStatus = { AdbStatus(false, false, null) },
     private val selfUpdate: McpSelfUpdate? = null,
     private val typedOps: ((String, JsonObject) -> JsonObject)? = null,
+    private val sessionOps: ((String, JsonObject) -> JsonObject)? = null,
+    private val sessionResults: McpExternalResults? = null,
 ) {
     data class AdbStatus(
         val paired: Boolean,
@@ -92,11 +101,13 @@ class McpHandler(
         addAll(TOOLS)
         if (selfUpdate != null) add(SELF_UPDATE_TOOL)
         if (typedOps != null) addAll(TYPED_OP_TOOLS)
+        if (sessionOps != null) addAll(SESSION_OP_TOOLS)
     })
     private val toolNames = buildSet {
         addAll(TOOL_NAMES)
         if (selfUpdate != null) add(TOOL_SELF_UPDATE)
         if (typedOps != null) addAll(TYPED_OP_NAMES)
+        if (sessionOps != null) addAll(SESSION_OP_NAMES)
     }
     private val sessionsLock = Any()
 
@@ -196,7 +207,9 @@ class McpHandler(
                     audit("mcp tool=$name handle=- outcome=invalid_params")
                     return jsonResponse(200, rpcError(id, INVALID_PARAMS, "self_update arguments must be an object"))
                 }
-                if (name in TYPED_OP_NAMES && arguments != null && arguments !is JsonObject) {
+                if ((name in TYPED_OP_NAMES || name in SESSION_OP_NAMES) &&
+                    arguments != null && arguments !is JsonObject
+                ) {
                     audit("mcp tool=$name handle=- outcome=invalid_params")
                     return jsonResponse(200, rpcResult(
                         id, toolError(null, "invalid_params", "$name arguments must be an object", "invalid_params").result,
@@ -221,9 +234,11 @@ class McpHandler(
             TOOL_STATUS -> status()
             TOOL_SELF_UPDATE -> selfUpdate(args)
             in TYPED_OP_NAMES -> typedOp(name, args)
+            in SESSION_OP_NAMES -> sessionOp(name, args)
             else -> error("unreachable")
         }
-        audit("mcp tool=$name handle=${out.handle ?: "-"} outcome=${out.outcome}")
+        val auditHandle = out.handle?.let(::sanitize)
+        audit("mcp tool=$name handle=${auditHandle ?: "-"} outcome=${out.outcome}")
         return out.result
     }
 
@@ -233,6 +248,32 @@ class McpHandler(
         toolError(null, e.code, e.message, e.code)
     } catch (e: Exception) {
         toolError(null, "operation_failed", "$name failed (${e.javaClass.simpleName})", "operation_failed")
+    }
+
+    private fun sessionOp(name: String, args: JsonObject): ToolOutcome {
+        val validationError = try {
+            McpSessionArgs.validate(name, args)
+        } catch (e: McpTypedOpError) {
+            return toolError(handleArg(args), e.code, e.message, e.code)
+        }
+        validationError?.let { message ->
+            return toolError(handleArg(args), "invalid_params", message, "invalid_params")
+        }
+        val handle = if (name == TOOL_START_SESSION) null else McpSessionArgs.runHandle(args)
+        if (handle != null) {
+            val snap = sessionResults?.snapshot(handle)
+                ?: return toolError(handle, "unknown_handle", "unknown runHandle", "unknown_handle")
+            if (snap.status.terminal && name != TOOL_FINISH_RUN) {
+                return toolError(handle, "session_ended", "session already ${snap.status.wire}", "session_ended")
+            }
+        }
+        return try {
+            ToolOutcome(handle, "ok", toolOk(checkNotNull(sessionOps)(name, args)))
+        } catch (e: McpTypedOpError) {
+            toolError(handle, e.code, e.message, e.code)
+        } catch (e: Exception) {
+            toolError(handle, "operation_failed", "$name failed (${e.javaClass.simpleName})", "operation_failed")
+        }
     }
 
     private fun runGoal(args: JsonObject): ToolOutcome {
@@ -259,19 +300,20 @@ class McpHandler(
             else -> return toolError(handle, "invalid_params", "waitMs must be a number")
         }.coerceIn(0L, McpRunRegistry.MAX_WAIT_MS)
         val snap = registry.await(handle, waitMs)
+            ?: sessionResults?.await(handle, waitMs)
             ?: return toolError(handle, "unknown_handle", "unknown runHandle", "unknown_handle")
         return ToolOutcome(handle, snap.status.wire, toolOk(snapshotJson(snap)))
     }
 
     private fun stopRun(args: JsonObject): ToolOutcome {
         val handle = handleArg(args) ?: return toolError(null, "invalid_params", "runHandle must be a string")
-        val before = registry.snapshot(handle)
+        val before = registry.snapshot(handle) ?: sessionResults?.snapshot(handle)
             ?: return toolError(handle, "unknown_handle", "unknown runHandle", "unknown_handle")
         if (before.status.terminal) {
             return ToolOutcome(handle, "already_${before.status.wire}", toolOk(stopJson(false, before)))
         }
         val requested = backend.stopRun(handle)
-        val after = registry.snapshot(handle) ?: before
+        val after = registry.snapshot(handle) ?: sessionResults?.snapshot(handle) ?: before
         return ToolOutcome(
             handle,
             if (requested) "stop_requested" else "not_stoppable",
@@ -288,7 +330,7 @@ class McpHandler(
             put("accessibilityReady", s.accessibilityReady)
             put("accessibilitySettingOn", s.accessibilitySettingOn)
             put("accessibilityBound", s.accessibilityReady)
-            put("activeRuns", registry.activeCount())
+            put("activeRuns", registry.activeCount() + (sessionResults?.activeCount() ?: 0))
             val adb = adbStatus()
             putJsonObject("adbChannel") {
                 put("paired", adb.paired)
@@ -324,8 +366,7 @@ class McpHandler(
         return ToolOutcome(null, "ok", toolOk(result))
     }
 
-    private fun handleArg(args: JsonObject): String? =
-        (args["runHandle"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.length in 1..128 }
+    private fun handleArg(args: JsonObject): String? = McpSessionArgs.runHandleOrNull(args)
 
     private fun snapshotJson(s: McpRunRegistry.Snapshot) = buildJsonObject {
         put("runHandle", s.runHandle)
@@ -413,6 +454,20 @@ class McpHandler(
         const val TOOL_SELF_UPDATE = "self_update"
         val TOOL_NAMES = setOf(TOOL_RUN_GOAL, TOOL_GET_RUN_RESULT, TOOL_STOP_RUN, TOOL_STATUS)
 
+        const val TOOL_START_SESSION = "start_session"
+        const val TOOL_OBSERVE = "observe"
+        const val TOOL_TAP = "tap"
+        const val TOOL_TYPE_TEXT = "type_text"
+        const val TOOL_SYSTEM_BUTTON = "system_button"
+        const val TOOL_OPEN_APP = "open_app"
+        const val TOOL_WAIT = "wait"
+        const val TOOL_FINISH_RUN = "finish_run"
+
+        private val SESSION_OP_NAMES = setOf(
+            TOOL_START_SESSION, TOOL_OBSERVE, TOOL_TAP, TOOL_TYPE_TEXT,
+            TOOL_SYSTEM_BUTTON, TOOL_OPEN_APP, TOOL_WAIT, TOOL_FINISH_RUN,
+        )
+
         private val CODE_RE = Regex("^[a-z_]{1,40}$|^[A-Z_]{1,40}$")
         private val JSON = Json { ignoreUnknownKeys = true }
 
@@ -420,7 +475,9 @@ class McpHandler(
             "ClosePaw operates apps on the user's Android phone. run_goal starts one task described " +
                 "in natural language and returns a runHandle at once; poll get_run_result (waitMs up to " +
                 "20000) until status is completed, failed or cancelled. stop_run stops it. Runs execute " +
-                "on a background virtual display; one run at a time."
+                "on a background virtual display; one run at a time. " +
+                "As an alternative to run_goal, start_session, observe, and the action tools let an external " +
+                "driver operate a session step by step."
 
         private fun stringProp(description: String) = buildJsonObject {
             put("type", "string")
@@ -600,6 +657,81 @@ class McpHandler(
                         put("additionalProperties", false)
                     }
                 })
+            }
+        }
+
+        private val SESSION_OP_TOOLS = buildJsonArray {
+            add(sessionTool(TOOL_START_SESSION, "Starts an externally driven session.", "goal") {
+                put("goal", stringProp("What the session should accomplish."))
+                put("reqId", stringProp("Optional request ID correlation label recorded with the session. " +
+                    "No result callback is sent in this increment."))
+                put("nonce", stringProp("Optional nonce correlation label recorded with the session. " +
+                    "No result callback is sent in this increment."))
+            })
+            add(sessionTool(TOOL_OBSERVE, "Observes the current screen.") {
+                putJsonObject("includeImage") {
+                    put("type", "boolean")
+                    put("description", "Also return a screenshot (default false; elements only)")
+                }
+            })
+            add(sessionTool(TOOL_TAP, "Taps an observed element.", "elementIndex") {
+                putJsonObject("elementIndex") {
+                    put("type", "integer")
+                    put("description", "Index of an element from the latest observe")
+                }
+            })
+            add(sessionTool(TOOL_TYPE_TEXT, "Types text into the focused field.", "text") {
+                put("text", stringProp("Text to type."))
+                putJsonObject("clearFirst") { put("type", "boolean") }
+            })
+            add(sessionTool(TOOL_SYSTEM_BUTTON, "Presses the Back button.", "button") {
+                putJsonObject("button") {
+                    put("type", "string")
+                    putJsonArray("enum") { add(JsonPrimitive("back")) }
+                }
+            })
+            add(sessionTool(TOOL_OPEN_APP, "Opens an app.", "appName") {
+                put("appName", stringProp("Name of the app to open."))
+            })
+            add(sessionTool(TOOL_WAIT, "Waits before the next session step.") {
+                putJsonObject("durationMs") {
+                    put("type", "integer")
+                    put("minimum", 0)
+                    put("maximum", BrainSessionLimits.MAX_WAIT_MS)
+                }
+            })
+            add(sessionTool(TOOL_FINISH_RUN, "Finishes the session.", "summary") {
+                put("summary", stringProp("The brain's claimed outcome summary (unverified in this increment)"))
+                putJsonObject("outcome") {
+                    put("type", "string")
+                    putJsonArray("enum") {
+                        add(JsonPrimitive("done"))
+                        add(JsonPrimitive("failed"))
+                    }
+                    put("description", "Defaults to done. Use failed to mark the run failed with the summary as the reason.")
+                }
+            })
+        }
+
+        private fun sessionTool(
+            name: String,
+            description: String,
+            vararg required: String,
+            properties: JsonObjectBuilder.() -> Unit,
+        ) = buildJsonObject {
+            put("name", name)
+            put("description", description)
+            putJsonObject("inputSchema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    if (name != TOOL_START_SESSION) put("runHandle", stringProp("Handle returned by start_session."))
+                    properties()
+                }
+                putJsonArray("required") {
+                    if (name != TOOL_START_SESSION) add(JsonPrimitive("runHandle"))
+                    required.forEach { add(JsonPrimitive(it)) }
+                }
+                put("additionalProperties", false)
             }
         }
 

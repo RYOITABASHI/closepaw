@@ -20,10 +20,13 @@ class ClickExecutor(
         snapshot: ScreenSnapshot?,
         platform: AndroidPlatform,
         isCancelled: () -> Boolean,
-        appClassifier: AppClassifier? = null
+        appClassifier: AppClassifier? = null,
+        requireObservedNode: Boolean = false
     ): ActionOutcome = executePointAction(
         actionName = "click",
-        channels = ActionPriorityOrder.click.map { channel ->
+        channels = ActionPriorityOrder.click.filter { channel ->
+            !requireObservedNode || channel == ActionPriorityOrder.ClickChannel.NODE_CLICK
+        }.map { channel ->
             when (channel) {
                 ActionPriorityOrder.ClickChannel.NODE_CLICK -> ChannelAttempt(
                     displayName = "node_action_click",
@@ -44,9 +47,11 @@ class ClickExecutor(
             formatActionMessage("$verb (${point.x},${point.y}) via $channel", warnings)
         },
         formatFailure = { point, channel, reason, warnings ->
-            formatActionMessage("Click at (${point.x},${point.y}) via $channel failed: $reason", warnings)
+            if (requireObservedNode && reason == "element_changed") reason
+            else formatActionMessage("Click at (${point.x},${point.y}) via $channel failed: $reason", warnings)
         },
         targetResolver = targetResolver,
-        appClassifier = appClassifier
+        appClassifier = appClassifier,
+        requireObservedNode = requireObservedNode,
     )
 }

@@ -1,6 +1,8 @@
 package ai.closepaw.tool.impl
 
 import android.util.Log
+import ai.closepaw.app.goalFingerprint
+import ai.closepaw.platform.AppInfo
 import ai.closepaw.platform.ActionResult
 import ai.closepaw.protocol.AppTier
 import ai.closepaw.tool.action.buildObservation
@@ -118,6 +120,22 @@ If the app is not found, suggestions will be provided.
     }
 }
 
+/** The installed-app lookup and selection for a single open_app call. */
+class OpenAppResolution internal constructor(internal val apps: List<AppInfo>, internal val match: AppInfo?)
+
+internal fun resolveOpenApp(appName: String, apps: List<AppInfo>): OpenAppResolution {
+    val searchTerm = appName.lowercase().trim()
+    val aliasPackage = AppAliases.PACKAGE_MAP[searchTerm]
+    val match = apps.find { it.label.equals(appName, ignoreCase = true) }
+        ?: apps.find { it.label.contains(appName, ignoreCase = true) }
+        ?: aliasPackage?.let { alias -> apps.find { it.packageName == alias } }
+        ?: if ('.' in searchTerm) {
+            apps.find { it.packageName.equals(searchTerm, ignoreCase = true) }
+                ?: apps.find { it.packageName.contains(searchTerm, ignoreCase = true) }
+        } else null
+    return OpenAppResolution(apps, match)
+}
+
 /**
  * Executable invocation for opening an app.
  *
@@ -144,48 +162,26 @@ private class OpenAppInvocation(
             return ToolExecutionResult.Cancelled("Cancelled before execution")
         }
 
-        val apps = context.platform.getInstalledApps()
-        val searchTerm = appName.lowercase().trim()
-
-        // --- Resolve package name ---
-
-        // Strategy 1: Exact label match
-        var match = apps.find { it.label.equals(appName, ignoreCase = true) }
-
-        // Strategy 2: Label contains search term
-        if (match == null) {
-            match = apps.find { it.label.contains(appName, ignoreCase = true) }
-        }
-
-        // Strategy 3: Well-known alias → package
-        if (match == null) {
-            val aliasPackage = AppAliases.PACKAGE_MAP[searchTerm]
-            if (aliasPackage != null) {
-                match = apps.find { it.packageName == aliasPackage }
-            }
-        }
-
-        // Strategy 4: Input looks like a package name (e.g. "com.google.android.gm")
-        if (match == null && looksLikePackageName(searchTerm)) {
-            match = apps.find { it.packageName.equals(searchTerm, ignoreCase = true) }
-                ?: apps.find { it.packageName.contains(searchTerm, ignoreCase = true) }
-        }
+        val resolution = context.externalOpenAppResolution.takeIf { context.externalDriver }
+            ?: resolveOpenApp(appName, context.platform.getInstalledApps())
+        val match = resolution.match
+        val argumentFingerprint = goalFingerprint(appName)
 
         if (match == null) {
-            val suggestions = findSimilarApps(searchTerm, apps)
+            val suggestions = findSimilarApps(appName.lowercase().trim(), resolution.apps)
             val suggestionText = if (suggestions.isNotEmpty()) {
                 "Similar apps: ${suggestions.joinToString(", ")}. Try again with the correct name."
             } else {
                 "No similar apps found on this device."
             }
-            Log.w(TAG, "App not found: '$appName'. $suggestionText")
+            Log.w(TAG, "App not found (argument $argumentFingerprint)")
             return ToolExecutionResult.Failure(
                 "App not found: '$appName'. $suggestionText"
             )
         }
 
         val targetPackage = match.packageName
-        Log.d(TAG, "Resolved '$appName' -> $targetPackage (${match.label})")
+        Log.d(TAG, "Resolved app argument $argumentFingerprint")
 
         // --- Destination tier check: deny launch into BLOCKED apps ---
         val classifier = context.appClassifier
@@ -206,7 +202,13 @@ private class OpenAppInvocation(
         }
 
         // --- Launch ---
+        if (context.externalDriver && context.isCancelled()) {
+            return ToolExecutionResult.Cancelled("Cancelled before launch")
+        }
         val result = context.platform.launchApp(targetPackage)
+        if (context.externalDriver && result is ActionResult.Cancelled) {
+            return ToolExecutionResult.Cancelled(result.reason)
+        }
 
         return when (result) {
             is ActionResult.Success -> {
@@ -236,13 +238,6 @@ private class OpenAppInvocation(
     }
 
     // ---- Helpers ----
-
-    /**
-     * Check if input looks like a package name (e.g. "com.google.android.gm").
-     */
-    private fun looksLikePackageName(input: String): Boolean {
-        return input.contains('.') && input.split('.').size >= 2
-    }
 
     /**
      * Find similar app names for error suggestions.

@@ -106,6 +106,12 @@ interface ToolExecutionContext {
     /** App classifier for privacy gating (masks BLOCKED app observations). */
     val appClassifier: ai.closepaw.tool.AppClassifier? get() = null
 
+    /** When true, invocations must not capture a post-action observation (externally driven sessions do their own captures). */
+    val suppressPostActionObservation: Boolean get() = false
+
+    val externalDriver: Boolean get() = false
+    val externalOpenAppResolution: ai.closepaw.tool.impl.OpenAppResolution? get() = null
+
     /** Check if execution should be cancelled */
     fun isCancelled(): Boolean
 }

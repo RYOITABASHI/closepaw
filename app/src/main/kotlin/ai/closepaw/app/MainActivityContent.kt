@@ -37,11 +37,14 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Build a [CapsuleBinding] backed by the running [AgentService], or [InertCapsuleBinding]
- * when the service isn't bound yet (so the chat surface still renders its idle state).
+ * when the service is unavailable or an external session owns the capsule.
  */
 @Composable
 private fun rememberCapsuleBinding(): CapsuleBinding {
-    val holder = AgentService.instance?.capsuleStateHolder ?: return InertCapsuleBinding
+    val service = AgentService.instance ?: return InertCapsuleBinding
+    val externalOverlayActive by service.externalOverlayActive.collectAsStateWithLifecycle()
+    if (externalOverlayActive) return InertCapsuleBinding
+    val holder = service.capsuleStateHolder ?: return InertCapsuleBinding
     return remember(holder) {
         CapsuleBinding(
             mode = holder.mode,

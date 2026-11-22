@@ -126,6 +126,7 @@
     <string name="main_activity_missing_credentials">Missing credential(s): %1$s</string>
     <string name="main_activity_battery_settings_unavailable">Unable to open battery settings</string>
     <string name="main_activity_browser_sign_in_unavailable">Unable to open browser for sign-in</string>
+    <string name="main_activity_busy_with_another_task">ClosePaw is busy with another task</string>
 
     <!-- MainActivityModelValidation -->
     <string name="main_activity_model_validation_refresh_model">Refresh or select a model for this endpoint</string>

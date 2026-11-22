@@ -48,7 +48,8 @@ internal suspend fun executePointAction(
     formatSuccess: (point: Point, channelName: String, warnings: List<String>) -> String,
     formatFailure: (point: Point, channelName: String, reason: String, warnings: List<String>) -> String,
     targetResolver: TargetResolver = TargetResolver,
-    appClassifier: AppClassifier? = null
+    appClassifier: AppClassifier? = null,
+    requireObservedNode: Boolean = false,
 ): ActionOutcome {
     if (isCancelled()) return ActionOutcome.Cancelled("Cancelled before $actionName")
 
@@ -58,10 +59,22 @@ internal suspend fun executePointAction(
     val semanticHint: SemanticTargetHint?
     val point = when (resolvedTarget) {
         is TargetResolver.ResolveResult.Resolved -> {
-            val refinedTarget = refinePointActionTarget(actionName, target, resolvedTarget, snapshot)
-            resolvedWarnings = refinedTarget.warnings
-            semanticHint = refinedTarget.semanticHint
-            refinedTarget.point
+            val actionTarget = if (requireObservedNode) resolvedTarget
+                else refinePointActionTarget(actionName, target, resolvedTarget, snapshot)
+            resolvedWarnings = actionTarget.warnings
+            semanticHint = if (requireObservedNode) {
+                val element = snapshot?.let { findResolvedElement(target, resolvedTarget, it.elements) }
+                val hint = resolvedTarget.semanticHint
+                if (element == null || hint == null) {
+                    return ActionOutcome.Failed("element_changed", emptyList())
+                }
+                hint.copy(
+                    requireObservedIdentity = true,
+                    packageName = element.packageName,
+                    resourceId = element.resourceId,
+                )
+            } else actionTarget.semanticHint
+            actionTarget.point
         }
         is TargetResolver.ResolveResult.NotFound -> {
             return ActionOutcome.Failed(

@@ -14,7 +14,9 @@ data class SemanticTargetHint(
     val text: String,
     val description: String,
     val className: String,
-    val bounds: Bounds
+    val bounds: Bounds,
+    val requireObservedIdentity: Boolean = false,
+    val packageName: String = "",
 )
 
 /**

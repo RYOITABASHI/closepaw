@@ -11,6 +11,8 @@ import android.view.SurfaceView
 import android.view.accessibility.AccessibilityEvent
 import ai.closepaw.debug.ActionDebugReceiver
 import ai.closepaw.protocol.ApprovalDecision
+import ai.closepaw.protocol.ApprovalDetails
+import ai.closepaw.protocol.ApprovalRequired
 import ai.closepaw.protocol.ApprovalScope
 import ai.closepaw.protocol.LLMBackendType
 import ai.closepaw.llm.LFMLLMClient
@@ -23,6 +25,7 @@ import ai.closepaw.protocol.SessionState
 import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.protocol.SessionConfig
 import ai.closepaw.session.AgentSession
+import ai.closepaw.trace.TraceRecorder
 import ai.closepaw.ui.overlay.compose.IslandOverlayHost
 import ai.closepaw.ui.overlay.compose.ServiceLifecycleOwner
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
@@ -88,6 +91,8 @@ class AgentService : AccessibilityService() {
 
     private val _effectivePlatformMode = MutableStateFlow<PlatformMode?>(null)
     val effectivePlatformMode: StateFlow<PlatformMode?> = _effectivePlatformMode.asStateFlow()
+    private val _externalOverlayActive = MutableStateFlow(false)
+    internal val externalOverlayActive: StateFlow<Boolean> = _externalOverlayActive.asStateFlow()
 
     /**
      * Signal that the VirtualDisplayViewerActivity should finish itself. Emitted by the
@@ -140,10 +145,7 @@ class AgentService : AccessibilityService() {
             AgentServiceEventHandler(
                     logTag = TAG,
                     updateStatus = ::updateStatus,
-                    sessionCleared = {
-                        session = null
-                        _effectivePlatformMode.value = null
-                    },
+                    sessionCleared = ::sessionCleared,
                     overlayController = { overlayController }
             )
 
@@ -175,6 +177,7 @@ class AgentService : AccessibilityService() {
 
     /** The running save-draft routine, if any (no session, no LLM). Set and cleared on the main thread. */
     private var draftJob: Job? = null
+    private var draftStopIdentity: String? = null
 
     /** Why the running draft routine was stopped from outside. Main thread. */
     private var draftStopReason: String? = null
@@ -206,40 +209,48 @@ class AgentService : AccessibilityService() {
     fun observeExternalSession(
             externalSession: AgentSession,
             platformMode: PlatformMode = PlatformMode.ACCESSIBILITY
-    ) {
+    ): Boolean {
         if (!isServiceActive) {
             Log.w(TAG, "Ignoring observeExternalSession while service is shutting down")
-            return
+            return !BrainSessionAdmission.gate.isBrainActive()
         }
-        // A MainActivity / onboarding session: back to the normal (visible) overlay behavior.
+        if (!externalSession.tryClaimInternalAdmission()) return false
+        // Retire any brain mode before removing its display-0 suppression.
+        overlayController?.retireExternalOverlay()
+        _externalOverlayActive.value = false
         overlayController?.clearShellyBackgroundRun()
-        // A running draft yields; its teardown is in the barrier the session's first task awaits.
         stopDraftForForegroundSession()
-        attachObservedSession(externalSession, platformMode)
+        return attachObservedSession(externalSession, platformMode)
     }
 
     /** Shared by [observeExternalSession] and the Shelly path (which keeps its invisible overlay). */
-    private fun attachObservedSession(externalSession: AgentSession, platformMode: PlatformMode) {
+    private fun attachObservedSession(externalSession: AgentSession, platformMode: PlatformMode): Boolean {
         if (!isServiceActive) {
-            Log.w(TAG, "Ignoring observeExternalSession while service is shutting down")
-            return
+            Log.w(TAG, "Ignoring attachObservedSession while service is shutting down")
+            return !BrainSessionAdmission.gate.isBrainActive()
         }
+        if (!externalSession.tryClaimInternalAdmission()) return false
         Log.i(TAG, "Observing external session: ${externalSession.sessionId}, mode=$platformMode")
         retireShellyRunUnlessFor(externalSession)
-        // The session observed so far is being replaced by one created elsewhere (MainActivity,
-        // onboarding). If its teardown may still move display-0 tasks (a Shelly-run VD), shut it
-        // down through the barrier now: left running unobserved, its later teardown (idle timeout)
-        // would move / refront tasks in the middle of the new session's run. Registered before the
-        // caller submits the new session's first task, which then waits for it (AgentSession).
-        // Other sessions keep the previous behavior (their owner shuts them down).
+        // Shut down the predecessor even if it never started a task. Register display-task
+        // teardown before the replacement can submit its first task.
         session?.takeIf { it !== externalSession }?.let { previous ->
-            shutdownReplacedSession(previous, onlyIfItMayMoveTasks = true)
+            shutdownReplacedSession(previous)
+            previous.terminallyResolveAdmissionForReplacement()
         }
         session = externalSession
         currentPlatformMode = platformMode
         _effectivePlatformMode.value = platformMode
         overlayController?.setPlatformMode(platformMode)
         observeSession(externalSession)
+        return true
+    }
+
+    private fun sessionCleared(sessionId: ai.closepaw.protocol.SessionId) {
+        val observed = session?.takeIf { it.sessionId == sessionId && !it.externalDriver } ?: return
+        observed.releaseInternalAdmission()
+        session = null
+        _effectivePlatformMode.value = null
     }
 
     private val stopReceiver =
@@ -284,7 +295,7 @@ class AgentService : AccessibilityService() {
                         scope = serviceScope,
                         appPackage = OUR_PACKAGE,
                         logTag = TAG,
-                        onStop = { submitOp(Op.Shutdown) },
+                        onStop = ::requestStopAll,
                         onTakeover = { submitOp(Op.Takeover) },
                         onResume = { submitOp(Op.Resume) },
                         onSupplement = { text -> submitOp(Op.Supplement(text)) },
@@ -361,6 +372,7 @@ class AgentService : AccessibilityService() {
     private fun clearAccessibilityBinding() {
         isServiceActive = false
         if (instance === this) instance = null
+        McpServerController.brainSessions?.onOwnerServiceLost(this)
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
@@ -387,7 +399,7 @@ class AgentService : AccessibilityService() {
         eventCollectorJob = null
 
         val currentSession = session
-        if (currentSession != null) {
+        if (currentSession != null && !currentSession.externalDriver) {
             // Same path as a replaced session (gate round 4): a service restart in this process
             // starts its next session against the same process-wide barrier, so this teardown is
             // registered there (when it may move display-0 tasks) BEFORE the session is detached,
@@ -396,6 +408,7 @@ class AgentService : AccessibilityService() {
             // persistence via NonCancellable.
             val teardown = shutdownReplacedSession(currentSession)
             if (teardown != null) {
+                teardown.invokeOnCompletion { currentSession.releaseInternalAdmission() }
                 // The former 5 s bound, now observe-only: it can no longer abandon the teardown.
                 val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
                 watchSessionTeardown(watchScope, teardown, SHUTDOWN_TIMEOUT_MS) {
@@ -408,6 +421,7 @@ class AgentService : AccessibilityService() {
 
         overlayController?.dispose()
         overlayController = null
+        _externalOverlayActive.value = false
         actionVisualizer?.dispose()
         actionVisualizer = null
         unregisterDebugStopReceiverIfNeeded(this, stopReceiver)
@@ -475,6 +489,8 @@ class AgentService : AccessibilityService() {
                 serviceScope.launch {
                     try {
                         agentSession.events.collect { event ->
+                            if (session !== agentSession) return@collect
+                            if (agentSession.externalDriver && event is ai.closepaw.protocol.SessionCompleted) return@collect
                             try {
                                 // Tracker first: the overlay may resolve an approval synchronously
                                 // (auto-deny), which must find the tracker already waiting.
@@ -509,29 +525,41 @@ class AgentService : AccessibilityService() {
             Log.w(TAG, "Ignoring runAgent because service is not active")
             return
         }
-        overlayController?.clearShellyBackgroundRun()
-        // A running draft yields; its teardown is in the barrier awaitReplacedSessionReconcile
-        // (below) waits for before the new session is even created.
-        stopDraftForForegroundSession()
-        shellyRun?.let {
-            it.finish(ShellyRunState.Finished.Kind.STOPPED)
-            shellyNotifier.render(it.state, it.origin)
-            reportShellyResult(it)
-            shellyRun = null
+        val creation = InternalSessionCreation()
+        if (!creation.claim()) {
+            updateStatus("⚠️ Agent is busy. Please wait.")
+            return
         }
-        if (session != null) {
-            Log.i(TAG, "Stopping existing session before starting new one")
-            eventCollectorJob?.cancel()
-            eventCollectorJob = null
-            val oldSession = session
-            session = null
-            shutdownReplacedSession(oldSession)
+        try {
+            overlayController?.retireExternalOverlay()
+            _externalOverlayActive.value = false
+            overlayController?.clearShellyBackgroundRun()
+            // A running draft yields; its teardown is in the barrier awaitReplacedSessionReconcile
+            // (below) waits for before the new session is even created.
+            stopDraftForForegroundSession()
+            shellyRun?.let {
+                it.finish(ShellyRunState.Finished.Kind.STOPPED)
+                shellyNotifier.render(it.state, it.origin)
+                reportShellyResult(it)
+                shellyRun = null
+            }
+            session?.let { oldSession ->
+                Log.i(TAG, "Stopping existing session before starting new one")
+                eventCollectorJob?.cancel()
+                eventCollectorJob = null
+                session = null
+                shutdownReplacedSession(oldSession)
+                oldSession.terminallyResolveAdmissionForReplacement()
+            }
+
+            currentPlatformMode = platformMode
+            overlayController?.setPlatformMode(platformMode)
+        } catch (failure: Throwable) {
+            creation.release()
+            throw failure
         }
 
-        currentPlatformMode = platformMode
-        overlayController?.setPlatformMode(platformMode)
-
-        serviceScope.launch {
+        val startJob = serviceScope.launch {
             try {
                 awaitReplacedSessionReconcile()
                 val settings = AppSettingsStore(this@AgentService).load()
@@ -544,7 +572,7 @@ class AgentService : AccessibilityService() {
                 val visualizer = actionVisualizer
                 val touchGate = overlayController?.overlayTouchGate
                 val newSession =
-                        withContext(Dispatchers.Default) {
+                        creation.create(Dispatchers.Default) {
                             AgentSession.create(
                                     config = sessionConfig,
                                     service = this@AgentService,
@@ -555,6 +583,8 @@ class AgentService : AccessibilityService() {
                             )
                         }
 
+                if (!isServiceActive) return@launch
+
                 // A session attached while this one was being created (a Shelly run started in
                 // the meantime) is replaced here: its result first, then its teardown through the
                 // barrier, which newSession's first task (submitted below) waits for.
@@ -564,30 +594,46 @@ class AgentService : AccessibilityService() {
                     eventCollectorJob = null
                     retireShellyRunUnlessFor(newSession)
                     session = null
-                    shutdownReplacedSession(stray, onlyIfItMayMoveTasks = true)
+                    shutdownReplacedSession(stray)
+                    stray.terminallyResolveAdmissionForReplacement()
                 }
                 session = newSession
+                creation.adopt()
 
                 observeSession(newSession)
 
                 newSession.submit(Op.UserInput(text = goal))
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create session", e)
                 updateStatus("❌ Failed to start: ${e.message}")
                 overlayController?.hideAll()
+            } finally {
+                discardUnattachedSession(creation)
             }
         }
+        startJob.invokeOnCompletion { creation.release() }
     }
 
     // ── Shelly background runs ──
 
     /** A session is mid-task (a new background run must not clobber it). */
-    internal fun isSessionBusy(): Boolean {
-        if (shellyStartInFlight || draftJob != null) return true
-        return when (session?.state?.value) {
+    internal fun isSessionBusy(): Boolean =
+        BrainSessionAdmission.gate.isInternalActive() ||
+            session?.state?.value?.let { it != SessionState.Shutdown } == true ||
+            isInternalIntakeBusy()
+
+    /** Internal starts retain the existing policy that an idle foreground session can yield. */
+    internal fun isInternalIntakeBusy(): Boolean =
+        shellyStartInFlight || draftJob != null || when (session?.state?.value) {
             SessionState.Running, SessionState.Paused, SessionState.TakeoverPending -> true
             else -> false
         }
+
+    /** An unadopted internal session never enters the replacement teardown barrier. */
+    internal fun discardUnattachedSession(creation: InternalSessionCreation) {
+        creation.session?.takeIf { it !== session }?.releaseInternalAdmission()
     }
 
     /**
@@ -621,193 +667,209 @@ class AgentService : AccessibilityService() {
             onTerminal?.invoke(ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, "ClosePaw's accessibility service is not active"))
             return null
         }
-        if (shellyStartInFlight) {
+        val creation = InternalSessionCreation()
+        if (shellyStartInFlight || !creation.claim()) {
             Log.w(TAG, "Shelly run already starting; refusing a second start")
             shellyNotifier.showBlocked(ShellyBackgroundRun.Block.BUSY, goal, origin)
             reportShellyStartFailure(correlation, "ClosePaw is busy with another task")
             onTerminal?.invoke(ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, "ClosePaw is busy with another task"))
             return null
         }
-        shellyStartInFlight = true
-        // The start is accepted (the receiver will answer result_callback=1 when a correlation is
-        // present): from here every exit must claim this guard exactly once.
-        val pending = ShellyPendingResult(correlation)
-        shellyPendingStart = pending
-        onTerminal?.let { intakeObservers[pending] = it }
-        // Replace an idle/finished session (FORCE_FRESH semantics). Busy sessions were refused
-        // by the receiver's precheck.
-        shellyRun?.let {
-            it.finish(ShellyRunState.Finished.Kind.STOPPED)
-            reportShellyResult(it)
-            shellyRun = null
-        }
-        session?.let { old ->
-            eventCollectorJob?.cancel()
-            eventCollectorJob = null
-            session = null
-            _effectivePlatformMode.value = null
-            shutdownReplacedSession(old)
-        }
-
-        val onMainDisplay = platformMode != PlatformMode.VIRTUAL_DISPLAY
-        currentPlatformMode = platformMode
-        overlayController?.setPlatformMode(platformMode)
-        overlayController?.onBackgroundRunRequested(onMainDisplay, origin)
-        shellyNotifier.render(ShellyRunState.Working(onMainDisplay, emptyList()), origin)
-
-        val startJob = serviceScope.launch {
-            try {
-                awaitReplacedSessionReconcile()
-                val settings = AppSettingsState.create(applicationContext).also { it.load() }
-                val authStore = AuthStoreHolder.get(applicationContext)
-                val baseUrlOverrides: Map<LLMProvider, String> =
-                        if (settings.openaiBaseUrl.isNotBlank()) {
-                            mapOf(LLMProvider.OPENAI_API to settings.openaiBaseUrl)
-                        } else emptyMap()
-                val localConfig =
-                        if (settings.llmBackend == LLMBackendType.LOCAL) {
-                            LocalLLMConfig(
-                                    modelSlug = settings.localModel.modelSlug,
-                                    quantizationSlug = settings.localModel.quantizationSlug
-                            )
-                        } else null
-                val config =
-                        SessionConfig(
-                                approvalMode = settings.approvalMode,
-                                mainModel = settings.selectedModel,
-                                debugMode = settings.debugMode,
-                                traceEnabled = settings.traceEnabled,
-                                llm = SessionLlmConfig(
-                                        backendType = settings.llmBackend,
-                                        localConfig = localConfig
-                                ),
-                                perceptionConfig = when (settings.perceptionMode) {
-                                    "screenshot_only" -> PerceptionConfig.ScreenshotOnly()
-                                    "hybrid" -> PerceptionConfig.Hybrid()
-                                    else -> PerceptionConfig.AccessibilityOnly
-                                },
-                                platformMode = platformMode,
-                                unattended = true,
-                                preserveMainDisplayTasks = true,
-                        )
-                val newSession =
-                        withContext(Dispatchers.Default) {
-                            AgentSession.create(
-                                    config = config,
-                                    service = this@AgentService,
-                                    scope = serviceScope,
-                                    authStore = authStore,
-                                    baseUrlOverrides = baseUrlOverrides,
-                                    visualizer = actionVisualizer,
-                                    overlayTouchGate = overlayController?.overlayTouchGate,
-                            )
-                        }
-                val effectiveMode = newSession.getServices().platform.mode
-                if (platformMode == PlatformMode.VIRTUAL_DISPLAY && effectiveMode != PlatformMode.VIRTUAL_DISPLAY) {
-                    // Shizuku went away between the precheck and session creation: PlatformFactory
-                    // fell back to the main display. Refuse instead of taking over the screen.
-                    Log.w(TAG, "Shelly run: virtual display lost during setup; not starting")
-                    serviceScope.launch { newSession.submit(Op.Shutdown) }
-                    shellyNotifier.cancel()
-                    shellyNotifier.showBlocked(ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE, goal, origin)
-                    reportShellyStartFailure(pending, "ClosePaw's virtual display became unavailable")
-                    overlayController?.clearShellyBackgroundRun()
-                    overlayController?.hideAll()
-                    return@launch
-                }
-                if (settings.llmBackend == LLMBackendType.LOCAL) {
-                    (newSession.getServices().llmClient as? LFMLLMClient)?.loadModel()
-                }
-                if (stopRequestedForStart === pending) {
-                    // MCP stop_run during setup: cancel before the goal is ever submitted. No suspension
-                    // point between this check and the tracker taking over below, so none is lost.
-                    Log.i(TAG, "Background run: stop requested during setup; not starting")
-                    stopRequestedForStart = null
-                    serviceScope.launch { newSession.submit(Op.Shutdown) }
-                    shellyNotifier.cancel()
-                    reportShellyStartCancelled(pending)
-                    overlayController?.clearShellyBackgroundRun()
-                    overlayController?.hideAll()
-                    return@launch
-                }
-
-                val ignored = buildSet {
-                    add(packageName)
-                    addAll(ai.closepaw.session.SystemSurfaces.resolve(this@AgentService))
-                }
-                val tracker = ShellyRunTracker(
-                        sessionId = newSession.sessionId.value,
-                        onMainDisplay = effectiveMode != PlatformMode.VIRTUAL_DISPLAY,
-                        ignoredPackages = ignored,
-                        correlation = pending.correlation,
-                        result = pending,
-                        origin = origin,
-                )
-                // Defensive: never leave a different session running unobserved (it would keep
-                // driving the virtual display with no capsule / notification attached).
-                session?.takeIf { it !== newSession }?.let { stray ->
-                    Log.w(TAG, "Shelly run: shutting down stray session ${stray.sessionId}")
-                    eventCollectorJob?.cancel()
-                    eventCollectorJob = null
-                    session = null
-                    // Through the barrier like any replaced session: the first task of
-                    // newSession (submitted below) waits for this teardown (AgentSession).
-                    shutdownReplacedSession(stray)
-                }
-                attachObservedSession(newSession, effectiveMode)
-                // This run's result is reported by the tracker: its run-end display-0 return waits
-                // for that report (set before the task can end).
-                (newSession.getServices().platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform)
-                        ?.expectRunResultReport()
-                overlayController?.updateShellyRunDisplay(tracker.onMainDisplay)
-                shellyRun = tracker
-                // The tracker now owns the guard; tracker paths (incl. onDestroy) report from here.
-                if (shellyPendingStart === pending) shellyPendingStart = null
-                renderShellyRun()
-                Log.i(TAG, "Shelly run started: session=${newSession.sessionId}, mode=$effectiveMode")
-                newSession.submit(Op.UserInput(text = goal))
-            } catch (e: CancellationException) {
-                // Service destroyed / scope cancelled mid-startup. Once the tracker owns the guard
-                // its paths report (onDestroy finishes it); before that, claim it here — a no-op if
-                // onDestroy already claimed it.
-                if (shellyRun?.result !== pending) reportShellyStartCancelled(pending)
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Shelly run failed to start", e)
+        try {
+            shellyStartInFlight = true
+            // The start is accepted (the receiver will answer result_callback=1 when a correlation is
+            // present): from here every exit must claim this guard exactly once.
+            val pending = ShellyPendingResult(correlation)
+            shellyPendingStart = pending
+            onTerminal?.let { intakeObservers[pending] = it }
+            // Replace an idle/finished session (FORCE_FRESH semantics). Busy sessions were refused
+            // by the receiver's precheck.
+            shellyRun?.let {
+                it.finish(ShellyRunState.Finished.Kind.STOPPED)
+                reportShellyResult(it)
                 shellyRun = null
-                shellyNotifier.render(
-                        ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, e.message),
-                        origin,
-                )
-                reportShellyStartFailure(pending, "ClosePaw failed to start the task")
-                overlayController?.clearShellyBackgroundRun()
-                overlayController?.hideAll()
             }
-        }
-        // Cleared on every exit path: success, VD-lost refusal, exception and cancellation.
-        startJob.invokeOnCompletion {
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                shellyStartInFlight = false
-                if (shellyPendingStart === pending) shellyPendingStart = null
-                if (stopRequestedForStart === pending) stopRequestedForStart = null
+            session?.let { old ->
+                eventCollectorJob?.cancel()
+                eventCollectorJob = null
+                session = null
+                _effectivePlatformMode.value = null
+                shutdownReplacedSession(old)
+                old.terminallyResolveAdmissionForReplacement()
             }
+
+            val onMainDisplay = platformMode != PlatformMode.VIRTUAL_DISPLAY
+            currentPlatformMode = platformMode
+            overlayController?.setPlatformMode(platformMode)
+            overlayController?.onBackgroundRunRequested(onMainDisplay, origin)
+            shellyNotifier.render(ShellyRunState.Working(onMainDisplay, emptyList()), origin,
+                    stopIdentity = pending.stopIdentity)
+
+            val startJob = serviceScope.launch {
+                try {
+                    awaitReplacedSessionReconcile()
+                    val settings = AppSettingsState.create(applicationContext).also { it.load() }
+                    val authStore = AuthStoreHolder.get(applicationContext)
+                    val baseUrlOverrides: Map<LLMProvider, String> =
+                            if (settings.openaiBaseUrl.isNotBlank()) {
+                                mapOf(LLMProvider.OPENAI_API to settings.openaiBaseUrl)
+                            } else emptyMap()
+                    val localConfig =
+                            if (settings.llmBackend == LLMBackendType.LOCAL) {
+                                LocalLLMConfig(
+                                        modelSlug = settings.localModel.modelSlug,
+                                        quantizationSlug = settings.localModel.quantizationSlug
+                                )
+                            } else null
+                    val config =
+                            SessionConfig(
+                                    approvalMode = settings.approvalMode,
+                                    mainModel = settings.selectedModel,
+                                    debugMode = settings.debugMode,
+                                    traceEnabled = settings.traceEnabled,
+                                    llm = SessionLlmConfig(
+                                            backendType = settings.llmBackend,
+                                            localConfig = localConfig
+                                    ),
+                                    perceptionConfig = when (settings.perceptionMode) {
+                                        "screenshot_only" -> PerceptionConfig.ScreenshotOnly()
+                                        "hybrid" -> PerceptionConfig.Hybrid()
+                                        else -> PerceptionConfig.AccessibilityOnly
+                                    },
+                                    platformMode = platformMode,
+                                    unattended = true,
+                                    preserveMainDisplayTasks = true,
+                            )
+                    val newSession =
+                            creation.create(Dispatchers.Default) {
+                                AgentSession.create(
+                                        config = config,
+                                        service = this@AgentService,
+                                        scope = serviceScope,
+                                        authStore = authStore,
+                                        baseUrlOverrides = baseUrlOverrides,
+                                        visualizer = actionVisualizer,
+                                        overlayTouchGate = overlayController?.overlayTouchGate,
+                                )
+                            }
+                    val effectiveMode = newSession.getServices().platform.mode
+                    if (platformMode == PlatformMode.VIRTUAL_DISPLAY && effectiveMode != PlatformMode.VIRTUAL_DISPLAY) {
+                        // Shizuku went away between the precheck and session creation: PlatformFactory
+                        // fell back to the main display. Refuse instead of taking over the screen.
+                        Log.w(TAG, "Shelly run: virtual display lost during setup; not starting")
+                        shellyNotifier.cancel()
+                        shellyNotifier.showBlocked(ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE, goal, origin)
+                        reportShellyStartFailure(pending, "ClosePaw's virtual display became unavailable")
+                        overlayController?.clearShellyBackgroundRun()
+                        overlayController?.hideAll()
+                        return@launch
+                    }
+                    if (settings.llmBackend == LLMBackendType.LOCAL) {
+                        (newSession.getServices().llmClient as? LFMLLMClient)?.loadModel()
+                    }
+                    if (stopRequestedForStart === pending) {
+                        // MCP stop_run during setup: cancel before the goal is ever submitted. No suspension
+                        // point between this check and the tracker taking over below, so none is lost.
+                        Log.i(TAG, "Background run: stop requested during setup; not starting")
+                        stopRequestedForStart = null
+                        serviceScope.launch { newSession.submit(Op.Shutdown) }
+                        shellyNotifier.cancel()
+                        reportShellyStartCancelled(pending)
+                        overlayController?.clearShellyBackgroundRun()
+                        overlayController?.hideAll()
+                        return@launch
+                    }
+
+                    val ignored = buildSet {
+                        add(packageName)
+                        addAll(ai.closepaw.session.SystemSurfaces.resolve(this@AgentService))
+                    }
+                    val tracker = ShellyRunTracker(
+                            sessionId = newSession.sessionId.value,
+                            onMainDisplay = effectiveMode != PlatformMode.VIRTUAL_DISPLAY,
+                            ignoredPackages = ignored,
+                            correlation = pending.correlation,
+                            result = pending,
+                            origin = origin,
+                    )
+                    // Defensive: never leave a different session running unobserved (it would keep
+                    // driving the virtual display with no capsule / notification attached).
+                    session?.takeIf { it !== newSession }?.let { stray ->
+                        Log.w(TAG, "Shelly run: shutting down stray session ${stray.sessionId}")
+                        eventCollectorJob?.cancel()
+                        eventCollectorJob = null
+                        session = null
+                        // Through the barrier like any replaced session: the first task of
+                        // newSession (submitted below) waits for this teardown (AgentSession).
+                        shutdownReplacedSession(stray)
+                        stray.terminallyResolveAdmissionForReplacement()
+                    }
+                    check(attachObservedSession(newSession, effectiveMode))
+                    creation.adopt()
+                    // This run's result is reported by the tracker: its run-end display-0 return waits
+                    // for that report (set before the task can end).
+                    (newSession.getServices().platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform)
+                            ?.expectRunResultReport()
+                    overlayController?.updateShellyRunDisplay(tracker.onMainDisplay)
+                    shellyRun = tracker
+                    // The tracker now owns the guard; tracker paths (incl. onDestroy) report from here.
+                    if (shellyPendingStart === pending) shellyPendingStart = null
+                    renderShellyRun()
+                    Log.i(TAG, "Shelly run started: session=${newSession.sessionId}, mode=$effectiveMode")
+                    newSession.submit(Op.UserInput(text = goal))
+                } catch (e: CancellationException) {
+                    // Service destroyed / scope cancelled mid-startup. Once the tracker owns the guard
+                    // its paths report (onDestroy finishes it); before that, claim it here — a no-op if
+                    // onDestroy already claimed it.
+                    if (shellyRun?.result !== pending) reportShellyStartCancelled(pending)
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Shelly run failed to start", e)
+                    shellyRun = null
+                    shellyNotifier.render(
+                            ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, e.message),
+                            origin,
+                    )
+                    reportShellyStartFailure(pending, "ClosePaw failed to start the task")
+                    overlayController?.clearShellyBackgroundRun()
+                    overlayController?.hideAll()
+                } finally {
+                    discardUnattachedSession(creation)
+                }
+            }
+            // Cleared on every exit path: success, VD-lost refusal, exception and cancellation.
+            startJob.invokeOnCompletion {
+                creation.release()
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    shellyStartInFlight = false
+                    if (shellyPendingStart === pending) shellyPendingStart = null
+                    if (stopRequestedForStart === pending) stopRequestedForStart = null
+                }
+            }
+            return pending
+        } catch (failure: Throwable) {
+            creation.release()
+            shellyStartInFlight = false
+            shellyPendingStart = null
+            throw failure
         }
-        return pending
     }
 
     /**
-     * MCP stop_run for the start owning [pending]: the running tracker is stopped through
-     * [stopShellyRun] (the notification's Stop path); a start still being set up is cancelled
+     * Stop the intake identified by [pending], including from the notification's [stopShellyRun].
+     * A start still being set up is cancelled
      * before its goal is submitted. False when [pending] is no longer this service's run.
      */
     internal fun stopIntakeRun(pending: ShellyPendingResult): Boolean {
         val tracker = shellyRun
         if (tracker?.result === pending) {
-            if (ai.closepaw.mcp.stopTargetsLiveSession(tracker.sessionId, session?.sessionId?.value)) {
-                stopShellyRun()
+            val observed = session
+            if (observed != null && !observed.externalDriver &&
+                ai.closepaw.mcp.stopTargetsLiveSession(tracker.sessionId, observed.sessionId.value)
+            ) {
+                serviceScope.launch { observed.submit(Op.Shutdown) }
             } else {
-                // A replacement run's session is already live: Op.Shutdown would kill it. Finish
-                // only this tracker (mirrors retireShellyRunUnlessFor / stopShellyRun's no-session path).
+                // Finish only this tracker when its session is absent or has been replaced.
                 tracker.finish(ShellyRunState.Finished.Kind.STOPPED)
                 renderShellyRun()
                 reportShellyResult(tracker)
@@ -843,11 +905,10 @@ class AgentService : AccessibilityService() {
      * not complete stays registered and fails later starts), and every later task start waits for it
      * (AgentSession's platform start, plus [awaitReplacedSessionReconcile] on the service paths);
      * otherwise no wait (unchanged timing for sessions that never touch display-0 tasks).
-     * [onlyIfItMayMoveTasks]: do nothing at all unless that wait is needed (paths that used to
-     * leave such a session alone keep doing so).
+     * The brain manager owns external teardown and supplies its bounded reconciliation signal.
      */
-    private fun shutdownReplacedSession(old: AgentSession?, onlyIfItMayMoveTasks: Boolean = false): Job? {
-        if (old == null) return null
+    private fun shutdownReplacedSession(old: AgentSession?, externalReconciliation: Job? = null): Job? {
+        if (old == null || (old.externalDriver && externalReconciliation == null)) return null
         val platform = try {
             old.getServices().platform
         } catch (e: Exception) {
@@ -866,7 +927,6 @@ class AgentService : AccessibilityService() {
                     true
                 },
         )
-        if (onlyIfItMayMoveTasks && !mustAwait) return null
         // Its result (if any) was reported by the replacing path before this call: release a
         // run-end restore still gated on that report, then order the teardown after it.
         vdPlatform?.onRunResultReported()
@@ -874,10 +934,13 @@ class AgentService : AccessibilityService() {
         // (launchReplacedSessionTeardown: non-cancellable critical path, truthful verdict).
         // Owned by the old platform: the old session itself never waits for its own teardown.
         // Registered (when mustAwait) before this returns, i.e. before the caller detaches it.
+        if (mustAwait && externalReconciliation != null) {
+            replacedShutdowns.add(externalReconciliation, owner = platform)
+        }
         return launchRegisteredSessionTeardown(
                 barrier = replacedShutdowns,
                 scope = replacedTeardownScope,
-                mustAwait = mustAwait,
+                mustAwait = mustAwait && externalReconciliation == null,
                 owner = platform,
                 runEndRestore = runEndRestore,
                 shutdown = { old.submit(Op.Shutdown) },
@@ -887,7 +950,7 @@ class AgentService : AccessibilityService() {
                 stopPlatform = { vdPlatform?.stop() },
                 onFailure = { e ->
                     Log.e(TAG, "Replaced session teardown did not complete" +
-                            (if (mustAwait) "; it stays in the barrier and new starts fail" else ""), e)
+                            (if (mustAwait && externalReconciliation == null) "; it stays in the barrier and new starts fail" else ""), e)
                 },
         )
     }
@@ -908,22 +971,17 @@ class AgentService : AccessibilityService() {
         }
     }
 
-    internal fun stopShellyRun() {
-        // The notification's Stop during a save-draft routine (it has no session or tracker; a
-        // draft and a goal run never coexist, each refuses while the other is busy).
-        draftJob?.let {
-            it.cancel()
+    internal fun stopShellyRun(identity: String) {
+        session?.takeIf { it.externalDriver && matchesRunStop(identity, it.sessionId.value) }?.let {
+            McpServerController.brainSessions?.stopSession(it)
             return
         }
-        if (session != null) {
-            submitOp(Op.Shutdown)
-        } else {
-            shellyRun?.finish(ShellyRunState.Finished.Kind.STOPPED)
-            renderShellyRun()
-            shellyRun?.let { reportShellyResult(it) }
-            shellyRun = null
-            overlayController?.releaseShellyBackgroundRunWhenIdle()
+        if (matchesRunStop(identity, draftStopIdentity)) {
+            draftJob?.cancel()
+            return
         }
+        val intake = shellyRun?.result ?: shellyPendingStart
+        if (intake != null && matchesRunStop(identity, intake.stopIdentity)) stopIntakeRun(intake)
     }
 
     // ── Save-draft routine (fixed, LLM-free; see ShellySaveDraftReceiver) ──
@@ -1027,6 +1085,8 @@ class AgentService : AccessibilityService() {
         val reported = java.util.concurrent.atomic.AtomicBoolean(false)
         // ATOMIC: a Stop or the service going away before the body runs still runs the body, so
         // its finally (teardown + callback) is never skipped.
+        val token = Any()
+        check(BrainSessionAdmission.tryClaimInternal(token))
         val job = serviceScope.launch(Dispatchers.Default, start = CoroutineStart.ATOMIC) {
             var result: SaveDraftResult? = null
             try {
@@ -1082,6 +1142,7 @@ class AgentService : AccessibilityService() {
                         // must not find this one still busy. (No other draft can be current here:
                         // a second one is refused while this one is set.)
                         draftJob = null
+                        draftStopIdentity = null
                         // Gate fix round 2, finding 3: the callback does not depend on the
                         // notification. Rendering is isolated in its own try; the guard is claimed
                         // only once the callback has actually been dispatched, so anything that
@@ -1103,8 +1164,11 @@ class AgentService : AccessibilityService() {
                 }
             }
         }
+        val stopIdentity = java.util.UUID.randomUUID().toString()
+        draftStopIdentity = stopIdentity
         draftJob = job
         job.invokeOnCompletion {
+            BrainSessionAdmission.releaseInternal(token)
             // Normally a no-op: the body's finally has reported and completed the teardown.
             teardown.complete()
             if (reported.compareAndSet(false, true)) {
@@ -1114,7 +1178,12 @@ class AgentService : AccessibilityService() {
                         draftPayload(routine.resultSoFar(draftStopReason ?: "stopped"), correlation),
                 )
             }
-            android.os.Handler(android.os.Looper.getMainLooper()).post { if (draftJob === job) draftJob = null }
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                if (draftJob === job) {
+                    draftJob = null
+                    draftStopIdentity = null
+                }
+            }
         }
         // After the receiver's answer is committed (this runs inside it, on the main thread, so a
         // post lands after it), and only while this draft is still the current one, so it can never
@@ -1122,7 +1191,8 @@ class AgentService : AccessibilityService() {
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             if (draftJob === job && !reported.get()) {
                 try {
-                    shellyNotifier.render(ShellyRunState.Working(false, listOf(ChromeFlagDeepLink.CHROME_PACKAGE)))
+                    shellyNotifier.render(ShellyRunState.Working(false, listOf(ChromeFlagDeepLink.CHROME_PACKAGE)),
+                            stopIdentity = stopIdentity)
                 } catch (e: Exception) {
                     Log.w(TAG, "Draft routine notification failed: ${e.javaClass.simpleName}")
                 }
@@ -1185,17 +1255,22 @@ class AgentService : AccessibilityService() {
     }
 
     internal fun resolveShellyApproval(
+            sessionId: String,
             callId: String,
             decision: ApprovalDecision,
             scope: ApprovalScope,
             packageName: String,
     ) {
+        val observed = session?.takeUnless { it.externalDriver } ?: return
+        val tracker = shellyRun?.takeIf { it.sessionId == observed.sessionId.value && it.sessionId == sessionId } ?: return
+        val approval = tracker.state as? ShellyRunState.WaitingForApproval ?: return
+        if (approval.callId != callId || approval.packageName != packageName) return
         val resolved = overlayController?.resolveApprovalExternally(callId, decision, scope, packageName) == true
         if (!resolved) Log.d(TAG, "Shelly approval $callId already resolved or stale")
     }
 
     private fun renderShellyRun() {
-        shellyRun?.let { shellyNotifier.render(it.state, it.origin) }
+        shellyRun?.let { shellyNotifier.render(it.state, it.origin, it.sessionId, it.result.stopIdentity) }
     }
 
     private fun retireShellyRunUnlessFor(newSession: AgentSession) {
@@ -1326,8 +1401,165 @@ class AgentService : AccessibilityService() {
         renderShellyRun()
     }
 
+    /** Builds a session for an external (MCP brain) driver: no goal is submitted and no
+     *  model is loaded (AgentSession.create with externalDriver = true drops credentials). */
+    internal fun createExternalSession(
+            platformMode: PlatformMode,
+            runHandle: String,
+            isDispatchCancelled: () -> Boolean,
+            onTraceRecorderCreated: (TraceRecorder) -> Unit,
+    ): AgentSession {
+        val settings = AppSettingsState.create(applicationContext).also { it.load() }
+        val baseUrlOverrides: Map<LLMProvider, String> =
+                if (settings.openaiBaseUrl.isNotBlank()) {
+                    mapOf(LLMProvider.OPENAI_API to settings.openaiBaseUrl)
+                } else emptyMap()
+        val localConfig =
+                if (settings.llmBackend == LLMBackendType.LOCAL) {
+                    LocalLLMConfig(
+                            modelSlug = settings.localModel.modelSlug,
+                            quantizationSlug = settings.localModel.quantizationSlug
+                    )
+                } else null
+        val config =
+                SessionConfig(
+                        approvalMode = settings.approvalMode,
+                        mainModel = settings.selectedModel,
+                        debugMode = settings.debugMode,
+                        traceEnabled = true,
+                        traceRunId = runHandle,
+                        llm = SessionLlmConfig(
+                                backendType = settings.llmBackend,
+                                localConfig = localConfig
+                        ),
+                        perceptionConfig = when (settings.perceptionMode) {
+                            "screenshot_only" -> PerceptionConfig.ScreenshotOnly()
+                            "hybrid" -> PerceptionConfig.Hybrid()
+                            else -> PerceptionConfig.AccessibilityOnly
+                        },
+                        platformMode = platformMode,
+                        unattended = true,
+                        preserveMainDisplayTasks = true,
+                )
+        // Publish the recorder before construction can fail. Once constructed, return
+        // directly so the manager can register the session before the dispatcher hop ends.
+        return AgentSession.create(
+                config = config,
+                service = this,
+                scope = serviceScope,
+                authStore = null,
+                baseUrlOverrides = baseUrlOverrides,
+                // The shared host creates a display-0 window even in viewer context.
+                visualizer = null,
+                overlayTouchGate = overlayController?.overlayTouchGate,
+                externalDriver = true,
+                onTraceRecorderCreated = onTraceRecorderCreated,
+                isDispatchCancelled = isDispatchCancelled,
+        )
+    }
+
+    /** Waits (bounded, service-internal) for a replaced session's teardown to settle. */
+    internal suspend fun awaitReplacedShutdowns() = awaitReplacedSessionReconcile()
+
+    internal fun ownsExternalSession(external: AgentSession): Boolean = session === external
+
+    internal fun isExternalSessionOwnerActive(): Boolean = isServiceActive && instance === this
+
+    internal fun shutdownExternalSession(external: AgentSession, reconciliation: Job): Job =
+        checkNotNull(shutdownReplacedSession(external, externalReconciliation = reconciliation))
+
+    internal suspend fun fallbackExternalSessionTeardown(external: AgentSession) {
+        val platform = external.getServices().platform
+        val vdPlatform = platform as? ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
+        try {
+            try {
+                vdPlatform?.onRunResultReported()
+            } finally {
+                external.submit(Op.Shutdown)
+            }
+        } finally {
+            platform.stop()
+            check(vdPlatform?.isStopped != false) { "External session platform did not stop" }
+        }
+    }
+
+    /**
+     * Attaches an external-driver session for observation (VD viewer, approval surfaces).
+     * No Shelly tracker, pending result or notifier state is created. False when another
+     * live session or an in-flight start owns the service — the caller must refuse.
+     * Main thread only.
+     */
+    internal fun attachExternalSession(newSession: AgentSession, platformMode: PlatformMode): Boolean {
+        if (!isExternalSessionOwnerActive() || BrainSessionAdmission.gate.isInternalActive()) return false
+        if (shellyRun != null || shellyStartInFlight || draftJob != null) return false
+        if (session?.state?.value?.let { it != SessionState.Shutdown } == true) return false
+
+        val previousMode = currentPlatformMode
+        val onMainDisplay = platformMode != PlatformMode.VIRTUAL_DISPLAY
+        try {
+            // Install suppression and observation before committing the session identity.
+            _externalOverlayActive.value = true
+            overlayController?.onBackgroundRunRequested(onMainDisplay, ShellyRunOrigin.MCP, externalDriver = true)
+            overlayController?.setPlatformMode(platformMode)
+            overlayController?.updateShellyRunDisplay(onMainDisplay)
+            observeSession(newSession)
+        } catch (failure: Throwable) {
+            eventCollectorJob?.cancel()
+            eventCollectorJob = null
+            try {
+                overlayController?.retireExternalOverlay()
+                _externalOverlayActive.value = false
+                overlayController?.setPlatformMode(previousMode)
+            } catch (rollbackFailure: Throwable) {
+                failure.addSuppressed(rollbackFailure)
+            }
+            throw failure
+        }
+        session = newSession
+        currentPlatformMode = platformMode
+        _effectivePlatformMode.value = platformMode
+        return true
+    }
+
+    /** Detaches an external-driver session previously attached with [attachExternalSession]. */
+    internal fun detachExternalSession(detached: AgentSession) {
+        if (session !== detached) return
+        eventCollectorJob?.cancel()
+        eventCollectorJob = null
+        try {
+            overlayController?.retireExternalOverlay()
+            _externalOverlayActive.value = false
+        } finally {
+            session = null
+            _effectivePlatformMode.value = null
+        }
+    }
+
+    /** Feeds an external session's approval into the capsule state so it can be resolved
+     *  from the VD viewer (Op.Approve). No tracker or notification is involved. */
+    internal fun surfaceExternalApproval(live: AgentSession, details: ApprovalDetails): Boolean {
+        if (!isServiceActive || session !== live) return false
+        val event = ApprovalRequired(live.sessionId, System.currentTimeMillis(), details.description, details)
+        eventHandler.handleEvent(event, live.getServices().recordingService)
+        return true
+    }
+
+    /** Clears a resolved external approval from the capsule state. */
+    internal fun clearExternalApproval(live: AgentSession, callId: String) {
+        if (session !== live) return
+        overlayController?.stateHolder?.onApprovalResolved(callId)
+    }
+
+    private fun requestStopAll() {
+        val brains = McpServerController.brainSessions
+        val observed = session
+        if (observed?.externalDriver == true) brains?.stopSession(observed)
+        brains?.requestStopAll()
+        if (observed?.externalDriver != true) submitOp(Op.Shutdown)
+    }
+
     fun stopAgent() {
-        submitOp(Op.Shutdown)
+        requestStopAll()
         overlayController?.hideAll()
         updateStatus("🛑 Agent stopped")
     }
