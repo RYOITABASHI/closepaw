@@ -28,8 +28,8 @@
     <string name="shelly_blocked_credentials">Sign in or add an API key for the selected model. Tap to open ClosePaw.</string>
     <string name="shelly_busy_title">ClosePaw is busy</string>
     <string name="shelly_busy_body">Another task is running. Stop it or wait, then ask Shelly again.</string>
-    <string name="shelly_no_vd_title">Shizuku isn\'t running — task not started</string>
-    <string name="shelly_no_vd_body">Background mode needs Shizuku. Start Shizuku and ask again, or tap to run it in the foreground (ClosePaw will take over the screen).</string>
+    <string name="shelly_no_vd_title">Background run couldn\'t start</string>
+    <string name="shelly_no_vd_body">The virtual display is unavailable, so the Shelly task was not started.</string>
     <string name="shelly_action_stop">Stop</string>
     <string name="shelly_action_resume">Resume</string>
     <string name="shelly_action_allow_always">Always allow</string>

@@ -138,10 +138,10 @@ class ShellyRunNotifier(context: Context) {
         post(nm, builder)
     }
 
-    /** A request was refused before anything started. Tap opens ClosePaw (never auto-opens). */
+    /** A refused request notification opens ClosePaw on tap and never offers a foreground run. */
     fun showBlocked(
         block: ShellyBackgroundRun.Block,
-        goal: String?,
+        @Suppress("UNUSED_PARAMETER") goal: String?,
         origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
     ) {
         if (origin == ShellyRunOrigin.MCP) return
@@ -152,13 +152,6 @@ class ShellyRunNotifier(context: Context) {
         }
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
         ensureChannels(nm)
-        // Only the VD-unavailable case offers "run in the foreground": the tap opens MainActivity
-        // with the goal WITHOUT a caller token, so the normal External Goal confirmation applies.
-        val tap = if (block == ShellyBackgroundRun.Block.VIRTUAL_DISPLAY_UNAVAILABLE && goal != null) {
-            openAppIntent(goal)
-        } else {
-            openAppIntent()
-        }
         val builder = NotificationCompat.Builder(context, CHANNEL_ATTENTION)
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setColor(COLOR_ATTENTION)
@@ -167,7 +160,7 @@ class ShellyRunNotifier(context: Context) {
             .setStyle(NotificationCompat.BigTextStyle().bigText(content.body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
-            .setContentIntent(tap)
+            .setContentIntent(openAppIntent())
         post(nm, builder)
     }
 
@@ -208,14 +201,13 @@ class ShellyRunNotifier(context: Context) {
         is ShellyRunState.Finished -> "finished:${state.kind}"
     }
 
-    private fun openAppIntent(goal: String? = null): PendingIntent {
+    private fun openAppIntent(): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            if (goal != null) putExtra(MainActivity.EXTRA_GOAL, goal)
         }
         return PendingIntent.getActivity(
             context,
-            if (goal != null) 2 else 1,
+            1,
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )

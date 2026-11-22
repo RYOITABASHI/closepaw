@@ -27,8 +27,8 @@
     <string name="shelly_blocked_credentials">選択中のモデルのサインインまたはAPIキーの設定が必要です。タップで開きます。</string>
     <string name="shelly_busy_title">ClosePawは別の作業中です</string>
     <string name="shelly_busy_body">別のタスクを実行中です。停止するか完了を待ってから、もう一度Shellyから依頼してください。</string>
-    <string name="shelly_no_vd_title">Shizukuが動いていないため開始しませんでした</string>
-    <string name="shelly_no_vd_body">バックグラウンド実行にはShizukuが必要です。Shizukuを起動してもう一度依頼するか、タップしてフォアグラウンドで実行してください（ClosePawが画面を操作します）。</string>
+    <string name="shelly_no_vd_title">バックグラウンド実行を開始できませんでした</string>
+    <string name="shelly_no_vd_body">仮想ディスプレイを利用できないため、Shellyからの依頼を開始しませんでした。</string>
     <string name="shelly_action_stop">停止</string>
     <string name="shelly_action_resume">再開</string>
     <string name="shelly_action_allow_always">常に許可</string>

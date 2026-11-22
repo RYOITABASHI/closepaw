@@ -1283,7 +1283,7 @@ class ShellyBackgroundRunTest {
             return true
         }
 
-        override fun status() = McpBackend.Status(version = "test", shizukuReady = true, accessibilityReady = false)
+        override fun status() = McpBackend.Status(version = "test", virtualDisplayReady = true, accessibilityReady = false)
     }
 
     private class McpFixture(token: String?) {

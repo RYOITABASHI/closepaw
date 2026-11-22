@@ -7,12 +7,15 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class McpStatusTest {
     @Test
     fun reportsBindLimboAndIndependentPortObservations() {
         val status = status(McpHandler.AdbStatus(true, false, 37001, 123L, 37002, 456L, "nsd"))
+        assertEquals(JsonPrimitive(true), status["virtualDisplayReady"])
+        assertFalse(status.containsKey("shizukuReady"))
         assertEquals(JsonPrimitive(false), status["accessibilityReady"])
         assertEquals(JsonPrimitive(false), status["accessibilityBound"])
         assertEquals(JsonPrimitive(true), status["accessibilitySettingOn"])
