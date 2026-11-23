@@ -179,7 +179,7 @@ internal class TaskHelperProcess(private val shell: AdbShellChannel) {
                     exit 1
                 fi
                 # MISMATCH: a readable cmdline that does not identify the
-                # helper — the pid was recycled by an unrelated process,
+                # helper - the pid was recycled by an unrelated process,
                 # which must never be killed or waited on. Staging removal
                 # settles cleanup.
                 rm -rf $directory && [ ! -e $directory ] || exit 1
@@ -214,7 +214,7 @@ internal class TaskHelperProcess(private val shell: AdbShellChannel) {
                             # pid 7 and reaches the live check below, however
                             # old its directory is. (An all-zeros record has
                             # no nonzero digit, never enters this branch,
-                            # and keeps the grace path — the same outcome
+                            # and keeps the grace path - the same outcome
                             # as stripping it to empty.) This branch
                             # guarantees a nonzero digit, so the stripped
                             # value is nonempty. The length bound is checked
@@ -290,7 +290,7 @@ internal class TaskHelperProcess(private val shell: AdbShellChannel) {
          * Serializes staging creation against stale-directory sweeps across ALL
          * TaskHelperProcess instances (sessions are separate objects; an
          * instance-local lock cannot keep one session's sweep out of another
-         * session's mkdir → pid-file window).
+         * session's mkdir -> pid-file window).
          */
         private val stagingMutex = Mutex()
 

@@ -2,8 +2,10 @@ package ai.closepaw.adb
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 
 class ShellResultTest {
     @Test fun parsesOnlyTheFinalExitMarkerAndPreservesOutput() {
@@ -41,6 +43,28 @@ class ShellResultTest {
         assertFalse(isShellIdentityProbeValid(ShellResult(output, 0), "different"))
         assertFalse(isShellIdentityProbeValid(ShellResult("expected\n0\n", 0), "expected"))
         assertFalse(isShellIdentityProbeValid(ShellResult(output, null), "expected"))
+    }
+
+    @Test fun acceptsAsciiShellCommand() {
+        requireAsciiShellCommand("echo 'hello'\n# comment")
+    }
+
+    @Test fun acceptsEmptyShellCommand() {
+        requireAsciiShellCommand("")
+    }
+
+    @Test fun rejectsEmDashInShellCommand() {
+        val error = assertThrows(IOException::class.java) {
+            requireAsciiShellCommand("echo '—日'")
+        }
+        assertEquals("Non-ASCII character in shell command (U+2014)", error.message)
+    }
+
+    @Test fun rejectsJapaneseCharacterInShellCommand() {
+        val error = assertThrows(IOException::class.java) {
+            requireAsciiShellCommand("echo '日'")
+        }
+        assertEquals("Non-ASCII character in shell command (U+65E5)", error.message)
     }
 
     private fun read(output: String): ShellResult {

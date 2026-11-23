@@ -192,7 +192,11 @@ internal class AdbShellChannel(context: Context) {
         timeoutMs: Long,
         guard: (() -> Boolean)? = null,
         write: (AdbStream) -> Unit,
-    ): ShellResult? = (withTimeoutOrNull<Result<ShellResult?>>(timeoutMs) {
+    ): ShellResult? {
+        // The single choke point every shell command passes through,
+        // including the connection identity probe's direct call.
+        requireAsciiShellCommand(command)
+        return (withTimeoutOrNull<Result<ShellResult?>>(timeoutMs) {
         runInterruptible(Dispatchers.IO) {
             val markerSuffix = ":" + UUID.randomUUID().toString()
             val service = "shell:" + withExitCode(command, markerSuffix)
@@ -221,4 +225,5 @@ internal class AdbShellChannel(context: Context) {
             Result.success(result)
         }
     } ?: throw SocketTimeoutException("ADB shell timed out")).getOrThrow()
+    }
 }

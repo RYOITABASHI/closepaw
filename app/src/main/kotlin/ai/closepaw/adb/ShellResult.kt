@@ -1,10 +1,20 @@
 package ai.closepaw.adb
 
+import java.io.IOException
+
 internal data class ShellResult(val stdout: String, val exitCode: Int?, val truncated: Boolean = false)
 
 internal fun isShellIdentityProbeValid(result: ShellResult, nonce: String): Boolean =
     result.exitCode == 0 && !result.truncated && result.stdout.lineSequence().toList() ==
         listOf(nonce, "2000", "")
+
+internal fun requireAsciiShellCommand(command: String) {
+    val index = command.indexOfFirst { it.code > 0x7F }
+    if (index >= 0) {
+        val codePoint = Character.codePointAt(command, index).toString(16).uppercase().padStart(4, '0')
+        throw IOException("Non-ASCII character in shell command (U+$codePoint)")
+    }
+}
 
 private const val RC_MARKER = "__closepaw_rc"
 
