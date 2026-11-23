@@ -1,5 +1,8 @@
 package ai.closepaw.mcp
 
+import ai.closepaw.app.ShellyBackgroundRun
+import ai.closepaw.app.ShellyPendingResult
+import ai.closepaw.app.ShellyResultCallback
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -35,8 +38,8 @@ class McpSessionToolsTest {
         val goal = "Private goal canary"
         val arguments = buildJsonObject {
             put("goal", goal)
-            put("reqId", "request-1")
-            put("nonce", "nonce-1")
+            put("reqId", REQ_ID)
+            put("nonce", NONCE)
         }
         val payload = buildJsonObject { put("runHandle", "new-handle") }
         val handler = handler(audits = audits, sessionOps = { name, args ->
@@ -115,6 +118,63 @@ class McpSessionToolsTest {
             call(baseline, baselineHeaders, "start_session", invalid),
             call(throwing, session(throwing), "start_session", invalid),
         )
+    }
+
+    @Test
+    fun malformedStartsLeaveNoSessionOrCallbackAndAValidRetryBinds() {
+        val fixture = AdmissionFixture()
+        val malformed = listOf(
+            """"reqId":"bad","nonce":"$NONCE"""",
+            """"reqId":"$REQ_ID","nonce":"short"""",
+            """"reqId":"$REQ_ID","nonce":"${"f".repeat(129)}"""",
+            """"reqId":"$REQ_ID","nonce":"${"g".repeat(32)}"""",
+            """"reqId":"$REQ_ID"""",
+            """"nonce":"$NONCE"""",
+        )
+        for (pair in malformed) {
+            assertError("invalid_params", fixture.call("start_session", """{"goal":"Open notes",$pair}"""))
+            assertTrue(fixture.pending.isEmpty())
+            assertEquals(0, fixture.external.activeCount())
+            assertEquals(0, fixture.registry.activeCount())
+            assertTrue(fixture.sentCallbacks.isEmpty())
+            val handle = """{"runHandle":"$ADMISSION_HANDLE"}"""
+            assertError("unknown_handle", fixture.call("get_run_result", handle))
+            assertError("unknown_handle", fixture.call("stop_run", handle))
+        }
+
+        val started = payload(fixture.call("start_session", """{"goal":"Open notes",$VALID_PAIR}"""))
+        assertEquals(JsonPrimitive(ADMISSION_HANDLE), started["runHandle"])
+        assertEquals(
+            ShellyBackgroundRun.ResultCorrelation(REQ_ID, NONCE),
+            fixture.pending.getValue(ADMISSION_HANDLE).correlation,
+        )
+        assertTrue(fixture.sentCallbacks.isEmpty())
+    }
+
+    @Test
+    fun absentPairStartsAnUnboundSession() {
+        val fixture = AdmissionFixture()
+        val started = payload(fixture.call("start_session", """{"goal":"Open notes"}"""))
+        assertEquals(JsonPrimitive(ADMISSION_HANDLE), started["runHandle"])
+        val pending = fixture.pending.getValue(ADMISSION_HANDLE)
+        assertEquals(null, pending.correlation)
+        val stopped = payload(fixture.call("stop_run", """{"runHandle":"$ADMISSION_HANDLE"}"""))
+        assertEquals(JsonPrimitive(true), stopped["stopRequested"])
+        assertTrue(pending.isClaimed)
+        assertTrue(fixture.pending.isEmpty())
+        assertTrue(fixture.sentCallbacks.isEmpty())
+    }
+
+    @Test
+    fun validPairWithBlankGoalStillSendsARefusalCallback() {
+        val fixture = AdmissionFixture()
+        assertError("invalid_params", fixture.call("start_session", """{"goal":"  ",$VALID_PAIR}"""))
+        assertTrue(fixture.pending.isEmpty())
+        val callback = fixture.sentCallbacks.single()
+        assertEquals(REQ_ID, callback.reqId)
+        assertEquals(NONCE, callback.nonce)
+        assertEquals(ShellyResultCallback.STATUS_FAILED, callback.status)
+        assertEquals("goal must be a non-blank string", callback.summary)
     }
 
     @Test
@@ -394,6 +454,41 @@ class McpSessionToolsTest {
     private fun result(response: McpHttpResponse) =
         Json.parseToJsonElement(requireNotNull(response.body)).jsonObject.getValue("result").jsonObject
 
+    // The standalone JVM rig injects session operations and records payloads at the send boundary.
+    private inner class AdmissionFixture {
+        val registry = McpRunRegistry()
+        val external = FakeExternalResults()
+        val pending = mutableMapOf<String, ShellyPendingResult>()
+        val sentCallbacks = mutableListOf<ShellyResultCallback.Payload>()
+        private val admissionHandler = handler(
+            registry = registry,
+            sessionResults = external,
+            sessionOps = { name, args ->
+                assertEquals("start_session", name)
+                pending[ADMISSION_HANDLE] = ShellyPendingResult(correlation(args))
+                external.markRunning(ADMISSION_HANDLE)
+                buildJsonObject { put("runHandle", ADMISSION_HANDLE) }
+            },
+            stopRun = { handle ->
+                val result = pending.remove(handle) ?: error("Unexpected stop")
+                result.claimCancelled(0L)?.let(sentCallbacks::add)
+                external.complete(handle, McpRunRegistry.Status.CANCELLED, "Stopped")
+                true
+            },
+            sessionStartRefusal = { args, message ->
+                correlation(args)?.let { correlation ->
+                    ShellyPendingResult(correlation).claimFailed(message, 0L)?.let(sentCallbacks::add)
+                }
+            },
+        )
+        private val headers = session(admissionHandler)
+
+        fun call(name: String, args: String) = call(admissionHandler, headers, name, args)
+
+        private fun correlation(args: JsonObject) =
+            ShellyBackgroundRun.parseResultCorrelation(McpSessionArgs.reqId(args), McpSessionArgs.nonce(args))
+    }
+
     private class FakeExternalResults : McpExternalResults {
         private val snapshots = mutableMapOf<String, McpRunRegistry.Snapshot>()
 
@@ -413,6 +508,10 @@ class McpSessionToolsTest {
     }
 
     private companion object {
+        const val ADMISSION_HANDLE = "brain-admission"
+        const val REQ_ID = "1700000000-0123abcd"
+        const val NONCE = "0123456789abcdef0123456789abcdef"
+        const val VALID_PAIR = """"reqId":"$REQ_ID","nonce":"$NONCE""""
         val TOKEN = "a".repeat(64)
     }
 }

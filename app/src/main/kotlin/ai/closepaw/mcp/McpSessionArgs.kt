@@ -1,10 +1,13 @@
 package ai.closepaw.mcp
 
+import ai.closepaw.app.ShellyBackgroundRun
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /** Validates session tool arguments before dispatch. Accessors assume validation succeeded. */
 object McpSessionArgs {
+    internal enum class CorrelationPair { ABSENT, WELL_FORMED, MALFORMED }
+
     private const val MAX_CORRELATION_CHARS = 128
     private val jsonNumber = Regex("-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 
@@ -30,6 +33,9 @@ object McpSessionArgs {
                 requiredNonBlank(args, "goal", McpHandler.MAX_GOAL_CHARS)
                     ?: optionalString(args, "reqId", MAX_CORRELATION_CHARS)
                     ?: optionalString(args, "nonce", MAX_CORRELATION_CHARS)
+                    ?: if (classifyCorrelationPair(args) == CorrelationPair.MALFORMED) {
+                        "reqId and nonce must be supplied together in the Shelly correlation format"
+                    } else null
             McpHandler.TOOL_OBSERVE -> optionalBoolean(args, "includeImage")
             McpHandler.TOOL_TAP ->
                 if (integer(args, "elementIndex", Int.MAX_VALUE.toLong()) == null) {
@@ -56,6 +62,13 @@ object McpSessionArgs {
     fun goal(args: JsonObject): String = checkNotNull(string(args, "goal"))
     fun reqId(args: JsonObject): String? = string(args, "reqId")
     fun nonce(args: JsonObject): String? = string(args, "nonce")
+
+    internal fun classifyCorrelationPair(args: JsonObject): CorrelationPair = when {
+        "reqId" !in args && "nonce" !in args -> CorrelationPair.ABSENT
+        ShellyBackgroundRun.parseResultCorrelation(reqId(args), nonce(args)) != null -> CorrelationPair.WELL_FORMED
+        else -> CorrelationPair.MALFORMED
+    }
+
     fun runHandle(args: JsonObject): String = checkNotNull(runHandleOrNull(args))
     fun elementIndex(args: JsonObject): Int = checkNotNull(integer(args, "elementIndex", Int.MAX_VALUE.toLong())).toInt()
     fun text(args: JsonObject): String = checkNotNull(string(args, "text"))

@@ -6,8 +6,10 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.Display
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -47,6 +49,7 @@ internal class MainDisplayTaskRestorer(
         /** Builds the no-animation ActivityOptions (needs a Context); null in tests. */
         private val context: Context? = null,
         private val strictIsolation: Boolean = false,
+        private val shadowScope: CoroutineScope? = null,
 ) {
     companion object {
         private const val TAG = "MainDisplayTasks"
@@ -64,6 +67,19 @@ internal class MainDisplayTaskRestorer(
     private val guard = MainDisplayTaskGuard(homePackages)
     private val mutex = Mutex()
 
+    private fun readRootTasks(displayId: Int): List<DisplayTask>? {
+        val served = shizuku.rootTasksOnDisplaySourced(displayId) ?: return null
+        return ShadowDiff.observe(
+                served,
+                enqueue = { compare -> shadowScope?.launch(Dispatchers.IO) { compare() } },
+                incumbent = { shizuku.rootTasksOnDisplayIncumbent(displayId) },
+                report = { diff ->
+                    Log.d(TAG, "Task shadow displayId=$displayId class=${diff.kind} taskIdDiff=${diff.taskIdDifference}")
+                },
+                onFailure = { Log.w(TAG, "Task shadow failed for displayId=$displayId", it) },
+        )
+    }
+
     /**
      * Wrap one launch of [packageName] on [vdDisplayId]. [launch] receives whether to force a new
      * task (FLAG_ACTIVITY_MULTIPLE_TASK) so the user's display-0 task is not moved.
@@ -75,13 +91,13 @@ internal class MainDisplayTaskRestorer(
             launch: suspend (newTask: Boolean) -> T,
     ): T =
             mutex.withLock {
-                val initialMain = withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(MAIN) }
+                val initialMain = withContext(Dispatchers.IO) { readRootTasks(MAIN) }
                 if (launchGate != null && initialMain == null) {
                     throw LaunchRefusedException("Could not verify main-display tasks for an isolated launch")
                 }
-                val vdBefore = withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(vdDisplayId) }
+                val vdBefore = withContext(Dispatchers.IO) { readRootTasks(vdDisplayId) }
                 val mainBefore = if (launchGate != null) {
-                    withContext(Dispatchers.IO) { shizuku.rootTasksOnDisplay(MAIN) }
+                    withContext(Dispatchers.IO) { readRootTasks(MAIN) }
                         ?: throw LaunchRefusedException("Could not revalidate main-display tasks for an isolated launch")
                 } else initialMain
                 synchronized(guard) {
@@ -98,8 +114,8 @@ internal class MainDisplayTaskRestorer(
                 val result = launch(newTask)
                 if (mainBefore != null) {
                     withContext(Dispatchers.IO) {
-                        val mainAfter = shizuku.rootTasksOnDisplay(MAIN)
-                        val vdAfter = shizuku.rootTasksOnDisplay(vdDisplayId)
+                        val mainAfter = readRootTasks(MAIN)
+                        val vdAfter = readRootTasks(vdDisplayId)
                         if (mainAfter != null && vdAfter != null) {
                             synchronized(guard) { guard.onLaunched(mainBefore, mainAfter, vdAfter) }
                         }
@@ -117,7 +133,7 @@ internal class MainDisplayTaskRestorer(
     fun onMainDisplayForeground(packageName: String?) {
         val mainNow = if (synchronized(guard) { guard.needsMainSnapshot(packageName) }) {
             try {
-                shizuku.rootTasksOnDisplay(MAIN)
+                readRootTasks(MAIN)
             } catch (e: Exception) {
                 Log.w(TAG, "display-0 read for a foreground event failed", e)
                 null
@@ -139,7 +155,7 @@ internal class MainDisplayTaskRestorer(
         if (!synchronized(guard) { guard.needsActionSnapshot() }) return
         val mainBefore = withContext(Dispatchers.IO) {
             try {
-                shizuku.rootTasksOnDisplay(MAIN)
+                readRootTasks(MAIN)
             } catch (e: Exception) {
                 Log.w(TAG, "display-0 read before an agent action failed", e)
                 null
@@ -233,7 +249,7 @@ internal class MainDisplayTaskRestorer(
         withContext(Dispatchers.IO) {
             if (unreconciledTaskIds().isEmpty()) return@withContext true
             val vdNow = (try {
-                shizuku.rootTasksOnDisplay(vdDisplayId)
+                readRootTasks(vdDisplayId)
             } catch (e: Exception) {
                 Log.w(TAG, "reconcile: reading the virtual display failed", e)
                 null
@@ -266,8 +282,8 @@ internal class MainDisplayTaskRestorer(
             if (onlyIfDeferred && !synchronized(guard) { guard.isDeferred }) return
             withContext(Dispatchers.IO) {
                 try {
-                    val vdNow = shizuku.rootTasksOnDisplay(vdDisplayId) ?: return@withContext
-                    val mainNow = shizuku.rootTasksOnDisplay(MAIN) ?: return@withContext
+                    val vdNow = readRootTasks(vdDisplayId) ?: return@withContext
+                    val mainNow = readRootTasks(MAIN) ?: return@withContext
                     val plan = synchronized(guard) {
                         if (mayDefer) guard.planOrDefer(vdNow, mainNow) else guard.plan(vdNow, mainNow)
                     }
@@ -329,7 +345,7 @@ internal class MainDisplayTaskRestorer(
             movedInPass: List<Int>,
             executed: MutableList<MainDisplayRefront>,
     ): Boolean {
-        val mainNow = shizuku.rootTasksOnDisplay(MAIN)
+        val mainNow = readRootTasks(MAIN)
         if (strictIsolation && mainNow == null) return false
         val target = if (mainNow == null) {
             planned
@@ -354,9 +370,9 @@ internal class MainDisplayTaskRestorer(
                     val protectedIds = synchronized(guard) { guard.protectedTaskIds }
                     if (protectedIds.isEmpty()) return@withContext MainDisplayHandover.NONE
                     // Unknown VD contents: assume every protected task is handed over.
-                    val onVd = shizuku.rootTasksOnDisplay(vdDisplayId)?.map { it.taskId }?.toSet()
+                    val onVd = readRootTasks(vdDisplayId)?.map { it.taskId }?.toSet()
                     val handedOver = if (onVd == null) protectedIds else protectedIds intersect onVd
-                    val mainNow = shizuku.rootTasksOnDisplay(MAIN).orEmpty()
+                    val mainNow = readRootTasks(MAIN).orEmpty()
                     val refront = synchronized(guard) { guard.handoverRefront(mainNow, handedOver) }
                     if (handedOver.isNotEmpty()) {
                         Log.i(TAG, "handover: release will hand $handedOver to display 0, refront=$refront")
@@ -385,7 +401,7 @@ internal class MainDisplayTaskRestorer(
                 try {
                     if (handover.taskIds.isNotEmpty()) {
                         val landed = awaitOnMain(handover.taskIds)
-                        val mainNow = shizuku.rootTasksOnDisplay(MAIN)
+                        val mainNow = readRootTasks(MAIN)
                         if (strictIsolation && mainNow == null) return@withContext
                         val target = if (mainNow == null) {
                             handover.refront
@@ -407,7 +423,7 @@ internal class MainDisplayTaskRestorer(
     /** Poll display 0 until every one of [taskIds] is on it, or the wait budget runs out. */
     private suspend fun awaitOnMain(taskIds: Set<Int>): Boolean {
         repeat(HANDOVER_POLLS) { attempt ->
-            val onMain = shizuku.rootTasksOnDisplay(MAIN)?.map { it.taskId }?.toSet()
+            val onMain = readRootTasks(MAIN)?.map { it.taskId }?.toSet()
             if (onMain != null && onMain.containsAll(taskIds)) return true
             if (attempt < HANDOVER_POLLS - 1) delay(HANDOVER_POLL_MS)
         }
