@@ -129,7 +129,7 @@ class OnboardingDemoController(
                 mutex.withLock { demoSession = session }
 
                 // Register with service for overlay visualization
-                service.observeExternalSession(session, PlatformMode.ACCESSIBILITY)
+                check(service.observeExternalSession(session, PlatformMode.ACCESSIBILITY, creation))
                 creation.adopt()
 
                 // Collect events in background
@@ -240,8 +240,11 @@ class OnboardingDemoController(
                 try {
                     shutdownSession()
                 } finally {
-                    service.discardUnattachedSession(creation)
-                    creation.release()
+                    try {
+                        service.discardUnattachedSession(creation)
+                    } finally {
+                        creation.release()
+                    }
                 }
             }
         }

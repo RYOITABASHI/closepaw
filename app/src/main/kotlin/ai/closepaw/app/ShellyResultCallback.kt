@@ -92,6 +92,24 @@ object ShellyResultCallback {
         )
     }
 
+    fun brainPayload(
+        correlation: ShellyBackgroundRun.ResultCorrelation?,
+        kind: ShellyRunState.Finished.Kind,
+        message: String?,
+        nowMs: Long,
+        sessionId: String?,
+    ): Payload? {
+        correlation ?: return null
+        return Payload(
+            reqId = correlation.reqId,
+            nonce = correlation.nonce,
+            status = statusFor(kind),
+            summary = truncateSummary(message),
+            finishedAtMs = nowMs,
+            sessionId = sessionId,
+        )
+    }
+
     /** Payload for a run that ended before a tracker existed (start failure / refusal). */
     fun failurePayload(
         correlation: ShellyBackgroundRun.ResultCorrelation?,
@@ -148,7 +166,9 @@ object ShellyResultCallback {
     }
 
     /** Never throws. */
-    fun send(context: Context, payload: Payload?) {
+    fun send(context: Context, payload: Payload?) = send(context, payload, logRequestId = true)
+
+    internal fun send(context: Context, payload: Payload?, logRequestId: Boolean) {
         payload ?: return
         val app = context.applicationContext
         try {
@@ -164,7 +184,8 @@ object ShellyResultCallback {
                 app.sendBroadcast(intent)
             }
             // Never log the summary (free text): status and length only.
-            Log.i(TAG, "sent Shelly result req=${payload.reqId} status=${payload.status} len=${payload.summary.length}")
+            val request = if (logRequestId) " req=${payload.reqId}" else ""
+            Log.i(TAG, "sent Shelly result$request status=${payload.status} len=${payload.summary.length}")
         } catch (e: Exception) {
             Log.w(TAG, "failed to send Shelly result: ${e.javaClass.simpleName}")
         }
@@ -191,6 +212,14 @@ class ShellyPendingResult(val correlation: ShellyBackgroundRun.ResultCorrelation
 
     /** Claims the result; true only for the first caller. */
     fun claim(): Boolean = claimed.compareAndSet(false, true)
+
+    fun claimBrainTerminal(
+        kind: ShellyRunState.Finished.Kind,
+        message: String?,
+        nowMs: Long,
+        sessionId: String?,
+    ): ShellyResultCallback.Payload? =
+        if (claim()) ShellyResultCallback.brainPayload(correlation, kind, message, nowMs, sessionId) else null
 
     /** The start failed before it ran (refusal inside startup, exception). */
     fun claimFailed(message: String?, nowMs: Long): ShellyResultCallback.Payload? =

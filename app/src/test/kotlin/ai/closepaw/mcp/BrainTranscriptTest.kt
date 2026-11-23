@@ -45,6 +45,7 @@ class BrainTranscriptTest {
             put("elementCount", 3)
             put("masked", true)
             put("partiallyMasked", false)
+            put("imageArtifact", "no_artifact_recorded")
             put("imageTaken", false)
             put("atMs", 42L)
         }
@@ -57,6 +58,7 @@ class BrainTranscriptTest {
         assertEquals(JsonPrimitive(true), partial["partiallyMasked"])
         assertEquals(JsonPrimitive(true), partial["imageTaken"])
         assertEquals(JsonPrimitive("screens/1.png"), partial["imageArtifactPath"])
+        assertFalse("imageArtifact" in partial)
     }
 
     @Test

@@ -83,6 +83,41 @@ class McpSessionToolsTest {
     }
 
     @Test
+    fun invalidStartsReachTheRefusalHookAndPreserveToolErrors() {
+        val refusals = mutableListOf<Pair<JsonObject, String?>>()
+        val pair = """"reqId":"1700000000-00000000","nonce":"0123456789abcdef0123456789abcdef""""
+        val invalid = """{"goal":"  ",$pair}"""
+        val baseline = handler(sessionOps = { _, _ -> error("Unexpected dispatch") })
+        val hooked = handler(
+            sessionOps = { _, _ -> error("Unexpected dispatch") },
+            sessionStartRefusal = { args, message -> refusals.add(args to message) },
+        )
+        val errors = listOf(
+            invalid to "goal must be a non-blank string",
+            """{"goal":"  "}""" to "goal must be a non-blank string",
+            """{"goal":false,"reqId":"invalid","nonce":"invalid"}""" to "goal must be a non-blank string",
+            """{"goal":"Open notes","unexpected":true,$pair}""" to "unexpected argument",
+        )
+        val baselineHeaders = session(baseline)
+        val headers = session(hooked)
+        for ((args, _) in errors) {
+            val expected = call(baseline, baselineHeaders, "start_session", args)
+            assertError("invalid_params", expected)
+            assertEquals(expected, call(hooked, headers, "start_session", args))
+        }
+        assertEquals(errors.map { (args, message) -> Json.parseToJsonElement(args).jsonObject to message }, refusals)
+
+        val throwing = handler(
+            sessionOps = { _, _ -> error("Unexpected dispatch") },
+            sessionStartRefusal = { _, _ -> throw AssertionError("Refusal hook failed") },
+        )
+        assertEquals(
+            call(baseline, baselineHeaders, "start_session", invalid),
+            call(throwing, session(throwing), "start_session", invalid),
+        )
+    }
+
+    @Test
     fun observesOnlyLiveExternalHandles() {
         val completed = "brain-completed"
         val running = "brain-running"
@@ -331,6 +366,7 @@ class McpSessionToolsTest {
         sessionOps: ((String, JsonObject) -> JsonObject)? = null,
         sessionResults: McpExternalResults? = null,
         stopRun: (String) -> Boolean = { error("Unexpected stop") },
+        sessionStartRefusal: ((JsonObject, String?) -> Unit)? = null,
     ) = McpHandler(
         expectedToken = { TOKEN },
         registry = registry,
@@ -343,6 +379,7 @@ class McpSessionToolsTest {
         serverVersion = "test",
         sessionOps = sessionOps,
         sessionResults = sessionResults,
+        sessionStartRefusal = sessionStartRefusal,
     )
 
     private fun session(handler: McpHandler): Map<String, String> {

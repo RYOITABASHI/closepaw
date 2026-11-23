@@ -5,7 +5,10 @@ import ai.closepaw.model.PerceptionElement
 import ai.closepaw.model.Point
 import ai.closepaw.model.ScreenSnapshot
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -14,6 +17,67 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BrainSessionPolicyTest {
+    @Test
+    fun laterConstructionWaitsForSettlementWithoutBlockingItsPredecessor() = runBlocking {
+        val gate = BrainAdmissionGate()
+        val first = Any()
+        val second = Any()
+
+        assertTrue(gate.beginConstruction(first))
+        assertTrue(gate.beginConstruction(second, blocksIntake = true))
+        val later = async(start = CoroutineStart.UNDISPATCHED) {
+            gate.awaitPendingPredecessors(second)
+        }
+        try {
+            withTimeout(1_000) { gate.awaitPendingPredecessors(first) }
+            assertFalse(later.isCompleted)
+            assertFalse(gate.beginConstruction(Any(), blocksIntake = true))
+            gate.settleConstruction(first)
+            withTimeout(1_000) { later.await() }
+        } finally {
+            later.cancel()
+            gate.settleConstruction(second)
+        }
+    }
+
+    @Test
+    fun pendingConstructionsSettleIndependentlyAndExcludeTheirOwner() {
+        val gate = BrainAdmissionGate()
+        val first = Any()
+        val second = Any()
+        assertTrue(gate.beginConstruction(first))
+        assertFalse(gate.hasPendingConstruction(except = first))
+        assertTrue(gate.hasPendingConstruction(except = second))
+
+        assertTrue(gate.beginConstruction(second, blocksIntake = true))
+        assertTrue(gate.hasPendingConstruction(except = first))
+        assertFalse(gate.hasPendingPredecessor(first))
+        assertTrue(gate.hasPendingPredecessor(second))
+        assertTrue(gate.hasPendingIntakeConstruction())
+        gate.settleConstruction(first)
+        assertTrue(gate.hasPendingConstruction())
+        assertFalse(gate.hasPendingPredecessor(second))
+        assertTrue(gate.hasPendingIntakeConstruction())
+        gate.settleConstruction(second)
+        assertFalse(gate.hasPendingConstruction())
+        assertFalse(gate.hasPendingIntakeConstruction())
+    }
+
+    @Test
+    fun brainReservationIsPendingUntilAdoptedOrAborted() {
+        val gate = BrainAdmissionGate()
+        val brain = Any()
+        assertTrue(gate.tryBeginStart(brain))
+        assertTrue(gate.hasPendingConstruction())
+        assertFalse(gate.hasPendingConstruction(except = brain))
+        gate.startAdopted(brain)
+        assertFalse(gate.hasPendingConstruction())
+        gate.sessionEnded(brain)
+        assertTrue(gate.tryBeginStart(brain))
+        gate.startAborted(brain)
+        assertFalse(gate.hasPendingConstruction())
+    }
+
     @Test
     fun freshBrainActivityKeepsTheSession() {
         val bound = BrainSessionLimits.BRAIN_STALENESS_MS
@@ -152,7 +216,7 @@ class BrainSessionPolicyTest {
         gate.startAdopted(start)
         assertTrue(gate.hasLiveSession())
         assertTrue(gate.isBrainActive())
-        gate.sessionEnded()
+        gate.sessionEnded(start)
         assertFalse(gate.hasLiveSession())
         assertFalse(gate.isBrainActive())
         assertTrue(gate.tryBeginStart(start))
@@ -169,7 +233,7 @@ class BrainSessionPolicyTest {
     }
 
     @Test
-    fun internalReservationIsExclusiveAndReentrant() {
+    fun internalClaimsArePerTokenAndCoexistUntilBrainActivity() {
         val gate = BrainAdmissionGate()
         val start = Any()
         val owner = Any()
@@ -179,18 +243,22 @@ class BrainSessionPolicyTest {
         assertTrue(gate.isInternalActive())
         assertTrue(gate.isAnyActive())
         assertFalse(gate.isBrainActive())
-        assertFalse(gate.tryClaimInternal(other))
+        assertTrue(gate.tryClaimInternal(other))
+        assertFalse(gate.tryBeginStart(start))
+        gate.releaseInternal(owner)
+        gate.releaseInternal(owner)
+        assertTrue(gate.isInternalActive())
         assertFalse(gate.tryBeginStart(start))
         gate.releaseInternal(other)
-        assertFalse(gate.tryBeginStart(start))
-        gate.releaseInternal(owner)
-        gate.releaseInternal(owner)
         assertFalse(gate.isAnyActive())
         assertTrue(gate.tryBeginStart(start))
         assertFalse(gate.tryClaimInternal(owner))
         gate.startAdopted(start)
         assertFalse(gate.tryClaimInternal(owner))
-        gate.sessionEnded()
+        gate.sessionEnded(other)
+        assertTrue(gate.hasLiveSession())
+        assertTrue(gate.isBrainActive())
+        gate.sessionEnded(start)
         assertTrue(gate.tryClaimInternal(other))
     }
 
@@ -231,7 +299,7 @@ class BrainSessionPolicyTest {
             },
             release = {
                 assertTrue(settled)
-                gate.sessionEnded()
+                gate.sessionEnded(start)
             },
         )
         assertEquals(3, attempts)
@@ -448,4 +516,20 @@ class BrainSessionPolicyTest {
         ) return@synchronized false
         gate.claim(BrainTerminalKind.FAILED)
     }
+    @Test
+    fun correlationReservationsHoldUntilReleasedAndKeepIdentitiesIndependent() {
+        val reservations = BrainCorrelationReservations()
+        assertTrue(reservations.tryReserve("first"))
+        assertTrue(reservations.isReserved("first"))
+        assertFalse(reservations.tryReserve("first"))
+        assertTrue(reservations.tryReserve("second"))
+        reservations.release("unreserved")
+        assertTrue(reservations.isReserved("first"))
+        assertTrue(reservations.isReserved("second"))
+        reservations.release("first")
+        assertFalse(reservations.isReserved("first"))
+        assertTrue(reservations.tryReserve("first"))
+        assertFalse(reservations.tryReserve("second"))
+    }
+
 }

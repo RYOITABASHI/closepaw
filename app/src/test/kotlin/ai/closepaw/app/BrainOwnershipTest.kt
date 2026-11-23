@@ -6,6 +6,7 @@ import java.util.Collections
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -25,17 +26,57 @@ class BrainOwnershipTest {
     private class Owner(var active: Boolean = true)
     private class Start(val owner: Owner, val handle: String) {
         val stopped = CompletableDeferred<Unit>()
+        val pending = ShellyPendingResult(null)
     }
 
     private class Fixture {
         val gate = BrainSessionAdmission.gate
-        val ownership = BrainOwnership(gate, Any(), Start::handle, { it.stopped.complete(Unit) })
+        val ownership = BrainOwnership(
+            gate, Any(), Start::handle, { it.stopped.complete(Unit) },
+            canStop = { !it.pending.isClaimed },
+        )
         val published = mutableListOf<String>()
         var currentOwner: Owner? = Owner()
 
         fun adopt(start: Start): Boolean = ownership.adopt(start, validate = {
             check(ownerIsCurrent(currentOwner, start.owner) { start.owner.active })
         }) { published.add(start.handle) }
+    }
+
+    @Test
+    fun abandonedStartPublicationDefersOnlyWhenCleanupIsUnsettled() {
+        for (transcriptStarted in listOf(false, true)) {
+            assertEquals(
+                "Settled cleanup with transcriptStarted=$transcriptStarted",
+                false,
+                shouldDeferAbandonedStartPublication(settled = true),
+            )
+            assertEquals(
+                "Unsettled cleanup with transcriptStarted=$transcriptStarted",
+                true,
+                shouldDeferAbandonedStartPublication(settled = false),
+            )
+        }
+    }
+
+    @Test
+    fun matchingStopRetiresOnlyThePendingGenerationAndPreventsAdoption() {
+        val f = Fixture()
+        val pending = Start(checkNotNull(f.currentOwner), "pending")
+        val other = Start(pending.owner, "other")
+        try {
+            assertTrue(f.ownership.reserve(pending))
+            assertFalse(f.ownership.retireCurrent { it === other })
+            assertTrue(f.gate.hasPendingConstruction())
+            assertTrue(f.ownership.retireCurrent { it === pending })
+            assertTrue(pending.stopped.isCompleted)
+            assertTrue(f.gate.hasPendingConstruction())
+            assertFalse(f.adopt(pending))
+            f.ownership.retire(pending)
+            assertFalse(f.gate.hasPendingConstruction())
+        } finally {
+            f.ownership.retire(pending)
+        }
     }
 
     @Test
@@ -54,7 +95,7 @@ class BrainOwnershipTest {
             assertEquals(listOf("next"), f.published)
         } finally {
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(next)
         }
     }
 
@@ -62,17 +103,17 @@ class BrainOwnershipTest {
     fun recreatedOwnerAdoptsAndOldOwnerCannotDispatch() = runBlocking {
         val f = Fixture()
         val old = Start(checkNotNull(f.currentOwner), "old")
+        val newOwner = Owner()
+        val next = Start(newOwner, "new")
         try {
             assertTrue(f.ownership.reserve(old))
             assertTrue(f.adopt(old))
             old.owner.active = false
             f.currentOwner = null
             assertFalse(ownerIsCurrent(f.currentOwner, old.owner) { old.owner.active })
-            finish(f) {}
+            finish(f, old) {}
 
-            val newOwner = Owner()
             f.currentOwner = newOwner
-            val next = Start(newOwner, "new")
             assertTrue(f.ownership.reserve(next))
             assertTrue(f.adopt(next))
             assertFalse(ownerIsCurrent(f.currentOwner, old.owner) { true })
@@ -80,7 +121,8 @@ class BrainOwnershipTest {
             assertEquals(listOf("old", "new"), f.published)
         } finally {
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(old)
+            f.gate.sessionEnded(next)
         }
     }
 
@@ -93,6 +135,8 @@ class BrainOwnershipTest {
             assertTrue(f.ownership.reserve(inFlight))
             f.ownership.retireCurrent()
             assertTrue(inFlight.stopped.isCompleted)
+            assertFalse(f.ownership.reserve(successor))
+            f.ownership.retire(inFlight)
             assertTrue(f.ownership.reserve(successor))
             f.ownership.retire(inFlight)
             assertFalse(f.adopt(inFlight))
@@ -103,7 +147,68 @@ class BrainOwnershipTest {
             assertEquals(listOf("successor"), f.published)
         } finally {
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.ownership.retire(inFlight)
+            f.ownership.retire(successor)
+            f.gate.sessionEnded(successor)
+        }
+    }
+
+    @Test
+    fun stoppedStartRemainsAPredecessorUntilCleanupCompletes() = runBlocking {
+        val f = Fixture()
+        val start = Start(checkNotNull(f.currentOwner), "pending")
+        val cleanup = Job()
+        try {
+            assertTrue(f.ownership.reserve(start))
+            assertTrue(f.ownership.retireCurrent())
+            val successor = async(start = CoroutineStart.UNDISPATCHED) {
+                f.gate.awaitPendingPredecessors(Any())
+            }
+            val settlement = async(start = CoroutineStart.UNDISPATCHED) {
+                f.ownership.settleRetiredStart(start, cleanup, 5_000)
+            }
+            assertFalse(successor.isCompleted)
+            cleanup.complete()
+            assertTrue(withTimeout(5_000) { settlement.await() })
+            withTimeout(5_000) { successor.await() }
+        } finally {
+            cleanup.complete()
+            f.ownership.retire(start)
+        }
+    }
+
+    @Test
+    fun cleanupTimeoutReleasesPredecessorWithoutCancellingCleanup() = runBlocking {
+        val f = Fixture()
+        val start = Start(checkNotNull(f.currentOwner), "pending")
+        val cleanup = Job()
+        try {
+            assertTrue(f.ownership.reserve(start))
+            assertFalse(f.ownership.settleRetiredStart(start, cleanup, 25))
+            assertFalse(f.gate.hasPendingPredecessor(Any()))
+            assertTrue(cleanup.isActive)
+        } finally {
+            cleanup.complete()
+            f.ownership.retire(start)
+        }
+    }
+
+    @Test
+    fun claimedStartRejectsMatchingStopButCanStillSettle() {
+        val f = Fixture()
+        val start = Start(checkNotNull(f.currentOwner), "pending")
+        try {
+            assertTrue(f.ownership.reserve(start))
+            start.pending.claimFailed("failed", 0L)
+            assertTrue(start.pending.isClaimed)
+            assertFalse(f.ownership.retireCurrent { it === start })
+            assertFalse(f.ownership.retireCurrent())
+            assertFalse(start.stopped.isCompleted)
+            assertTrue(f.gate.hasPendingPredecessor(Any()))
+            f.ownership.retire(start)
+            assertFalse(f.gate.hasPendingPredecessor(Any()))
+        } finally {
+            f.ownership.retire(start)
         }
     }
 
@@ -123,13 +228,13 @@ class BrainOwnershipTest {
             assertTrue(f.ownership.reserve(start))
             assertTrue(f.adopt(start))
             assertFalse(BrainSessionAdmission.tryClaimInternal(successor))
-            finish(f) { assertFalse(BrainSessionAdmission.tryClaimInternal(successor)) }
+            finish(f, start) { assertFalse(BrainSessionAdmission.tryClaimInternal(successor)) }
             assertTrue(BrainSessionAdmission.tryClaimInternal(successor))
         } finally {
             BrainSessionAdmission.releaseInternal(predecessor)
             BrainSessionAdmission.releaseInternal(successor)
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(start)
         }
     }
 
@@ -159,7 +264,7 @@ class BrainOwnershipTest {
             assertTrue(f.ownership.reserve(start))
             assertTrue(f.adopt(start))
             val settle = async {
-                finish(f) {
+                finish(f, start) {
                     settleBrainTeardown(
                         scope = this@coroutineScope,
                         dispatcher = EmptyCoroutineContext,
@@ -202,7 +307,7 @@ class BrainOwnershipTest {
             finishFallback.complete(Unit)
             BrainSessionAdmission.releaseInternal(internal)
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(start)
         }
     }
 
@@ -222,7 +327,7 @@ class BrainOwnershipTest {
         try {
             assertTrue(f.ownership.reserve(start))
             assertTrue(f.adopt(start))
-            finish(f) {
+            finish(f, start) {
                 settleBrainTeardown(
                     scope = this,
                     dispatcher = EmptyCoroutineContext,
@@ -256,7 +361,7 @@ class BrainOwnershipTest {
         } finally {
             BrainSessionAdmission.releaseInternal(internal)
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(start)
         }
     }
 
@@ -271,7 +376,7 @@ class BrainOwnershipTest {
             assertTrue(f.ownership.reserve(start))
             assertTrue(f.adopt(start))
             withTimeout(5_000) {
-                finish(f) {
+                finish(f, start) {
                     settleBrainTeardown(
                         scope = this@runBlocking,
                         dispatcher = EmptyCoroutineContext,
@@ -299,7 +404,7 @@ class BrainOwnershipTest {
         } finally {
             cleanup?.cancel()
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(start)
         }
     }
 
@@ -315,7 +420,7 @@ class BrainOwnershipTest {
             assertTrue(f.ownership.reserve(start))
             assertTrue(f.adopt(start))
             f.ownership.protect(start.handle)
-            finish(f) {
+            finish(f, start) {
                 settleBrainTeardown(
                     scope = this,
                     dispatcher = EmptyCoroutineContext,
@@ -345,7 +450,7 @@ class BrainOwnershipTest {
             shutdown.complete()
             BrainSessionAdmission.releaseInternal(internal)
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(start)
         }
     }
 
@@ -364,7 +469,7 @@ class BrainOwnershipTest {
             assertTrue(f.ownership.reserve(start))
             assertTrue(f.adopt(start))
             val settle = async {
-                finish(f) {
+                finish(f, start) {
                     settleBrainTeardown(
                         scope = this@runBlocking,
                         dispatcher = EmptyCoroutineContext,
@@ -407,7 +512,7 @@ class BrainOwnershipTest {
             finishFallback.complete(Unit)
             BrainSessionAdmission.releaseInternal(internal)
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(start)
         }
     }
 
@@ -532,7 +637,7 @@ class BrainOwnershipTest {
             assertTrue(f.ownership.reserve(start))
             assertTrue(f.adopt(start))
             withTimeout(5_000) {
-                finish(f) {
+                finish(f, start) {
                     settleBrainTeardown(
                         scope = this@runBlocking,
                         dispatcher = EmptyCoroutineContext,
@@ -573,7 +678,7 @@ class BrainOwnershipTest {
             registeredTeardown.cancel()
             BrainSessionAdmission.releaseInternal(internal)
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(start)
         }
     }
 
@@ -719,7 +824,7 @@ class BrainOwnershipTest {
             assertTrue(f.adopt(start))
             f.ownership.protect(start.handle)
             val settle = async {
-                finish(f) {
+                finish(f, start) {
                     settleBrainTeardown(
                         scope = this@runBlocking,
                         dispatcher = EmptyCoroutineContext,
@@ -762,17 +867,17 @@ class BrainOwnershipTest {
             finishFence.complete(Unit)
             BrainSessionAdmission.releaseInternal(internal)
             f.ownership.retireCurrent()
-            f.gate.sessionEnded()
+            f.gate.sessionEnded(start)
         }
     }
 
-    private suspend fun finish(f: Fixture, settle: suspend () -> Unit) {
+    private suspend fun finish(f: Fixture, start: Start, settle: suspend () -> Unit) {
         completeBrainTerminal(
             acknowledge = { true },
             waitBeforeRetry = {},
             publish = {},
             settle = settle,
-            release = f.gate::sessionEnded,
+            release = { f.gate.sessionEnded(start) },
         )
     }
 

@@ -19,6 +19,7 @@ internal class BrainOwnership<Start : Any>(
     private val handle: (Start) -> String,
     private val signalStopped: (Start) -> Unit,
     private val orphaned: MutableSet<String> = mutableSetOf(),
+    private val canStop: (Start) -> Boolean = { true },
 ) {
     private var starting: Start? = null
     private val protected = mutableSetOf<String>()
@@ -43,16 +44,30 @@ internal class BrainOwnership<Start : Any>(
 
     fun retire(candidate: Start) {
         synchronized(lock) {
-            if (starting !== candidate) return
-            starting = null
-            signalStopped(candidate)
+            if (starting === candidate) {
+                starting = null
+                signalStopped(candidate)
+            }
             gate.startAborted(candidate)
         }
     }
 
-    fun retireCurrent(matches: (Start) -> Boolean = { true }) {
-        synchronized(lock) { starting?.takeIf(matches)?.let(::retire) }
+    fun retireCurrent(matches: (Start) -> Boolean = { true }): Boolean = synchronized(lock) {
+        val candidate = starting?.takeIf { canStop(it) && matches(it) } ?: return@synchronized false
+        // Revoke adoption immediately. The abandonment path still owns the admission token.
+        starting = null
+        signalStopped(candidate)
+        true
     }
+
+    suspend fun settleRetiredStart(candidate: Start, cleanup: Job, timeoutMs: Long): Boolean =
+        withContext(NonCancellable) {
+            try {
+                withTimeoutOrNull(timeoutMs) { cleanup.join(); true } == true
+            } finally {
+                retire(candidate)
+            }
+        }
 
     fun protect(handle: String) {
         synchronized(lock) { protected.add(handle) }
@@ -87,6 +102,8 @@ internal inline fun <Owner : Any> ownerIsCurrent(current: Owner?, owner: Owner, 
     current === owner && isActive()
 
 internal fun matchesRunStop(requested: String, current: String?) = requested == current
+
+internal fun shouldDeferAbandonedStartPublication(settled: Boolean): Boolean = !settled
 
 private data class BrainTeardownOutcome(
     val fallbackInvoked: Boolean,

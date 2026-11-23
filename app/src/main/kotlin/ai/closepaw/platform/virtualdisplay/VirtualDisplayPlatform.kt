@@ -25,6 +25,7 @@ import ai.closepaw.trace.TraceRecorder
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
 import ai.closepaw.util.recycleCompat
 import java.util.WeakHashMap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -294,7 +295,9 @@ class VirtualDisplayPlatform(
     override suspend fun start() {
         val healWaitDeadline = SystemClock.elapsedRealtime() + VD_START_HEAL_WAIT_MS
         if (!ShizukuHealGate.awaitHealIdle(VD_START_HEAL_WAIT_MS)) {
-            throw IllegalStateException("Shizuku heal in flight; virtual display start deferred")
+            val reason = "Shizuku heal in flight; virtual display start deferred"
+            if (isStopped) startFailure = reason
+            throw IllegalStateException(reason)
         }
         arbiter.withLifecycleTransition { previous ->
             if (previous is VdState.Running) {
@@ -321,6 +324,7 @@ class VirtualDisplayPlatform(
                 return@withLifecycleTransition
             }
 
+            startFailure = null
             ShizukuHealGate.beginVdActivation()
             try {
                 // A heal may have claimed the gate while we were entering the transition.
@@ -425,6 +429,11 @@ class VirtualDisplayPlatform(
                     arbiter.transitionTo(VdState.Stopped)
                     throw e
                 }
+            } catch (e: Exception) {
+                if (e !is CancellationException && startFailure == null) {
+                    startFailure = "virtual display startup failed: ${e.javaClass.simpleName}"
+                }
+                throw e
             } finally {
                 ShizukuHealGate.endVdActivation()
             }

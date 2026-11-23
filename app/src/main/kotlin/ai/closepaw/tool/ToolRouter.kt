@@ -379,14 +379,18 @@ class ToolRouter(
      * 
      * @param callId The tool call ID to resolve
      * @param decision The user's approval decision
-     * @return true if approval was resolved, false if no pending approval found for callId
+     * @return true if this decision completed the pending approval
      */
     fun resolveApproval(callId: String, decision: ApprovalDecision): Boolean {
         val deferred = pendingApprovals[callId]
         return if (deferred != null) {
-            deferred.complete(decision)
-            Log.d(TAG, "Resolved approval for $callId: $decision")
-            true
+            val resolved = deferred.complete(decision)
+            if (resolved) {
+                Log.d(TAG, "Resolved approval for $callId: $decision")
+            } else {
+                Log.w(TAG, "Discarding decision for already completed approval: $callId")
+            }
+            resolved
         } else {
             Log.w(TAG, "No pending approval found for $callId")
             false
