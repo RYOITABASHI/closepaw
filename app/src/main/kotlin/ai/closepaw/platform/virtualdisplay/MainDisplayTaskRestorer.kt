@@ -68,9 +68,10 @@ internal class MainDisplayTaskRestorer(
     private val mutex = Mutex()
 
     private fun readRootTasks(displayId: Int): List<DisplayTask>? {
-        val served = shizuku.rootTasksOnDisplaySourced(displayId) ?: return null
+        val tasks = shizuku.rootTasksOnDisplay(displayId) ?: return null
+        val source = shizuku.lastRootTaskReadSource() ?: ServedSource.INCUMBENT
         return ShadowDiff.observe(
-                served,
+                SourcedDisplayTasks(tasks, source),
                 enqueue = { compare -> shadowScope?.launch(Dispatchers.IO) { compare() } },
                 incumbent = { shizuku.rootTasksOnDisplayIncumbent(displayId) },
                 report = { diff ->

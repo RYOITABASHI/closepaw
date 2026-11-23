@@ -156,6 +156,8 @@ class ShizukuClient {
         return activityTaskTransport.removeRootTasksOnDisplay(displayId, keepTaskIds)
     }
 
+    private val lastRootTaskSource = ThreadLocal<ServedSource?>()
+
     /** Root tasks on a display, top-most first; null when the query fails. */
     internal fun rootTasksOnDisplay(displayId: Int): List<DisplayTask>? =
             rootTasksOnDisplaySourced(displayId)?.tasks
@@ -165,7 +167,18 @@ class ShizukuClient {
                     displayId,
                     incumbent = { rootTasksOnDisplayIncumbent(displayId) },
                     mapRows = TaskRowMapping::toDisplayTasks,
-            )?.let { SourcedDisplayTasks(it.value, it.source) }
+            )?.let {
+                lastRootTaskSource.set(it.source)
+                SourcedDisplayTasks(it.value, it.source)
+            }
+
+    /**
+     * Source of the calling thread's most recent non-null sourced root-task read,
+     * or null if that thread has had no such read. This lets the served answer
+     * travel through the baseline-named [rootTasksOnDisplay] while keeping source
+     * attribution exact for each read. The tag must never influence a served answer.
+     */
+    internal fun lastRootTaskReadSource(): ServedSource? = lastRootTaskSource.get()
 
     internal fun rootTasksOnDisplayIncumbent(displayId: Int): List<DisplayTask>? =
             activityTaskTransport.rootTasksOnDisplay(displayId)
