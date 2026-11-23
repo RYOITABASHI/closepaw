@@ -2,6 +2,7 @@ package ai.closepaw.platform.virtualdisplay
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 import android.view.InputEvent
 import android.view.Surface
@@ -10,8 +11,7 @@ import rikka.shizuku.Shizuku
 /**
  * ShizukuClient — Thin wrapper for Shizuku binder calls.
  *
- * Every public method is a direct proxy to a system service through ShizukuBinderWrapper. No
- * caching, no business logic, no cleverness.
+ * Uses the session task helper for observation when attached, with Shizuku fallback.
  *
  * Uses reflection on the framework's own IDisplayManager/IInputManager stubs (via
  * ShizukuBinderWrapper) so transaction IDs always match the device's framework version. No custom
@@ -27,6 +27,29 @@ class ShizukuClient {
     }
 
     private val runtimeGateway = ShizukuRuntimeGateway()
+    private val taskRead = RoutedTaskRead(onSource = { Log.d(TAG, "Task read source=$it") })
+    @Volatile private var taskHelperSource: HelperRowSource? = null
+
+    internal fun attachTaskHelper(source: HelperRowSource?) {
+        taskHelperSource = source
+    }
+
+    internal fun helperRows(displayId: Int, sdkInt: Int = Build.VERSION.SDK_INT): List<TaskHelperRow>? =
+            taskRead.helperRows(
+                    displayId, sdkInt,
+                    TaskObservationPolicy.HELPER_ROUTE_ENABLED, taskHelperSource,
+            )
+
+    private fun <T> servedRead(
+            displayId: Int,
+            incumbent: () -> T?,
+            mapRows: (List<TaskHelperRow>) -> T,
+    ): Served<T>? = taskRead.served(
+            displayId, Build.VERSION.SDK_INT,
+            TaskObservationPolicy.HELPER_ROUTE_ENABLED, taskHelperSource,
+            incumbent, mapRows,
+    )
+
 
     // ── Shizuku Status ──────────────────────────────────────────
 
@@ -133,8 +156,31 @@ class ShizukuClient {
         return activityTaskTransport.removeRootTasksOnDisplay(displayId, keepTaskIds)
     }
 
+    private val lastRootTaskSource = ThreadLocal<ServedSource?>()
+
     /** Root tasks on a display, top-most first; null when the query fails. */
     internal fun rootTasksOnDisplay(displayId: Int): List<DisplayTask>? =
+            rootTasksOnDisplaySourced(displayId)?.tasks
+
+    internal fun rootTasksOnDisplaySourced(displayId: Int): SourcedDisplayTasks? =
+            servedRead(
+                    displayId,
+                    incumbent = { rootTasksOnDisplayIncumbent(displayId) },
+                    mapRows = TaskRowMapping::toDisplayTasks,
+            )?.let {
+                lastRootTaskSource.set(it.source)
+                SourcedDisplayTasks(it.value, it.source)
+            }
+
+    /**
+     * Source of the calling thread's most recent non-null sourced root-task read,
+     * or null if that thread has had no such read. This lets the served answer
+     * travel through the baseline-named [rootTasksOnDisplay] while keeping source
+     * attribution exact for each read. The tag must never influence a served answer.
+     */
+    internal fun lastRootTaskReadSource(): ServedSource? = lastRootTaskSource.get()
+
+    internal fun rootTasksOnDisplayIncumbent(displayId: Int): List<DisplayTask>? =
             activityTaskTransport.rootTasksOnDisplay(displayId)
 
     /** Move a root task to a display (it lands on top). */
@@ -169,14 +215,22 @@ class ShizukuClient {
 
     /** Root tasks on [displayId] with all their packages and visibility, front first; null when unreadable. */
     internal fun rootTasksWithPackagesOnDisplay(displayId: Int): List<ShizukuActivityTaskTransport.RootTask>? =
-            activityTaskTransport.rootTasksWithPackagesOnDisplay(displayId)
+            servedRead(
+                    displayId,
+                    incumbent = { activityTaskTransport.rootTasksWithPackagesOnDisplay(displayId) },
+                    mapRows = TaskRowMapping::toRootTasks,
+            )?.value
 
     /** Puts a task in front on its display. */
     fun moveTaskToFront(taskId: Int): Boolean = activityTaskTransport.moveTaskToFront(taskId)
 
     /** Root task ids of [packageName] on [displayId], or null when they cannot be read. */
     fun rootTaskIdsOnDisplay(displayId: Int, packageName: String): Set<Int>? =
-            activityTaskTransport.rootTaskIdsOnDisplay(displayId, packageName)
+            servedRead(
+                    displayId,
+                    incumbent = { activityTaskTransport.rootTaskIdsOnDisplay(displayId, packageName) },
+                    mapRows = { rows -> TaskRowMapping.toTaskIds(rows, packageName) },
+            )?.value
 
     // ── Input Injection ─────────────────────────────────────────
 

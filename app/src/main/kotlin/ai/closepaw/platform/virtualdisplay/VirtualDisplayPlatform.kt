@@ -7,11 +7,13 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.PixelFormat
 import android.media.ImageReader
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.view.SurfaceView
 import android.view.accessibility.AccessibilityWindowInfo
+import ai.closepaw.adb.AdbShellChannel
 import ai.closepaw.model.ScreenSnapshot
 import ai.closepaw.model.ScreenSnapshotDebug
 import ai.closepaw.platform.ActionResult
@@ -165,6 +167,14 @@ class VirtualDisplayPlatform(
     // ── Lifecycle State ──────────────────────────────────────────
 
     private val arbiter = VdLifecycleArbiter()
+    /** Shared generation-ownership bookkeeping for the task helper: the
+     * platform mints a token per fresh start and captures one at post time
+     * for every deferred helper close, so stale work can never publish or
+     * kill another generation's helper (see TaskHelperOwnership). */
+    private val taskHelperOwnership = TaskHelperOwnership()
+    private val taskHelper = TaskHelperSession(service, AdbShellChannel(service), taskHelperOwnership).also {
+        shizuku.attachTaskHelper(it)
+    }
     @Volatile private var hasRunDisplay = false
     @Volatile private var startFailure: String? = null
     @Volatile private var lastCaptureFailure: String? = null
@@ -254,6 +264,7 @@ class VirtualDisplayPlatform(
                                 ai.closepaw.session.SystemSurfaces.SYSTEM_UI,
                         context = service,
                         strictIsolation = externalDriver,
+                        shadowScope = deferralScope,
                 )
             } else null
 
@@ -336,6 +347,13 @@ class VirtualDisplayPlatform(
                 // Clean up leaked resources from a Broken state before allocating new ones
                 if (previous is VdState.Broken) {
                     Log.w(TAG, "start() from Broken state — cleaning up old resources first")
+                    // The broken session's helper retires asynchronously (its close is
+                    // generation-checked and reaper-backed): the restart does not wait
+                    // for the old helper's death confirmation. Reads stop resolving it
+                    // immediately.
+                    val brokenHelperClose = taskHelperOwnership.capture()
+                    taskHelper.detachActive()
+                    deferralScope.launch { taskHelper.close(brokenHelperClose) }
                     binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
                     binderDeadListener = null
                     surfaceController.reset()
@@ -400,7 +418,22 @@ class VirtualDisplayPlatform(
                     val listener =
                             Shizuku.OnBinderDeadListener {
                                 Log.e(TAG, "Shizuku binder died! displayId=$id")
-                                arbiter.markBroken("Shizuku binder died")
+                                // Take the Broken transition and capture the ownership
+                                // token as one atomic step: captureAfterTransition runs
+                                // markBroken and the capture under the ownership monitor,
+                                // so no start() mint and no helper publish can interleave
+                                // between them. The token names exactly the generation
+                                // the transition broke — if a restart already minted,
+                                // that generation; if it mints later, the ending one,
+                                // which the deferred close then cannot confuse with
+                                // the replacement.
+                                val closeToken = taskHelperOwnership.captureAfterTransition {
+                                    arbiter.markBroken("Shizuku binder died")
+                                }
+                                val broken = arbiter.state as? VdState.Broken
+                                if (broken != null) {
+                                    postTaskHelperCloseIfCurrent(closeToken) { arbiter.state === broken }
+                                }
                                 shizuku.clearCachedProxies()
                             }
                     binderDeadListener = listener
@@ -437,7 +470,68 @@ class VirtualDisplayPlatform(
             } finally {
                 ShizukuHealGate.endVdActivation()
             }
+            val helperToken = taskHelperOwnership.mint()
+            deferralScope.launch {
+                runCatching { taskHelper.sweepStaleStaging() }
+                        .onFailure {
+                            Log.w(TAG, "Task helper staging sweep failed (${it.javaClass.simpleName})")
+                        }
+                val helperEnabled = TaskObservationPolicy.useHelperRoute(
+                        Build.VERSION.SDK_INT, TaskObservationPolicy.HELPER_ROUTE_ENABLED, true,
+                )
+                if (helperEnabled) {
+                    runCatching {
+                        taskHelper.open(helperToken) { arbiter.state is VdState.Running }
+                    }.onFailure {
+                        Log.w(TAG, "Task helper startup failed (${it.javaClass.simpleName}); using incumbent observation")
+                    }
+                }
+            }
         }
+    }
+
+    /**
+     * Posts the current helper generation's teardown. The close token is
+     * captured BEFORE the ownership is invalidated: invalidation guarantees
+     * an in-flight helper open can no longer publish into the ending session
+     * (its tryPublish fails and it retires the helper it launched), while the
+     * generation-checked close still claims the pair this generation
+     * installed. The helper itself stays alive until the posted close runs,
+     * so teardown timing is unchanged.
+     *
+     * Only the two posts in [stop] use this unconditional form. Both run
+     * inside the arbiter-serialized lifecycle transition. The only mint is
+     * at the end of [start]'s transition, which is mutually exclusive with
+     * [stop]'s. A mint cannot interleave between capture and invalidation,
+     * so the captured token belongs to the ending session. The Shizuku
+     * binder-death listener takes its Broken transition and captures its token
+     * atomically (see [TaskHelperOwnership.captureAfterTransition]) and passes
+     * the token to [postTaskHelperCloseIfCurrent].
+     */
+    private fun postTaskHelperClose(shouldClose: () -> Boolean = { true }) {
+        val closeToken = taskHelperOwnership.capture()
+        taskHelper.invalidateOwnership()
+        deferralScope.launch { taskHelper.close(closeToken, shouldClose) }
+    }
+
+    /**
+     * The caller captures [closeToken] atomically with the ending
+     * session's Broken transition: [TaskHelperOwnership.captureAfterTransition]
+     * runs `markBroken` and the capture under the ownership monitor, so
+     * the token names exactly the generation that transition broke and no
+     * mint or publish can interleave between the mark and the capture.
+     * This function uses that token throughout posting and execution
+     * without recapturing ownership. If a restart has minted a
+     * replacement since the transition, `invalidateIfCurrent` is a
+     * no-op. The generation-checked close can claim only the broken
+     * session's installed pair.
+     */
+    private fun postTaskHelperCloseIfCurrent(
+        closeToken: TaskHelperOwnership.Token,
+        shouldClose: () -> Boolean,
+    ) {
+        taskHelper.invalidateOwnershipIfCurrent(closeToken)
+        deferralScope.launch { taskHelper.close(closeToken, shouldClose) }
     }
 
     /**
@@ -455,41 +549,54 @@ class VirtualDisplayPlatform(
                 }
             }
         ) { previous ->
-            if (previous == VdState.Stopped) return@withLifecycleTransition
-
-            // Restore keyboard first — prevent permanently disabled IME on crash
-            setKeyboardAuto()
-
-            binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
-            binderDeadListener = null
-
-            surfaceController.reset()
-
-            // A pending deferred restore needs no trigger any more: the restore below executes it
-            // (frozen order, refront from display 0 now); what it cannot move is handed over.
-            unregisterScreenOffReceiver()
-
-            // Before the VD task cleanup below removes them: tasks this run moved off display 0
-            // go back there (no-op unless a Shelly run displaced something).
-            mainDisplayTasks?.let { restorer ->
-                when (previous) {
-                    is VdState.Running -> restorer.restore(previous.displayId)
-                    is VdState.Draining -> restorer.restore(previous.displayId)
-                    is VdState.Broken -> restorer.restore(previous.displayId)
-                    VdState.Stopped -> {}
-                }
+            if (previous == VdState.Stopped) {
+                postTaskHelperClose()
+                return@withLifecycleTransition
             }
 
-            // Protected tasks still on the VD are kept by the cleanup below, so the release hands
-            // them to display 0, where they land on top. Decide the refront that undoes that now
-            // (from display 0 as the user has it), execute it once the release has handed them over.
-            val handover = mainDisplayTasks?.let { restorer ->
-                when (previous) {
-                    is VdState.Running -> restorer.prepareHandover(previous.displayId)
-                    is VdState.Draining -> restorer.prepareHandover(previous.displayId)
-                    is VdState.Broken -> restorer.prepareHandover(previous.displayId)
-                    VdState.Stopped -> null
+            var handover: MainDisplayHandover? = null
+            try {
+                // Restore keyboard first — prevent permanently disabled IME on crash
+                setKeyboardAuto()
+
+                binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
+                binderDeadListener = null
+
+                surfaceController.reset()
+
+                // A pending deferred restore needs no trigger any more: the restore below executes it
+                // (frozen order, refront from display 0 now); what it cannot move is handed over.
+                unregisterScreenOffReceiver()
+
+                // Before the VD task cleanup below removes them: tasks this run moved off display 0
+                // go back there (no-op unless a Shelly run displaced something).
+                mainDisplayTasks?.let { restorer ->
+                    when (previous) {
+                        is VdState.Running -> restorer.restore(previous.displayId)
+                        is VdState.Draining -> restorer.restore(previous.displayId)
+                        is VdState.Broken -> restorer.restore(previous.displayId)
+                        VdState.Stopped -> {}
+                    }
                 }
+
+                // Protected tasks still on the VD are kept by the cleanup below, so the release hands
+                // them to display 0, where they land on top. Decide the refront that undoes that now
+                // (from display 0 as the user has it), execute it once the release has handed them over.
+                handover = mainDisplayTasks?.let { restorer ->
+                    when (previous) {
+                        is VdState.Running -> restorer.prepareHandover(previous.displayId)
+                        is VdState.Draining -> restorer.prepareHandover(previous.displayId)
+                        is VdState.Broken -> restorer.prepareHandover(previous.displayId)
+                        VdState.Stopped -> null
+                    }
+                }
+            } finally {
+                // Keep the helper alive through the restore and handover planning reads
+                // above, but post its teardown even when one of them throws: an
+                // exception must not skip helper teardown. Asynchronous teardown
+                // cannot delay surface reset or display release.
+                // Posting also invalidates ownership so an in-flight open cannot publish after stop.
+                postTaskHelperClose()
             }
 
             // Clean up resources from Running, Draining, or Broken state
@@ -506,7 +613,7 @@ class VirtualDisplayPlatform(
                 VdState.Stopped -> {} // Already handled by early return above
             }
 
-            if (handover != null) mainDisplayTasks?.refrontAfterHandover(handover)
+            handover?.let { plan -> mainDisplayTasks?.refrontAfterHandover(plan) }
 
             shizuku.clearCachedProxies()
             arbiter.transitionTo(VdState.Stopped)
