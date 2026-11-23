@@ -29,7 +29,25 @@ import kotlinx.serialization.json.*
 internal class VdTaskEquivalenceTool(context: Context, private val shell: AdbShellChannel) : McpVdTaskEquivalence {
     private val app = context.applicationContext
     private val session = VdHelperSession(app, shell)
-    private val driver = VdTaskEquivalence(session, ShizukuClient())
+    private val shizuku = ShizukuClient()
+    private val driver = VdTaskEquivalence(session, shizuku)
+
+    init {
+        // The incumbent transport resolves framework stubs reflectively
+        // (ShizukuServiceProxyProvider.asInterface) and needs the same
+        // process-global hidden-API exemption the production entry points
+        // apply before their reflective work (VirtualDisplayPlatform.start(),
+        // SelfUpdate, DebugActionExecutor). Without it, in a process where
+        // no VD platform start has run yet, the stub lookup throws
+        // NoSuchMethodException under hidden-API enforcement and every
+        // incumbent read fails closed to null — observed on-device in the
+        // build-115 run (stage2-increment1-diff-report.md). Applying it
+        // here, at construction, guarantees it precedes any incumbent read:
+        // reads are only possible via open()/pairedReads() on a constructed
+        // tool. The gateway call is SDK-guarded and idempotent (production
+        // itself re-applies it on every platform start).
+        shizuku.bypassHiddenApis()
+    }
     private val operations = Mutex()
     private val lock = Any()
     private enum class OwnerState { ACTIVE, RETIRED, CLOSE_UNCONFIRMED }
