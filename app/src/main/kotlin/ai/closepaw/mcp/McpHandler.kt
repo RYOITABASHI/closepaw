@@ -86,6 +86,7 @@ class McpHandler(
     private val typedOps: ((String, JsonObject) -> JsonObject)? = null,
     private val sessionOps: ((String, JsonObject) -> JsonObject)? = null,
     private val sessionResults: McpExternalResults? = null,
+    private val sessionStartRefusal: ((JsonObject, String?) -> Unit)? = null,
 ) {
     data class AdbStatus(
         val paired: Boolean,
@@ -257,6 +258,9 @@ class McpHandler(
             return toolError(handleArg(args), e.code, e.message, e.code)
         }
         validationError?.let { message ->
+            if (name == TOOL_START_SESSION) {
+                runCatching { sessionStartRefusal?.invoke(args, message) }
+            }
             return toolError(handleArg(args), "invalid_params", message, "invalid_params")
         }
         val handle = if (name == TOOL_START_SESSION) null else McpSessionArgs.runHandle(args)

@@ -6,6 +6,9 @@ import ai.closepaw.model.Bounds
 import ai.closepaw.model.PerceptionElement
 import ai.closepaw.model.ScreenSnapshot
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+
 internal data class ElementIdentity(
     val packageName: String,
     val className: String,
@@ -196,11 +199,65 @@ internal suspend fun completeBrainTerminal(
     }
 }
 
-/** One reservation for brain startup, adopted brain sessions, and internal work. */
+/** A correlation stays reserved from acceptance through refusal or terminal publication. */
+internal class BrainCorrelationReservations {
+    private val reserved = mutableSetOf<String>()
+
+    @Synchronized
+    fun tryReserve(identity: String): Boolean = reserved.add(identity)
+
+    @Synchronized
+    fun release(identity: String) {
+        reserved.remove(identity)
+    }
+
+    @Synchronized
+    fun isReserved(identity: String): Boolean = identity in reserved
+}
+
+/**
+ * Shared ownership registry for pending brain starts, adopted brain sessions, and internal claims.
+ * Each start carries its own token, and every release removes that token.
+ */
 internal class BrainAdmissionGate {
     private var startToken: Any? = null
-    private var activeSessions = 0
+    private val sessionTokens = mutableSetOf<Any>()
     private val internalClaims = mutableSetOf<Any>()
+    private val constructions = linkedMapOf<Any, Boolean>()
+    private val settled = MutableStateFlow(0L)
+
+    @Synchronized
+    fun beginConstruction(token: Any, blocksIntake: Boolean = false): Boolean {
+        if (blocksIntake && hasPendingIntakeConstruction()) return false
+        if (!tryClaimInternal(token)) return false
+        constructions[token] = blocksIntake
+        return true
+    }
+
+    @Synchronized
+    fun settleConstruction(token: Any) {
+        if (constructions.remove(token) == null) return
+        releaseInternal(token)
+        settled.value++
+    }
+
+    @Synchronized
+    fun hasPendingConstruction(except: Any? = null): Boolean =
+        (startToken != null && startToken !== except) || constructions.keys.any { it !== except }
+
+    @Synchronized
+    fun hasPendingIntakeConstruction(): Boolean = constructions.containsValue(true)
+
+    /** A later registration waits for this start, so waiting for it would form a cycle. */
+    @Synchronized
+    fun hasPendingPredecessor(token: Any): Boolean {
+        if (startToken != null && startToken !== token) return true
+        return constructions.keys.firstOrNull()?.let { it !== token } ?: false
+    }
+
+    suspend fun awaitPendingPredecessors(token: Any) {
+        settled.first { !hasPendingPredecessor(token) }
+    }
 
     @Synchronized
     fun tryBeginStart(token: Any): Boolean {
@@ -211,25 +268,29 @@ internal class BrainAdmissionGate {
 
     @Synchronized
     fun startAborted(token: Any) {
-        if (startToken === token) startToken = null
+        if (startToken === token) {
+            startToken = null
+            settled.value++
+        }
     }
 
     @Synchronized
     fun startAdopted(token: Any) {
         check(startToken === token)
         startToken = null
-        activeSessions++
+        sessionTokens.add(token)
+        settled.value++
     }
 
     /** Release only once teardown has settled or its bounded wait has expired. */
     @Synchronized
-    fun sessionEnded() {
-        if (activeSessions > 0) activeSessions--
+    fun sessionEnded(token: Any) {
+        sessionTokens.remove(token)
     }
 
     @Synchronized
     fun tryClaimInternal(token: Any): Boolean {
-        if (isBrainActive() || (internalClaims.isNotEmpty() && token !in internalClaims)) return false
+        if (isBrainActive()) return false
         internalClaims.add(token)
         return true
     }
@@ -240,7 +301,7 @@ internal class BrainAdmissionGate {
     }
 
     @Synchronized
-    fun isBrainActive(): Boolean = startToken != null || activeSessions > 0
+    fun isBrainActive(): Boolean = startToken != null || sessionTokens.isNotEmpty()
 
     @Synchronized
     fun isInternalActive(): Boolean = internalClaims.isNotEmpty()
@@ -249,5 +310,5 @@ internal class BrainAdmissionGate {
     fun isAnyActive(): Boolean = isBrainActive() || isInternalActive()
 
     @Synchronized
-    fun hasLiveSession(): Boolean = activeSessions > 0
+    fun hasLiveSession(): Boolean = sessionTokens.isNotEmpty()
 }

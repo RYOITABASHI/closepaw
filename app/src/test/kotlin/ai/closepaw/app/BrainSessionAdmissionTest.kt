@@ -27,7 +27,7 @@ class BrainSessionAdmissionTest {
             try {
                 assertFalse(admission.tryClaimInternal(session))
             } finally {
-                admission.gate.sessionEnded()
+                admission.gate.sessionEnded(brain)
             }
             assertTrue(admission.tryClaimInternal(session))
         } finally {

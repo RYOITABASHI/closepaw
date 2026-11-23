@@ -1,5 +1,6 @@
 package ai.closepaw.app
 
+import ai.closepaw.app.ShellyRunState.Finished.Kind
 import ai.closepaw.protocol.SessionCompleted
 import ai.closepaw.protocol.SessionEndReason
 import ai.closepaw.protocol.SessionError
@@ -7,6 +8,9 @@ import ai.closepaw.protocol.SessionId
 import ai.closepaw.protocol.TaskCompleted
 import ai.closepaw.protocol.TaskOutcome
 import com.google.common.truth.Truth.assertThat
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.Test
 
 class ShellyResultCallbackTest {
@@ -206,4 +210,46 @@ class ShellyResultCallbackTest {
         assertThat(ShellyResultCallback.truncateSummary("  short  ")).isEqualTo("short")
         assertThat(ShellyResultCallback.truncateSummary(null)).isEmpty()
     }
+    @Test
+    fun `brain payload echoes the correlation and truncates all terminal summaries`() {
+        val correlation = ShellyBackgroundRun.ResultCorrelation(reqId, nonce)
+        val boundary = ShellyResultCallback.MAX_SUMMARY_CODE_POINTS
+        val prefix = "😀".repeat(boundary - 1)
+        val message = " ${prefix}abc "
+        for ((kind, status) in mapOf(Kind.DONE to "completed", Kind.FAILED to "failed", Kind.STOPPED to "cancelled")) {
+            assertThat(ShellyResultCallback.brainPayload(correlation, kind, message, 42L, "s1"))
+                .isEqualTo(ShellyResultCallback.Payload(reqId, nonce, status, prefix + "…", 42L, "s1"))
+        }
+        assertThat(ShellyResultCallback.brainPayload(null, Kind.DONE, message, 42L, "s1")).isNull()
+    }
+
+    @Test
+    fun `racing brain terminals deliver only the winning kind`() {
+        val pending = ShellyPendingResult(ShellyBackgroundRun.ResultCorrelation(reqId, nonce))
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val barrier = CyclicBarrier(2)
+            val attempts = listOf(Kind.DONE, Kind.STOPPED).map { kind ->
+                executor.submit<ShellyResultCallback.Payload?> {
+                    barrier.await(5, TimeUnit.SECONDS)
+                    pending.claimBrainTerminal(kind, null, 42L, "s1")
+                }
+            }
+            val (done, stopped) = attempts.map { it.get(5, TimeUnit.SECONDS) }
+            assertThat(listOfNotNull(done, stopped)).hasSize(1)
+            assertThat(done?.status ?: stopped?.status).isEqualTo(if (done != null) "completed" else "cancelled")
+            assertThat(pending.claimBrainTerminal(Kind.FAILED, null, 43L, "s1")).isNull()
+            assertThat(pending.claimFailed("late failure", 43L)).isNull()
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `brain refusal consumes the terminal claim`() {
+        val pending = ShellyPendingResult(ShellyBackgroundRun.ResultCorrelation(reqId, nonce))
+        assertThat(pending.claimFailed("refused", 42L)?.status).isEqualTo("failed")
+        assertThat(pending.claimBrainTerminal(Kind.DONE, null, 43L, "s1")).isNull()
+    }
+
 }

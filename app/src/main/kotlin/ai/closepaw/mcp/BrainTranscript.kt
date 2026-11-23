@@ -47,6 +47,7 @@ internal object BrainTranscript {
         put("masked", masked)
         put("partiallyMasked", partiallyMasked)
         if (imageArtifactPath != null) put("imageArtifactPath", imageArtifactPath)
+        else put("imageArtifact", "no_artifact_recorded")
         put("imageTaken", imageTaken)
         put("atMs", atMs)
     }

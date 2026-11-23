@@ -2,25 +2,11 @@ package ai.closepaw.app
 
 import ai.closepaw.mcp.BrainAdmissionGate
 
-/** Process-wide reservation shared by brain and internal session owners. */
+/** Forwards per-start tokens to the shared registry without keeping separate claim state. */
 internal object BrainSessionAdmission {
     val gate = BrainAdmissionGate()
-    private val internalOwner = Any()
-    private val internalTokens = mutableSetOf<Any>()
 
-    // Stage A admits one internal owner. Keep independent lifetimes under that owner
-    // so baseline internal replacements can overlap without reopening brain admission.
-    @Synchronized
-    fun tryClaimInternal(token: Any): Boolean {
-        if (!gate.tryClaimInternal(internalOwner)) return false
-        internalTokens.add(token)
-        return true
-    }
+    fun tryClaimInternal(token: Any): Boolean = gate.tryClaimInternal(token)
 
-    @Synchronized
-    fun releaseInternal(token: Any) {
-        if (internalTokens.remove(token) && internalTokens.isEmpty()) {
-            gate.releaseInternal(internalOwner)
-        }
-    }
+    fun releaseInternal(token: Any) = gate.releaseInternal(token)
 }

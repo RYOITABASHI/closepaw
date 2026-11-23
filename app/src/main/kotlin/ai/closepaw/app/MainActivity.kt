@@ -744,7 +744,7 @@ class MainActivity : ComponentActivity() {
                 createFreshSession(service, baseUrlOverrides, visualizer, touchGate, creation)
             }
 
-            if (!service.observeExternalSession(session, session.getServices().platform.mode)) return null
+            if (!service.observeExternalSession(session, session.getServices().platform.mode, creation)) return null
             creation.adopt()
 
             pendingTraceEnabled = null

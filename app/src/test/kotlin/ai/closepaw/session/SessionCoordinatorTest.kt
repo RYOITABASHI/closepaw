@@ -49,7 +49,7 @@ class SessionCoordinatorTest {
             coVerify(exactly = 0) { session.submit(Op.UserInput("blocked")) }
         } finally {
             admission.releaseInternal(token)
-            admission.gate.sessionEnded()
+            admission.gate.sessionEnded(brain)
         }
     }
 

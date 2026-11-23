@@ -81,6 +81,30 @@ internal class AgentServiceMcpBackend(
 
     @Volatile var brainStopHandler: ((String) -> Boolean)? = null
 
+    internal fun reportExternalRefusal(
+        correlation: ShellyBackgroundRun.ResultCorrelation,
+        message: String?,
+    ): Boolean {
+        return try {
+            val payload = ShellyPendingResult(correlation).claimFailed(message, System.currentTimeMillis())
+                ?: return false
+            ShellyResultCallback.send(app, payload, logRequestId = false)
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "External refusal callback failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
+
+    internal fun sendBrainResult(payload: ShellyResultCallback.Payload?) {
+        payload ?: return
+        try {
+            ShellyResultCallback.send(app, payload, logRequestId = false)
+        } catch (e: Throwable) {
+            Log.e(TAG, "External session callback failed: ${e.javaClass.simpleName}")
+        }
+    }
+
     internal fun externalPrecheck(): (AgentService) -> ShellyBackgroundRun.Decision {
         val onboardingCompleted = OnboardingStore(app).isCompleted
         val canDrawOverlays = Settings.canDrawOverlays(app)
@@ -277,6 +301,7 @@ internal object McpServerController {
             typedOps = McpDeviceOps(app) { line -> Log.i(AUDIT_TAG, line) }::call,
             sessionOps = brains::handle,
             sessionResults = brains,
+            sessionStartRefusal = brains::reportRefusedStart,
         )
         val s = McpHttpServer(h, onError = { Log.w(TAG, it) })
         try {

@@ -3,6 +3,7 @@ package ai.closepaw.app
 import ai.closepaw.agent.cognition.context.ScreenSignature
 import ai.closepaw.mcp.BrainActionRecord
 import ai.closepaw.mcp.BrainActivityTracker
+import ai.closepaw.mcp.BrainCorrelationReservations
 import ai.closepaw.mcp.BrainGuardTrip
 import ai.closepaw.mcp.BrainSessionGuard
 import ai.closepaw.mcp.BrainSessionLimits
@@ -78,12 +79,14 @@ internal class AgentServiceBrainSessions(
     private val results = ConcurrentHashMap<String, BrainRunRecord>()
     private val resultsLock = Object()
     private val ownershipLock = Any()
+    private val reservations = BrainCorrelationReservations()
     private val ownership = BrainOwnership(
         BrainSessionAdmission.gate,
         ownershipLock,
         BrainStart::handle,
         { it.stopped.complete(Unit) },
         orphanedTraceDirectories,
+        canStop = { !it.pending.isClaimed },
     )
     @Volatile private var backend = backend
 
@@ -97,9 +100,19 @@ internal class AgentServiceBrainSessions(
         val transcriptRecorded: Boolean,
     )
 
-    private class BrainStart(val ownerService: AgentService?, val handle: String) {
+    private class BrainStart(
+        val ownerService: AgentService?,
+        val handle: String,
+        val pending: ShellyPendingResult,
+        val correlationIdentity: String?,
+    ) {
+        val correlation get() = pending.correlation
         val stopped = CompletableDeferred<Unit>()
-        // Only the worker writes these. Discard reads them after joining the worker.
+        // Guarded by ownershipLock, which orders the start record against abandonment.
+        var abandoned = false
+        var transcriptStarted = false
+        // Only the worker writes these. Discard reads them after joining the worker,
+        // or reads prepared under ownershipLock after the start record.
         var recorder: TraceRecorder? = null
         var session: AgentSession? = null
         var prepared: BrainSession? = null
@@ -144,6 +157,9 @@ internal class AgentServiceBrainSessions(
         val ownerService: AgentService,
         val goalFingerprint: String,
         val cancelledFlag: AtomicBoolean,
+        val pending: ShellyPendingResult,
+        val correlationIdentity: String?,
+        val ownershipToken: BrainStart,
         val startedAtMs: Long = SystemClock.elapsedRealtime(),
     ) {
         val guard = BrainSessionGuard(startedAtMs)
@@ -151,12 +167,21 @@ internal class AgentServiceBrainSessions(
         val terminalGate = BrainTerminalGate()
         @Volatile var attached = false
         val recorder = session.getServices().traceRecorder
+        val recorderCloseGuard = AtomicBoolean(false)
         @Volatile var pendingApproval: ApprovalDetails? = null
         var observedElements: Map<Int, ElementIdentity>? = null
         val backgroundOutcomes = ArrayDeque<JsonObject>()
         var expiry: Job? = null
         var healthWatcher: Job? = null
-        var completion: Deferred<McpRunRegistry.Status>? = null
+        // Terminal claim and completion state is guarded by terminalGate.
+        var terminalKind: ShellyRunState.Finished.Kind? = null
+        var terminalMessage: String? = null
+        var terminalEvent: TraceEventRecord? = null
+        var terminalCallerDrivenFinish = false
+        var terminalDisplayLost = false
+        var terminalUnacknowledged = false
+        var terminalSystemCompletion = false
+        var completion: Deferred<McpRunRegistry.Status?>? = null
 
         val activity = BrainActivityTracker(terminalGate).also { it.seed(startedAtMs) }
 
@@ -242,22 +267,50 @@ internal class AgentServiceBrainSessions(
         return act(brain, name, args)
     }
 
-    private suspend fun start(args: JsonObject): JsonObject {
-        val claim = synchronized(ownershipLock) {
-            val candidate = BrainStart(serviceProvider(), newHandle())
-            if (!ownership.reserve(candidate)) {
-                throw McpTypedOpError("busy", "ClosePaw is busy with another task")
-            }
-            candidate
+    internal fun reportRefusedStart(args: JsonObject, message: String?) {
+        val correlation = ShellyBackgroundRun.parseResultCorrelation(
+            McpSessionArgs.reqId(args), McpSessionArgs.nonce(args),
+        ) ?: return
+        val identity = correlationIdentity(correlation.reqId, correlation.nonce)
+        if (!reserveCorrelation(identity)) return
+        try {
+            backend.reportExternalRefusal(correlation, message)
+        } finally {
+            reservations.release(identity)
         }
-        val deadline = SystemClock.elapsedRealtime() + START_TIMEOUT_MS
+    }
+
+    private fun reserveCorrelation(identity: String): Boolean =
+        synchronized(ownershipLock) { reservations.tryReserve(identity) }
+
+    private suspend fun start(args: JsonObject): JsonObject {
+        val reqId = McpSessionArgs.reqId(args)
+        val nonce = McpSessionArgs.nonce(args)
+        val correlation = ShellyBackgroundRun.parseResultCorrelation(reqId, nonce)
+        val identity = correlation?.let { correlationIdentity(it.reqId, it.nonce) }
+        if (identity != null && !reserveCorrelation(identity)) {
+            throw McpTypedOpError("duplicate_correlation", "This request correlation has already been used")
+        }
+
+        val pending = ShellyPendingResult(correlation)
+        var callbackDeferred = false
+        var ownedStart: BrainStart? = null
         var adopted: BrainSession? = null
         var worker: Deferred<BrainSession>? = null
-        fun checkDeadline() {
-            if (claim.stopped.isCompleted) throw startStopped()
-            if (SystemClock.elapsedRealtime() >= deadline) throw startTimedOut()
-        }
         try {
+            val claim = synchronized(ownershipLock) {
+                val candidate = BrainStart(serviceProvider(), newHandle(), pending, identity)
+                if (!ownership.reserve(candidate)) {
+                    throw McpTypedOpError("busy", "ClosePaw is busy with another task")
+                }
+                ownedStart = candidate
+                candidate
+            }
+            val deadline = SystemClock.elapsedRealtime() + START_TIMEOUT_MS
+            fun checkDeadline() {
+                if (claim.stopped.isCompleted) throw startStopped()
+                if (SystemClock.elapsedRealtime() >= deadline) throw startTimedOut()
+            }
             val service = claim.ownerService
                 ?: throw McpTypedOpError("service_unavailable", "ClosePaw's accessibility service is unavailable")
             // This worker owns its resources independently of the caller's bounded wait.
@@ -268,17 +321,17 @@ internal class AgentServiceBrainSessions(
                     checkDeadline()
                     precheck(service)
                 }
+                checkDeadline()
                 val mode = when (decision) {
                     is ShellyBackgroundRun.Decision.Blocked ->
                         throw McpTypedOpError(decision.block.name, McpRunStatus.refusalMessage(decision.block))
                     is ShellyBackgroundRun.Decision.Start -> decision.platformMode
                 }
                 val fingerprint = goalFingerprint(McpSessionArgs.goal(args))
-                val reqIdPresent = McpSessionArgs.reqId(args) != null
-                val noncePresent = McpSessionArgs.nonce(args) != null
                 try {
-                    service.awaitReplacedShutdowns()
+                    service.awaitReplacedShutdowns(claim)
                 } catch (_: IllegalStateException) {
+                    checkDeadline()
                     throw McpTypedOpError("start_failed", "ClosePaw is still shutting down the previous task; try again")
                 }
                 checkDeadline()
@@ -290,7 +343,10 @@ internal class AgentServiceBrainSessions(
                         BrainSessionLimits.MAX_SESSION_WALL_CLOCK_MS
                 }) { claim.recorder = it }.also { claim.session = it }
                 checkDeadline()
-                val brain = BrainSession(claim.handle, session, service, fingerprint, cancelledFlag, startedAtMs)
+                val brain = BrainSession(
+                    claim.handle, session, service, fingerprint, cancelledFlag,
+                    claim.pending, claim.correlationIdentity, claim, startedAtMs,
+                )
                 claim.prepared = brain
                 check(brain.recorder.enabled) { "External session trace unavailable" }
                 if (mode == PlatformMode.VIRTUAL_DISPLAY && session.getServices().platform.mode != mode) {
@@ -301,22 +357,28 @@ internal class AgentServiceBrainSessions(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
+                    checkDeadline()
                     val vd = brain.vdFailure()
                     throw McpTypedOpError(
                         if (vd != null) "virtual_display_unavailable" else "start_failed",
                         vd ?: "ClosePaw failed to start the external session",
                     )
                 }
-                checkDeadline()
-                brain.record(
-                    BrainTranscript.TYPE_SESSION_STARTED,
-                    BrainTranscript.sessionStarted(fingerprint, "mcp", reqIdPresent, noncePresent),
-                )
+                synchronized(ownershipLock) {
+                    checkDeadline()
+                    if (claim.abandoned) throw startStopped()
+                    brain.record(
+                        BrainTranscript.TYPE_SESSION_STARTED,
+                        BrainTranscript.sessionStarted(fingerprint, "mcp", reqId != null, nonce != null),
+                    )
+                    claim.transcriptStarted = true
+                }
                 brain.recorder.runDirAbsolutePath?.let { File(it, TRACE_MARKER).writeText("") }
+                checkDeadline()
                 withContext(Dispatchers.Main.immediate) {
                     checkDeadline()
                     try {
-                        if (!service.attachExternalSession(session, session.getServices().platform.mode)) {
+                        if (!service.attachExternalSession(session, session.getServices().platform.mode, claim)) {
                             throw McpTypedOpError("busy", "ClosePaw is busy with another task")
                         }
                     } finally {
@@ -365,54 +427,112 @@ internal class AgentServiceBrainSessions(
             currentCoroutineContext().ensureActive()
             checkLive(ready)
             scope.launch(Dispatchers.IO) { pruneTraces(ready) }
+            checkDeadline()
             return buildJsonObject {
                 put("runHandle", ready.handle)
                 put("status", "running")
             }
-        } catch (e: Exception) {
-            // Cancellation after adoption still retires the published handle.
-            adopted?.let { requestStop(it, "External session start was interrupted") }
-            if (e is CancellationException && claim.stopped.isCompleted) throw startStopped()
-            if (e is McpTypedOpError || e is CancellationException) throw e
-            throw McpTypedOpError("start_failed", "ClosePaw failed to start the external session")
-        } finally {
-            if (adopted == null) {
-                val cleanup = scope.launch(Dispatchers.IO) {
-                    worker?.cancel()
-                    worker?.join()
+        } catch (e: Throwable) {
+            val failure = if (e is McpTypedOpError || e is CancellationException || e !is Exception) e
+                else McpTypedOpError("start_failed", "ClosePaw failed to start the external session")
+            val brain = adopted
+            if (brain != null) {
+                requestStop(brain, "External session start was interrupted")
+                throw failure
+            }
+            val failureMessage = (failure as? McpTypedOpError)?.message
+                ?: "ClosePaw failed to start the external session"
+            var startedBrain: BrainSession? = null
+            val (stopped, payload) = synchronized(ownershipLock) {
+                val stopped = ownedStart?.stopped?.isCompleted == true
+                val now = System.currentTimeMillis()
+                val payload = if (stopped) pending.claimCancelled(now) else pending.claimFailed(failureMessage, now)
+                ownedStart?.let {
+                    it.abandoned = true
+                    if (it.transcriptStarted) startedBrain = checkNotNull(it.prepared)
+                }
+                stopped to payload
+            }
+            val kind = if (stopped) ShellyRunState.Finished.Kind.STOPPED else ShellyRunState.Finished.Kind.FAILED
+            val message = if (stopped) ShellyResultCallback.CANCELLED_DURING_START_MESSAGE else failureMessage
+            val abandonedCleanup = ownedStart?.let { discardStart(it, worker, startedBrain, kind, message) }
+            if (abandonedCleanup != null && payload != null) {
+                callbackDeferred = true
+                Log.w(TAG, "Deferring abandoned startup callback while resource cleanup continues")
+                scope.launch {
                     try {
-                        claim.prepared?.let { detachExternalSession(it) }
-                        val owner = claim.ownerService
-                        val session = claim.session
-                        if (owner != null && session != null) owner.fallbackExternalSessionTeardown(session)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Discarded external startup teardown failed", e)
+                        val cleanedUp = withTimeoutOrNull(ABANDONED_PUBLICATION_LAST_RESORT_MS) {
+                            abandonedCleanup.join()
+                        }
+                        if (cleanedUp == null) {
+                            Log.w(TAG, "Abandoned startup cleanup timed out. Publishing callback as a last resort")
+                        }
+                        backend.sendBrainResult(payload)
                     } finally {
-                        claim.recorder?.let { closeRecorder(it) }
+                        identity?.let(reservations::release)
                     }
                 }
-                trackTraceCleanup(claim.handle, cleanup)
-                try {
-                    if (!claim.stopped.isCompleted && worker?.isCompleted == true) {
-                        withContext(NonCancellable) {
-                            withTimeoutOrNull(
-                                minOf(TEARDOWN_TIMEOUT_MS, deadline - SystemClock.elapsedRealtime()),
-                            ) {
-                                select {
-                                    cleanup.onJoin {}
-                                    claim.stopped.onAwait {}
-                                }
-                            }
+            } else {
+                backend.sendBrainResult(payload)
+            }
+            throw if (stopped && failure is Exception) startStopped() else failure
+        } finally {
+            if (adopted == null && !callbackDeferred) {
+                identity?.let(reservations::release)
+            }
+        }
+    }
+
+    private suspend fun discardStart(
+        claim: BrainStart,
+        worker: Deferred<BrainSession>?,
+        startedBrain: BrainSession?,
+        kind: ShellyRunState.Finished.Kind,
+        message: String,
+    ): Job? {
+        val recorderClosed = startedBrain?.let { CompletableDeferred<Unit>() }
+        val cleanup = scope.launch(Dispatchers.IO) {
+            worker?.cancel()
+            worker?.join()
+            try {
+                claim.prepared?.let { detachExternalSession(it) }
+                val owner = claim.ownerService
+                val session = claim.session
+                if (owner != null && session != null) owner.fallbackExternalSessionTeardown(session)
+            } catch (e: Exception) {
+                Log.e(TAG, "Discarded external startup teardown failed", e)
+            } finally {
+                // Keep trace protection until both late teardown and recorder close settle.
+                if (recorderClosed != null) recorderClosed.await()
+                else claim.recorder?.let { closeRecorder(it) }
+            }
+        }
+        trackTraceCleanup(claim.handle, cleanup)
+        val settled: Boolean
+        try {
+            if (startedBrain != null) {
+                withContext(NonCancellable) {
+                    try {
+                        val event = buildTerminalEvent(startedBrain, kind, message, includeReason = true)
+                        if (!acknowledgeTerminal(startedBrain, event)) {
+                            Log.e(TAG, "Could not acknowledge the abandoned startup transcript")
                         }
-                    }
-                } finally {
-                    ownership.retire(claim)
-                    if (!cleanup.isCompleted) {
-                        Log.w(TAG, "External startup retired while resource cleanup continues")
+                    } finally {
+                        try {
+                            closeRecorderOnce(startedBrain)
+                        } finally {
+                            checkNotNull(recorderClosed).complete(Unit)
+                        }
                     }
                 }
             }
+        } finally {
+            settled = ownership.settleRetiredStart(claim, cleanup, TEARDOWN_TIMEOUT_MS)
+            if (!settled) {
+                Log.w(TAG, "External startup retired while resource cleanup continues")
+            }
         }
+        return cleanup.takeIf { shouldDeferAbandonedStartPublication(settled) }
     }
 
     private fun startStopped() = McpTypedOpError("start_failed", "External session start was stopped")
@@ -453,7 +573,7 @@ internal class AgentServiceBrainSessions(
                     Log.e(TAG, "External session teardown fence failed", e)
                 }
             },
-            close = { closeRecorder(brain.recorder) },
+            close = { closeRecorderOnce(brain) },
             detach = { detachExternalSession(brain) },
             track = { trackTraceCleanup(brain.handle, it) },
             onSubmissionError = { Log.e(TAG, "Could not submit or join external session teardown", it) },
@@ -472,6 +592,10 @@ internal class AgentServiceBrainSessions(
         }
     }
 
+    private suspend fun closeRecorderOnce(brain: BrainSession) {
+        if (brain.recorderCloseGuard.compareAndSet(false, true)) closeRecorder(brain.recorder)
+    }
+
     private suspend fun closeRecorder(recorder: TraceRecorder) = withContext(Dispatchers.IO) {
         try {
             try {
@@ -485,7 +609,9 @@ internal class AgentServiceBrainSessions(
     }
 
     private suspend fun watchHealth(brain: BrainSession) {
-        while (!brain.terminalGate.isClaimed()) {
+        while (synchronized(brain.terminalGate) {
+            !brain.terminalGate.isClaimed() || brain.terminalCallerDrivenFinish
+        }) {
             delay(VD_HEALTH_POLL_MS)
             if (stopIfOwnerLost(brain)) return
             val failure = brain.liveVdFailure()
@@ -494,24 +620,16 @@ internal class AgentServiceBrainSessions(
                 return
             }
             failure?.let {
-                terminate(brain, displayLostMessage(it))
+                terminate(brain, displayLostMessage(it), displayLost = true)
                 return
             }
-            // The claim revalidates activity under the terminalGate monitor (see
-            // claimTerminal's guard): a call that starts after any earlier
-            // observation but before the claim increments the in-flight count and
-            // stamps fresh activity under that same monitor, so the guard
-            // observes it and stands the termination down — a session is never
-            // staleness-terminated while a call is executing. The guard's first
-            // conjunct also keeps the staleness predicate itself from being
-            // evaluated once the gate has been claimed by a competing terminal
-            // path. When the guard stands down, terminate returns false and the
-            // watch loop continues.
+            // Revalidate activity under the gate monitor. A finish whose
+            // acknowledgment failed can also age out through the system funnel.
             if (terminate(
                     brain,
                     "Brain stopped responding",
                     preClaimGuard = {
-                        !brain.terminalGate.isClaimed() &&
+                        (!brain.terminalGate.isClaimed() || brain.terminalUnacknowledged) &&
                             BrainStaleness.shouldTerminate(
                                 lastSeenMs = brain.lastSeenMs(),
                                 inFlight = brain.hasCallInFlight(),
@@ -544,6 +662,7 @@ internal class AgentServiceBrainSessions(
         val masked: Boolean,
         val partiallyMasked: Boolean,
         val imageArtifactPath: String?,
+        val imageTaken: Boolean,
     )
 
     private sealed interface CaptureResult {
@@ -566,7 +685,7 @@ internal class AgentServiceBrainSessions(
         }
         brain.vdFailure()?.let { return CaptureResult.VdLost(it) }
         (services.platform as? VirtualDisplayPlatform)?.lastCaptureFailure()?.let {
-            return CaptureResult.Unavailable(it)
+            if (!raw.hasScreenshot) return CaptureResult.Unavailable(it)
         }
         if (before == null && raw.elements.isEmpty() && raw.image == null) {
             return CaptureResult.Unavailable("no accessibility roots on display")
@@ -588,13 +707,14 @@ internal class AgentServiceBrainSessions(
                 masked = blocked || filtered,
                 partiallyMasked = filtered && !blocked,
                 imageArtifactPath = safe.debug?.screenshotPath,
+                imageTaken = raw.hasScreenshot,
             ),
         )
     }
 
     private suspend fun displayLost(brain: BrainSession, reason: String): Nothing {
         val message = displayLostMessage(reason)
-        terminate(brain, message)
+        terminate(brain, message, displayLost = true)
         throw McpTypedOpError("virtual_display_lost", message)
     }
 
@@ -607,7 +727,26 @@ internal class AgentServiceBrainSessions(
         val captured = (result as? CaptureResult.Ok)?.capture
         val snapshot = captured?.snapshot ?: ScreenSnapshot(System.currentTimeMillis(), emptyList())
         val contentBlocked = captured?.contentBlocked == true
-        val observation = buildJsonObject {
+        val observedElements = snapshot.elements.associate { it.index to it.identity() }
+        val (lastOutcome, queuedOutcomes) = synchronized(brain.terminalGate) {
+            checkLive(brain)
+            brain.record(
+                BrainTranscript.TYPE_OBSERVATION,
+                BrainTranscript.observation(
+                    captured?.packageName,
+                    snapshot.elements.size,
+                    masked = contentBlocked,
+                    partiallyMasked = captured?.partiallyMasked == true,
+                    imageArtifactPath = captured?.imageArtifactPath,
+                    imageTaken = captured?.imageTaken == true,
+                    atMs = brain.elapsedMs(),
+                ),
+            )
+            brain.observedElements = observedElements
+            val outcome = brain.backgroundOutcomes.removeFirstOrNull()
+            outcome to brain.backgroundOutcomes.size
+        }
+        return buildJsonObject {
             put("runHandle", brain.handle)
             put("status", if (brain.pendingApproval != null) "awaiting_approval" else "working")
             put("actionsExecuted", brain.guard.actionsExecuted)
@@ -621,8 +760,8 @@ internal class AgentServiceBrainSessions(
                 put("captureUnavailable", true)
                 put("captureNote", result.note)
             }
-            brain.backgroundOutcomes.removeFirstOrNull()?.let { put("lastActionOutcome", it) }
-            if (brain.backgroundOutcomes.isNotEmpty()) put("queuedBackgroundOutcomes", brain.backgroundOutcomes.size)
+            lastOutcome?.let { put("lastActionOutcome", it) }
+            if (queuedOutcomes > 0) put("queuedBackgroundOutcomes", queuedOutcomes)
             if (includeImage) {
                 val image = snapshot.image
                 when {
@@ -637,24 +776,6 @@ internal class AgentServiceBrainSessions(
                 }
             }
         }
-        synchronized(brain.terminalGate) {
-            if (!brain.terminalGate.isClaimed()) {
-                brain.record(
-                    BrainTranscript.TYPE_OBSERVATION,
-                    BrainTranscript.observation(
-                        captured?.packageName,
-                        snapshot.elements.size,
-                        masked = contentBlocked,
-                        partiallyMasked = captured?.partiallyMasked == true,
-                        imageArtifactPath = captured?.imageArtifactPath,
-                        imageTaken = snapshot.hasScreenshot,
-                        atMs = brain.elapsedMs(),
-                    ),
-                )
-            }
-        }
-        brain.observedElements = snapshot.elements.associate { it.index to it.identity() }
-        return observation
     }
 
     private suspend fun act(brain: BrainSession, name: String, args: JsonObject): JsonObject {
@@ -939,9 +1060,12 @@ internal class AgentServiceBrainSessions(
             name, target, signature, System.currentTimeMillis(),
             countsTowardGuard = !waiting, signatureReliable = reliable,
         )
+        val accountingTarget = if (name == McpHandler.TOOL_OPEN_APP) {
+            post?.packageName?.let { "package:$it" } ?: guardTarget
+        } else guardTarget
         val loop = synchronized(brain.terminalGate) {
             if (!isLive(brain)) return endedAction()
-            val tripped = brain.guard.recordAndCheck(record.copy(targetKey = guardTarget)) == BrainGuardTrip.LOOP
+            val tripped = brain.guard.recordAndCheck(record.copy(targetKey = accountingTarget)) == BrainGuardTrip.LOOP
             brain.record(
                 BrainTranscript.TYPE_ACTION,
                 BrainTranscript.action(
@@ -950,6 +1074,12 @@ internal class AgentServiceBrainSessions(
                     changed = changed, postPackageName = post?.packageName,
                 ),
             )
+            if (tripped) {
+                brain.record(
+                    BrainTranscript.TYPE_GUARD_VERDICT,
+                    BrainTranscript.guardVerdict("loop", brain.guard.actionsExecuted, brain.elapsedMs()),
+                )
+            }
             tripped
         }
         if (loop) terminate(brain, "loop guard: repeated action with unchanged screen")
@@ -1011,27 +1141,47 @@ internal class AgentServiceBrainSessions(
 
     private suspend fun finish(brain: BrainSession, args: JsonObject): JsonObject =
         withContext(NonCancellable) {
-            val vdLost = synchronized(brain.terminalGate) {
-                if (brain.terminalGate.isClaimed() || stopIfOwnerLost(brain)) return@synchronized false
-                val reason = brain.liveVdFailure()
-                if (brain.session.state.value == SessionState.Shutdown) {
-                    claimTerminal(brain, ShellyRunState.Finished.Kind.STOPPED, "External session ended")
-                    return@synchronized false
-                }
-                if (reason != null) {
-                    return@synchronized claimTerminal(
-                        brain, ShellyRunState.Finished.Kind.FAILED, displayLostMessage(reason),
-                    )
-                }
-                val kind = if (McpSessionArgs.outcome(args) == "failed") {
-                    ShellyRunState.Finished.Kind.FAILED
+            val (completion, observedLoss) = synchronized(brain.terminalGate) {
+                var observedLoss: String? = null
+                if (!brain.terminalGate.isClaimed() && !stopIfOwnerLost(brain)) {
+                    observedLoss = brain.liveVdFailure()?.let(::displayLostMessage)
+                    when {
+                        brain.session.state.value == SessionState.Shutdown ->
+                            claimTerminal(
+                                brain, ShellyRunState.Finished.Kind.STOPPED, "External session ended",
+                                callerDrivenFinish = true, automaticReason = true,
+                            )
+                        observedLoss != null ->
+                            claimTerminal(
+                                brain, ShellyRunState.Finished.Kind.FAILED, observedLoss,
+                                callerDrivenFinish = true, displayLost = true, automaticReason = true,
+                            )
+                        else -> {
+                            val kind = if (McpSessionArgs.outcome(args) == "failed") {
+                                ShellyRunState.Finished.Kind.FAILED
+                            } else {
+                                ShellyRunState.Finished.Kind.DONE
+                            }
+                            claimTerminal(brain, kind, McpSessionArgs.summary(args), callerDrivenFinish = true)
+                        }
+                    }
                 } else {
-                    ShellyRunState.Finished.Kind.DONE
+                    if (brain.terminalDisplayLost && !brain.terminalCallerDrivenFinish) {
+                        observedLoss = brain.liveVdFailure()?.let(::displayLostMessage)
+                    }
+                    if (brain.terminalUnacknowledged) launchTerminalCompletion(brain)
                 }
-                claimTerminal(brain, kind, McpSessionArgs.summary(args))
-                false
+                checkNotNull(brain.completion) to observedLoss
             }
-            finishResult(brain.handle, awaitTerminal(brain), vdLost)
+            val status = completion.await() ?: throw McpTypedOpError(
+                "transcript_unavailable", "ClosePaw could not record the session transcript",
+            )
+            val vdLost = synchronized(brain.terminalGate) {
+                brain.terminalKind == ShellyRunState.Finished.Kind.FAILED &&
+                    brain.terminalDisplayLost &&
+                    (brain.terminalCallerDrivenFinish || observedLoss != null && brain.terminalMessage == observedLoss)
+            }
+            finishResult(brain.handle, status, vdLost)
         }
 
     private fun finishResult(
@@ -1049,12 +1199,13 @@ internal class AgentServiceBrainSessions(
         brain: BrainSession,
         reason: String,
         preClaimGuard: () -> Boolean = { true },
+        displayLost: Boolean = false,
     ): Boolean {
         if (stopIfOwnerLost(brain)) {
             awaitTerminal(brain)
             return true
         }
-        return end(brain, ShellyRunState.Finished.Kind.FAILED, reason, preClaimGuard)
+        return end(brain, ShellyRunState.Finished.Kind.FAILED, reason, preClaimGuard, displayLost)
     }
 
     fun stop(handle: String): Boolean {
@@ -1064,7 +1215,10 @@ internal class AgentServiceBrainSessions(
     }
 
     fun stopSession(session: AgentSession): Boolean = synchronized(ownershipLock) {
-        val brain = sessions.values.firstOrNull { it.session === session } ?: return@synchronized false
+        val brain = sessions.values.firstOrNull { it.session === session }
+            ?: return@synchronized ownership.retireCurrent {
+                it.session === session || it.prepared?.session === session
+            }
         requestStop(brain, "Stopped by request")
         true
     }
@@ -1100,94 +1254,143 @@ internal class AgentServiceBrainSessions(
         kind: ShellyRunState.Finished.Kind,
         message: String?,
         preClaimGuard: () -> Boolean = { true },
+        displayLost: Boolean = false,
     ): Boolean = withContext(NonCancellable) {
-        claimTerminal(brain, kind, message, preClaimGuard)
-        // brain.completion is assigned by whichever claim landed (ours or a
-        // competitor's) inside the same monitor block; it is null only when
-        // the guard stood our claim down and no terminal claim exists — the
-        // session is still live and there is nothing to await.
-        val completion = synchronized(brain.terminalGate) { brain.completion }
-        if (completion == null) {
-            false
-        } else {
-            awaitTerminal(brain)
-            true
+        val completion = synchronized(brain.terminalGate) {
+            // The guard and claim share the monitor with activity updates.
+            if (!preClaimGuard()) return@withContext false
+            claimTerminal(brain, kind, message, displayLost = displayLost)
+            checkNotNull(brain.completion)
         }
+        completion.await()
+        true
     }
 
     private fun claimTerminal(
         brain: BrainSession,
         kind: ShellyRunState.Finished.Kind,
         message: String?,
-        preClaimGuard: () -> Boolean = { true },
+        callerDrivenFinish: Boolean = false,
+        displayLost: Boolean = false,
+        automaticReason: Boolean = !callerDrivenFinish,
     ): Boolean = synchronized(brain.terminalGate) {
-        // The guard is evaluated under the same monitor that serializes
-        // call-start bookkeeping (BrainActivityTracker), immediately before
-        // the claim, so a call that starts after any earlier observation but
-        // before this claim is observed by the guard and stands it down.
-        if (!preClaimGuard()) return@synchronized false
-        if (!brain.terminalGate.claim(kind.toBrainTerminalKind())) return@synchronized false
-        val event = brain.event(
-            BrainTranscript.TYPE_SESSION_FINISHED,
-            BrainTranscript.sessionFinished(
-                kind.name,
-                verified = false,
-                summaryFingerprint = message?.let(::goalFingerprint),
-                actionsExecuted = brain.guard.actionsExecuted,
-                elapsedMs = brain.elapsedMs(),
-                reasonFingerprint = null,
-            ),
-        )
+        if (!brain.terminalGate.claim(kind.toBrainTerminalKind())) {
+            if (!callerDrivenFinish) {
+                brain.terminalSystemCompletion = true
+                if (brain.terminalUnacknowledged) launchTerminalCompletion(brain)
+            }
+            return@synchronized false
+        }
+        brain.terminalKind = kind
+        brain.terminalMessage = message
+        brain.terminalEvent = buildTerminalEvent(brain, kind, message, includeReason = automaticReason)
+        brain.terminalCallerDrivenFinish = callerDrivenFinish
+        brain.terminalDisplayLost = displayLost
         brain.cancelledFlag.set(true)
-        brain.expiry?.cancel()
-        brain.healthWatcher?.cancel()
+        brain.pendingApproval = null
+        // A deferred finish still needs its system-driven expiry and owner/VD-loss paths.
+        if (!callerDrivenFinish) {
+            brain.expiry?.cancel()
+            brain.healthWatcher?.cancel()
+        }
         brain.session.getServices().toolRouter.cancelAll()
-        val status = McpRunStatus.of(kind)
-        brain.completion = scope.async { completeTerminal(brain, status, message, event) }
+        launchTerminalCompletion(brain)
         true
     }
 
-    private suspend fun awaitTerminal(brain: BrainSession): McpRunRegistry.Status {
+    // Called under terminalGate, with either a fresh claim or an exhausted acknowledgment.
+    private fun launchTerminalCompletion(brain: BrainSession) {
+        val kind = checkNotNull(brain.terminalKind)
+        val message = brain.terminalMessage
+        val event = checkNotNull(brain.terminalEvent)
+        val callerRequiresAcknowledgment = brain.terminalCallerDrivenFinish && !brain.terminalSystemCompletion
+        brain.terminalUnacknowledged = false
+        brain.completion = scope.async {
+            completeTerminal(brain, kind, message, event, callerRequiresAcknowledgment)
+        }
+    }
+
+    private suspend fun awaitTerminal(brain: BrainSession) {
         val completion = synchronized(brain.terminalGate) { checkNotNull(brain.completion) }
-        return completion.await()
+        completion.await()
     }
 
     private suspend fun completeTerminal(
         brain: BrainSession,
-        status: McpRunRegistry.Status,
+        kind: ShellyRunState.Finished.Kind,
         message: String?,
         event: TraceEventRecord,
-    ): McpRunRegistry.Status {
-        // Every terminal path gets bounded acknowledgment retries on the original event.
-        // Even finish_run commits its claimed status when the writer fails permanently.
+        callerRequiresAcknowledgment: Boolean,
+    ): McpRunRegistry.Status? {
+        val status = McpRunStatus.of(kind)
+        var published = false
+        var acknowledged = false
         completeBrainTerminal(
-            acknowledge = {
-                try {
-                    withTimeoutOrNull(TERMINAL_RECORD_TIMEOUT_MS) {
-                        brain.recorder.recordAcknowledged(event, TERMINAL_RECORD_TIMEOUT_MS)
-                    } ?: false
-                } catch (_: Exception) {
-                    false
-                }
-            },
+            acknowledge = { acknowledgeTerminal(brain, event) },
             waitBeforeRetry = { delay(TERMINAL_RECORD_RETRY_DELAY_MS) },
-            publish = { recorded ->
+            publish = publish@{ recorded ->
+                acknowledged = recorded
                 if (!recorded) Log.e(TAG, "Could not acknowledge the terminal session transcript")
+                // A system stop can take over this attempt while the acknowledgment is in flight.
+                val deferPublication = synchronized(brain.terminalGate) {
+                    (!recorded && callerRequiresAcknowledgment && !brain.terminalSystemCompletion)
+                        .also { brain.terminalUnacknowledged = it }
+                }
+                if (deferPublication) return@publish
+                brain.expiry?.cancel()
+                brain.healthWatcher?.cancel()
                 synchronized(ownershipLock) {
                     ownership.protect(brain.handle)
                     results[brain.handle] = BrainRunRecord(status, truncateSummary(message), recorded)
                     sessions.remove(brain.handle, brain)
+                    brain.correlationIdentity?.let(reservations::release)
                 }
+                backend.sendBrainResult(
+                    brain.pending.claimBrainTerminal(kind, message, System.currentTimeMillis(), brain.session.sessionId.value),
+                )
+                published = true
                 synchronized(resultsLock) { resultsLock.notifyAll() }
             },
-            settle = { settleTeardown(brain) },
+            settle = { if (published) settleTeardown(brain) },
             release = {
-                synchronized(ownershipLock) {
-                    BrainSessionAdmission.gate.sessionEnded()
+                if (published) {
+                    synchronized(ownershipLock) {
+                        BrainSessionAdmission.gate.sessionEnded(brain.ownershipToken)
+                    }
                 }
             },
         )
-        return status
+        // A system takeover may publish even though the waiting finish still owes an acknowledgment.
+        return status.takeIf { published && (acknowledged || !callerRequiresAcknowledgment) }
+    }
+
+    private suspend fun acknowledgeTerminal(brain: BrainSession, event: TraceEventRecord): Boolean =
+        try {
+            withTimeoutOrNull(TERMINAL_RECORD_TIMEOUT_MS) {
+                brain.recorder.recordAcknowledged(event, TERMINAL_RECORD_TIMEOUT_MS)
+            } ?: false
+        } catch (_: Exception) {
+            false
+        }
+
+    private fun buildTerminalEvent(
+        brain: BrainSession,
+        kind: ShellyRunState.Finished.Kind,
+        message: String?,
+        includeReason: Boolean,
+    ): TraceEventRecord {
+        val fingerprint = message?.let(::goalFingerprint)
+        return brain.event(
+            BrainTranscript.TYPE_SESSION_FINISHED,
+            BrainTranscript.sessionFinished(
+                kind.name,
+                verified = false,
+                summaryFingerprint = fingerprint,
+                actionsExecuted = brain.guard.actionsExecuted,
+                elapsedMs = brain.elapsedMs(),
+                reasonFingerprint = fingerprint.takeIf { includeReason },
+            ),
+        )
     }
 
     private fun truncateSummary(text: String?): String {
@@ -1219,6 +1422,7 @@ internal class AgentServiceBrainSessions(
         const val TERMINAL_RECORD_RETRY_DELAY_MS = 150L
         const val TEARDOWN_TIMEOUT_MS = 10_000L
         private const val TEARDOWN_FALLBACK_HARD_TIMEOUT_MS = 60_000L
+        private const val ABANDONED_PUBLICATION_LAST_RESORT_MS = 60_000L
         const val TRACE_CLEANUP_HARD_BOUND_MS = 10 * 60_000L
         const val FINISH_LOCK_TIMEOUT_MS = 5_000L
         const val VD_HEALTH_POLL_MS = 1_000L

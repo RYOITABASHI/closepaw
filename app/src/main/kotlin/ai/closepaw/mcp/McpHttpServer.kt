@@ -179,7 +179,7 @@ class McpHttpServer(
 
     // Lane routing only; a false positive merely runs that request on the reserved thread.
     private fun isStopRequest(request: McpHttpRequest): Boolean =
-        TOOLS_CALL.containsMatchIn(request.body) && STOP_RUN.containsMatchIn(request.body)
+        McpStopClassification.isStopCall(request.body)
 
     private sealed interface Parsed {
         data class Ok(val request: McpHttpRequest) : Parsed
@@ -267,8 +267,6 @@ class McpHttpServer(
     }
 
     companion object {
-        private val TOOLS_CALL = Regex(""""method"\s*:\s*"tools/call"""")
-        private val STOP_RUN = Regex(""""name"\s*:\s*"stop_run"""")
 
         const val MAX_HEADER_BYTES = 16 * 1024
         const val MAX_BODY_BYTES = 64 * 1024
