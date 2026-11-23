@@ -23,6 +23,14 @@ interface McpVdPhase0 {
     fun status(): JsonObject
 }
 
+/** Optional typed entry point for the stage-2 Increment 1 task-equivalence spike. */
+interface McpVdTaskEquivalence {
+    fun open(): JsonObject
+    fun pairedReads(displayId: Int, reads: Int): JsonObject
+    fun close(): JsonObject
+    fun status(): JsonObject
+}
+
 /** One HTTP request as the transport hands it over. Header names are lowercase. */
 data class McpHttpRequest(
     val method: String,
@@ -83,6 +91,7 @@ class McpHandler(
     private val adbStatus: () -> AdbStatus = { AdbStatus(false, false, null) },
     private val selfUpdate: McpSelfUpdate? = null,
     private val vdPhase0: McpVdPhase0? = null,
+    private val vdTaskEquivalence: McpVdTaskEquivalence? = null,
 ) {
     data class AdbStatus(val paired: Boolean, val connected: Boolean, val lastPort: Int?)
 
@@ -90,11 +99,13 @@ class McpHandler(
         addAll(TOOLS)
         if (selfUpdate != null) add(SELF_UPDATE_TOOL)
         if (vdPhase0 != null) add(VD_PHASE0_TOOL)
+        if (vdTaskEquivalence != null) add(VD_TASK_EQUIVALENCE_TOOL)
     })
     private val toolNames = buildSet {
         addAll(TOOL_NAMES)
         if (selfUpdate != null) add(TOOL_SELF_UPDATE)
         if (vdPhase0 != null) add(TOOL_VD_PHASE0)
+        if (vdTaskEquivalence != null) add(TOOL_VD_TASK_EQUIVALENCE)
     }
     private val sessionsLock = Any()
 
@@ -203,6 +214,23 @@ class McpHandler(
                     audit("mcp tool=$name handle=- outcome=invalid_params")
                     return jsonResponse(200, rpcError(id, INVALID_PARAMS, "Expected optional boolean appDeathCheck"))
                 }
+                if (name == TOOL_VD_TASK_EQUIVALENCE && arguments != null &&
+                    (arguments !is JsonObject || arguments.any { (key, value) ->
+                        when (key) {
+                            "action" -> value !is JsonPrimitive || !value.isString ||
+                                value.content !in TASK_EQUIVALENCE_ACTIONS
+                            "displayId" -> value !is JsonPrimitive || value.isString ||
+                                value.intOrNull == null || value.intOrNull!! < 0
+                            "reads" -> value !is JsonPrimitive || value.isString ||
+                                value.intOrNull == null || value.intOrNull!! !in 1..MAX_TASK_EQUIVALENCE_READS
+                            else -> true
+                        }
+                    })
+                ) {
+                    audit("mcp tool=$name handle=- outcome=invalid_params")
+                    return jsonResponse(200, rpcError(id, INVALID_PARAMS,
+                        "Expected action open|read|close, optional integer displayId >= 0, reads 1..$MAX_TASK_EQUIVALENCE_READS"))
+                }
                 val args = arguments as? JsonObject ?: JsonObject(emptyMap())
                 jsonResponse(200, rpcResult(id, callTool(name, args)))
             }
@@ -224,6 +252,7 @@ class McpHandler(
             TOOL_VD_PHASE0 -> ToolOutcome(null, "ok", toolOk(checkNotNull(vdPhase0).start(
                 (args["appDeathCheck"] as? JsonPrimitive)?.booleanOrNull == true,
             )))
+            TOOL_VD_TASK_EQUIVALENCE -> taskEquivalence(args)
             else -> error("unreachable")
         }
         audit("mcp tool=$name handle=${out.handle ?: "-"} outcome=${out.outcome}")
@@ -289,6 +318,7 @@ class McpHandler(
                 put("lastPort", adb.lastPort?.let { JsonPrimitive(it) } ?: JsonNull)
             }
             vdPhase0?.status()?.let { put("spikeVd", it) }
+            vdTaskEquivalence?.status()?.let { put("spikeVdTasks", it) }
             selfUpdate?.status()?.let {
                 put("selfUpdateAdb", it.getValue("selfUpdateAdb"))
                 put("selfUpdate", JsonObject(it - "selfUpdateAdb"))
@@ -307,6 +337,21 @@ class McpHandler(
             return toolError(null, "invalid_params", "Unexpected self_update argument")
         }
         return ToolOutcome(null, "ok", toolOk(update.start(port)))
+    }
+
+    private fun taskEquivalence(args: JsonObject): ToolOutcome {
+        val equivalence = checkNotNull(vdTaskEquivalence)
+        return when ((args["action"] as? JsonPrimitive)?.takeIf { it.isString }?.content) {
+            "open" -> ToolOutcome(null, "ok", toolOk(equivalence.open()))
+            "close" -> ToolOutcome(null, "ok", toolOk(equivalence.close()))
+            "read" -> {
+                val displayId = (args["displayId"] as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
+                    ?: return toolError(null, "invalid_params", "displayId must be an integer")
+                val reads = (args["reads"] as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull ?: 1
+                ToolOutcome(null, "ok", toolOk(equivalence.pairedReads(displayId, reads)))
+            }
+            else -> toolError(null, "invalid_params", "action must be one of open, read, close")
+        }
     }
 
     private fun handleArg(args: JsonObject): String? =
@@ -397,6 +442,9 @@ class McpHandler(
         const val TOOL_STATUS = "closepaw_status"
         const val TOOL_SELF_UPDATE = "self_update"
         const val TOOL_VD_PHASE0 = "spike_vd_phase0"
+        const val TOOL_VD_TASK_EQUIVALENCE = "spike_vd_task_equivalence"
+        const val MAX_TASK_EQUIVALENCE_READS = 50
+        val TASK_EQUIVALENCE_ACTIONS = setOf("open", "read", "close")
         val TOOL_NAMES = setOf(TOOL_RUN_GOAL, TOOL_GET_RUN_RESULT, TOOL_STOP_RUN, TOOL_STATUS)
 
         private val CODE_RE = Regex("^[a-z_]{1,40}$|^[A-Z_]{1,40}$")
@@ -482,6 +530,44 @@ class McpHandler(
                         put("description", "Pause after P1 for a supervised ClosePaw-only process death.")
                     }
                 }
+                put("additionalProperties", false)
+            }
+        }
+        private val VD_TASK_EQUIVALENCE_TOOL = buildJsonObject {
+            put("name", TOOL_VD_TASK_EQUIVALENCE)
+            put(
+                "description",
+                "Stage-2 Increment 1 spike: paired root-task reads (helper typed query vs Shizuku) " +
+                    "for the equivalence experiment. action=open starts the helper session and its VD; " +
+                    "action=read runs paired reads on displayId and returns one log line per read; " +
+                    "action=close ends the session. The accumulated log is also in closepaw_status " +
+                    "under spikeVdTasks.",
+            )
+            putJsonObject("inputSchema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("action") {
+                        put("type", "string")
+                        putJsonArray("enum") {
+                            add(JsonPrimitive("open"))
+                            add(JsonPrimitive("read"))
+                            add(JsonPrimitive("close"))
+                        }
+                        put("description", "open | read | close.")
+                    }
+                    putJsonObject("displayId") {
+                        put("type", "integer")
+                        put("minimum", 0)
+                        put("description", "Display to read (read action). 0 is the main display; open returns the spike VD's id.")
+                    }
+                    putJsonObject("reads") {
+                        put("type", "integer")
+                        put("minimum", 1)
+                        put("maximum", MAX_TASK_EQUIVALENCE_READS)
+                        put("description", "Paired reads to run in this call (read action, default 1).")
+                    }
+                }
+                putJsonArray("required") { add(JsonPrimitive("action")) }
                 put("additionalProperties", false)
             }
         }

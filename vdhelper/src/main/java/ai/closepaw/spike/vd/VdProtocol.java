@@ -115,6 +115,72 @@ public final class VdProtocol {
         }
     }
 
+    // ---- Root-task row codec (stage-2 Increment 1: QUERY_ROOT_TASKS) ----
+    // One row per line, tab-separated:
+    //   taskId \t topPackage \t basePackage \t packageSetCsv(sorted) \t visible \t pinned
+    // "-" is the canonical token for a null package or visibility value.
+    // The package set is sorted and zero rows encode to "". Failed queries carry QUERY_NULL.
+
+    public static String encodeRootTaskRow(int taskId, String topPackage, String basePackage,
+                                           List<String> packages, Boolean visible,
+                                           boolean pinned) {
+        if (topPackage != null) requirePackageName(topPackage, "topPackage");
+        if (basePackage != null) requirePackageName(basePackage, "basePackage");
+        List<String> sorted = new ArrayList<>(packages);
+        for (String name : sorted) requirePackageName(name, "packages");
+        java.util.Collections.sort(sorted);
+        StringBuilder out = new StringBuilder();
+        out.append(taskId).append('\t');
+        out.append(topPackage == null ? "-" : topPackage).append('\t');
+        out.append(basePackage == null ? "-" : basePackage).append('\t');
+        out.append(String.join(",", sorted)).append('\t');
+        out.append(visible == null ? "-" : visible.toString()).append('\t');
+        out.append(pinned);
+        return out.toString();
+    }
+
+    public static String encodeRootTaskRows(List<String> encodedRows) {
+        return String.join("\n", encodedRows);
+    }
+
+    private static final String PACKAGE_NAME = "[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*";
+    private static final Pattern REQUIRED_PACKAGE = Pattern.compile(PACKAGE_NAME);
+    private static final Pattern OPTIONAL_PACKAGE =
+            Pattern.compile("-|" + PACKAGE_NAME);
+    private static final Pattern PACKAGE_LIST =
+            Pattern.compile("(?:" + PACKAGE_NAME + "(?:," + PACKAGE_NAME + ")*)?");
+
+    private static void requirePackageName(String name, String field) {
+        if (name == null || !REQUIRED_PACKAGE.matcher(name).matches()) {
+            throw new IllegalArgumentException("Invalid package name in " + field);
+        }
+    }
+
+    /** Validates incoming root-task rows and returns their fields in wire order. */
+    public static List<String[]> parseRootTaskRows(String encoded) {
+        List<String[]> rows = new ArrayList<>();
+        if (encoded == null) throw new IllegalArgumentException("Missing root-task rows");
+        if (encoded.isEmpty()) return rows;
+        for (String line : encoded.split("\n", -1)) {
+            String[] fields = line.split("\t", -1);
+            if (fields.length != 6
+                    || !OPTIONAL_PACKAGE.matcher(fields[1]).matches()
+                    || !OPTIONAL_PACKAGE.matcher(fields[2]).matches()
+                    || !PACKAGE_LIST.matcher(fields[3]).matches()
+                    || !("-".equals(fields[4]) || isWireBoolean(fields[4]))
+                    || !isWireBoolean(fields[5])) {
+                throw new IllegalArgumentException("Malformed root-task row: " + line);
+            }
+            Integer.parseInt(fields[0]);
+            rows.add(fields);
+        }
+        return rows;
+    }
+
+    private static boolean isWireBoolean(String value) {
+        return "true".equals(value) || "false".equals(value);
+    }
+
     public static int preferredFlags(int sdk) {
         return sdk >= 34 ? REQUIRED_FLAGS | FOCUS_FLAGS : REQUIRED_FLAGS;
     }

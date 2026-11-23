@@ -13,6 +13,7 @@ import ai.closepaw.mcp.reconcileLateStart
 import ai.closepaw.onboarding.OnboardingStore
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
 import ai.closepaw.spike.vd.VdPhase0Tool
+import ai.closepaw.spike.vd.VdTaskEquivalenceTool
 import ai.closepaw.update.SelfUpdate
 import android.content.Context
 import android.os.Handler
@@ -203,6 +204,7 @@ internal object McpServerController {
     @Volatile private var token: String? = null
     private var server: McpHttpServer? = null
     private var handler: McpHandler? = null
+    private var vdTaskEquivalence: VdTaskEquivalenceTool? = null
 
     @Synchronized
     fun sync(context: Context) {
@@ -213,8 +215,10 @@ internal object McpServerController {
             return
         }
         if (server?.isRunning == true) return
+        if (server != null) stopLocked()
         token = store.tokenOrCreate()
         val channel = adbChannel ?: AdbShellChannel(app).also { adbChannel = it }
+        val taskEquivalence = vdTaskEquivalence ?: VdTaskEquivalenceTool(app, channel)
         val h = McpHandler(
             expectedToken = { token },
             registry = registry,
@@ -224,12 +228,14 @@ internal object McpServerController {
             adbStatus = { McpHandler.AdbStatus(channel.paired, channel.isConnected(), channel.lastPort) },
             selfUpdate = SelfUpdate.mcpHook(app, channel),
             vdPhase0 = VdPhase0Tool(app, channel),
+            vdTaskEquivalence = taskEquivalence,
         )
         val s = McpHttpServer(h, onError = { Log.w(TAG, it) })
         try {
             s.start()
             server = s
             handler = h
+            vdTaskEquivalence = taskEquivalence
             _state.value = State.Running(s.boundPort)
             Log.i(TAG, "MCP server listening on 0.0.0.0:${s.boundPort}")
         } catch (e: IOException) {
@@ -261,9 +267,19 @@ internal object McpServerController {
     private fun stopLocked() {
         server?.stop()
         server = null
+        closeTaskEquivalenceLocked()
         handler = null
         token = null
         if (_state.value != State.Off) Log.i(TAG, "MCP server stopped")
         _state.value = State.Off
+    }
+
+    private fun closeTaskEquivalenceLocked() {
+        val owner = vdTaskEquivalence ?: return
+        if (owner.shutdown()) {
+            vdTaskEquivalence = null
+        } else {
+            Log.w(TAG, "VD task equivalence shutdown was unconfirmed; retaining the owner for retry")
+        }
     }
 }

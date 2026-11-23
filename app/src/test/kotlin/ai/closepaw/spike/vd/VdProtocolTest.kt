@@ -73,6 +73,59 @@ class VdProtocolTest {
             VdProtocol.flagNames(0x14E49).takeLast(2))
     }
 
+    @Test fun rejectsMalformedRootTaskFields() {
+        val valid = listOf("42", "com.example", "-", "android,com.example", "true", "false")
+        val invalidFields = mapOf(
+            0 to listOf("", "1.0", "2147483648"),
+            1 to listOf("", "com.example,android"),
+            3 to listOf(",android", "android,", "android,,com.example", " android", "-"),
+            4 to listOf("", "TRUE", "null"),
+            5 to listOf("-", "FALSE", "0"),
+        )
+        for ((column, values) in invalidFields) {
+            for (value in values) {
+                val row = valid.toMutableList().apply { this[column] = value }.joinToString("\t")
+                assertThrows(row, IllegalArgumentException::class.java) { VdProtocol.parseRootTaskRows(row) }
+            }
+        }
+    }
+
+    @Test fun acceptsEmptyPackagesAndExplicitNullVisibility() {
+        val row = "42\t-\t-\t\t-\tfalse"
+        assertArrayEquals(row.split("\t").toTypedArray(), VdProtocol.parseRootTaskRows(row).single())
+        assertTrue(VdProtocol.parseRootTaskRows("").isEmpty())
+    }
+
+    @Test fun rejectsInvalidRootTaskEncoderPackages() {
+        for (invalid in listOf("", "-", "com.bad!", "com.example,android", " android", "a\tb", "a\nb", "a\rb")) {
+            assertThrows("topPackage: $invalid", IllegalArgumentException::class.java) {
+                VdProtocol.encodeRootTaskRow(42, invalid, null, emptyList(), null, false)
+            }
+            assertThrows("basePackage: $invalid", IllegalArgumentException::class.java) {
+                VdProtocol.encodeRootTaskRow(42, null, invalid, emptyList(), null, false)
+            }
+            assertThrows("packages: $invalid", IllegalArgumentException::class.java) {
+                VdProtocol.encodeRootTaskRow(42, null, null, listOf("android", invalid), null, false)
+            }
+        }
+    }
+
+    @Test fun preservesRootTaskEncoderBytes() {
+        val packages = listOf("com.example", "android")
+        val row = VdProtocol.encodeRootTaskRow(42, "com.example", null, packages, true, false)
+        assertEquals("42\tcom.example\t-\tandroid,com.example\ttrue\tfalse", row)
+        val nullVisibilityRow = VdProtocol.encodeRootTaskRow(43, null, null, emptyList(), null, false)
+        assertEquals("43\t-\t-\t\t-\tfalse", nullVisibilityRow)
+
+        // Every encoder output must round-trip through parseRootTaskRows.
+        val rows = listOf(row, nullVisibilityRow)
+        val parsed = VdProtocol.parseRootTaskRows(VdProtocol.encodeRootTaskRows(rows))
+        assertEquals(rows.size, parsed.size)
+        rows.zip(parsed).forEach { (encoded, fields) ->
+            assertArrayEquals(encoded.split("\t").toTypedArray(), fields)
+        }
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun rejectsUnexpectedFlagMasks() {
         VdProtocol.flagNames(0xE48)

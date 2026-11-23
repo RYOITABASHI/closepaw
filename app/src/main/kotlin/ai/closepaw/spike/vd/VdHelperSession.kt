@@ -10,6 +10,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import ai.closepaw.adb.AdbShellChannel
 import ai.closepaw.platform.virtualdisplay.VirtualDisplayConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -41,6 +42,36 @@ data class VdFrameEvidence(
 )
 
 data class VdLaunchInfo(val stagingDir: String, val helperPid: Int?, val displayId: Int?)
+
+/**
+ * One root task as reported by the helper's typed query (stage-2 Increment 1).
+ * Mirrors the incumbent contract: [packageName] is top-else-base; the separate
+ * top/base fields are the candidate's extra fidelity, not part of the contract.
+ */
+data class VdRootTaskRow(
+    val taskId: Int,
+    val topPackage: String?,
+    val basePackage: String?,
+    val packages: Set<String>,
+    val visible: Boolean?,
+    val pinned: Boolean,
+) {
+    val packageName: String?
+        get() = topPackage ?: basePackage
+}
+
+/** Parse the wire codec (VdProtocol) into rows. Throws on malformed input. */
+internal fun parseVdRootTaskRows(encoded: String): List<VdRootTaskRow> =
+    VdProtocol.parseRootTaskRows(encoded).map { fields ->
+        VdRootTaskRow(
+            taskId = fields[0].toInt(),
+            topPackage = fields[1].takeUnless { it == "-" },
+            basePackage = fields[2].takeUnless { it == "-" },
+            packages = if (fields[3].isEmpty()) emptySet() else fields[3].split(",").toSet(),
+            visible = fields[4].takeUnless { it == "-" }?.toBooleanStrict(),
+            pinned = fields[5].toBooleanStrict(),
+        )
+    }
 
 internal class VdHelperSession(private val context: Context, private val shell: AdbShellChannel) {
     private val mutex = Mutex()
@@ -80,6 +111,16 @@ internal class VdHelperSession(private val context: Context, private val shell: 
     suspend fun captureFrame(timeoutMs: Long): VdFrameEvidence? = withTimeoutOrNull(timeoutMs) {
         val frames = mutex.withLock { if (isOpen) launch?.capture else null }
         frames?.awaitFrame()
+    }
+
+    /**
+     * Stage-2 Increment 1: typed root-task query over the helper wire.
+     * Returns the rows (possibly empty), or null when the helper query failed,
+     * timed out, or the session is closed -- null always means fail closed.
+     */
+    suspend fun queryRootTasks(displayId: Int, timeoutMs: Long = 5_000): List<VdRootTaskRow>? {
+        val current = mutex.withLock { if (isOpen) launch else null } ?: return null
+        return current.queryRootTasks(displayId, timeoutMs)
     }
 
     suspend fun close() = withContext(NonCancellable) {
@@ -162,6 +203,33 @@ internal class VdHelperSession(private val context: Context, private val shell: 
             VdOpenResult(id, registered.pid, flags, frame.frameWidth, frame.frameHeight, frame.bytes)
         }
 
+        private val queryIds = java.util.concurrent.atomic.AtomicInteger(0)
+
+        suspend fun queryRootTasks(displayId: Int, timeoutMs: Long): List<VdRootTaskRow>? {
+            val connected = helper ?: return null
+            if (connected.binder.isBinderAlive != true) return null
+            val queryId = queryIds.incrementAndGet()
+            val response = CompletableDeferred<Bundle>()
+            events.taskQueries[queryId] = response
+            try {
+                VdWire.send(connected.binder, VdWire.COMMANDS, VdWire.QUERY_ROOT_TASKS,
+                    connected.secret, Bundle().apply {
+                        putInt(VdWire.QUERY_ID, queryId)
+                        putInt(VdWire.DISPLAY_ID, displayId)
+                    })
+                val payload = withTimeoutOrNull(timeoutMs) { response.await() } ?: return null
+                if (payload.getBoolean(VdWire.QUERY_NULL, false)) return null
+                val encoded = payload.getString(VdWire.ROWS) ?: return null
+                return parseVdRootTaskRows(encoded)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                return null
+            } finally {
+                events.taskQueries.remove(queryId)
+            }
+        }
+
         suspend fun close() {
             val connected = helper
             val binderFailure = try {
@@ -223,6 +291,7 @@ internal class VdHelperSession(private val context: Context, private val shell: 
         val frame = CompletableDeferred<Unit>()
         val closed = CompletableDeferred<Unit>()
         val dead = CompletableDeferred<Unit>()
+        val taskQueries = java.util.concurrent.ConcurrentHashMap<Int, CompletableDeferred<Bundle>>()
 
         fun authenticate(registration: HelperRegistration) {
             bindPeer(VdProtocol.SHELL_UID, registration.pid, registration.secret)
@@ -237,6 +306,10 @@ internal class VdHelperSession(private val context: Context, private val shell: 
                 }
                 VdWire.FRAME -> frame.complete(Unit)
                 VdWire.CLOSE -> closed.complete(Unit)
+                VdWire.ROOT_TASKS -> {
+                    val queryId = payload.getInt(VdWire.QUERY_ID, -1)
+                    taskQueries.remove(queryId)?.complete(payload)
+                }
                 VdWire.ERROR -> {
                     val failure = IOException(payload.getString(VdWire.DETAIL, "VD helper error"))
                     failOpenWaiters(failure)
@@ -253,6 +326,13 @@ internal class VdHelperSession(private val context: Context, private val shell: 
         private fun failOpenWaiters(failure: IOException) {
             created.completeExceptionally(failure)
             frame.completeExceptionally(failure)
+            // Pending task queries fail closed: completing with QUERY_NULL keeps
+            // the awaiting caller on the null path instead of hanging it.
+            val pending = taskQueries.values.toList()
+            taskQueries.clear()
+            pending.forEach {
+                it.complete(Bundle().apply { putBoolean(VdWire.QUERY_NULL, true) })
+            }
         }
     }
 

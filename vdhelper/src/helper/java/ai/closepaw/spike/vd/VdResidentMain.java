@@ -81,6 +81,9 @@ public final class VdResidentMain {
                     startupDeadline.cancel();
                     event(VdWire.FRAME, null);
                     break;
+                case VdWire.QUERY_ROOT_TASKS:
+                    queryRootTasks(payload);
+                    break;
                 case VdWire.CLOSE:
                     try {
                         release();
@@ -132,6 +135,27 @@ public final class VdResidentMain {
             result.putInt(VdWire.FLAGS, flags);
             event(VdWire.CREATE, result);
         }
+    }
+
+    /**
+     * Stage-2 Increment 1: answer a typed root-task query from this process.
+     * A failed query answers QUERY_NULL (never partial rows); the response is
+     * an event correlated by QUERY_ID. Runs on the worker thread, so VD
+     * lifecycle commands and queries stay serialized.
+     */
+    private void queryRootTasks(Bundle payload) throws Exception {
+        int queryId = payload.getInt(VdWire.QUERY_ID, -1);
+        int displayId = payload.getInt(VdWire.DISPLAY_ID, -1);
+        String rows = displayId < 0 ? null : FrameworkServices.Tasks.queryRootTasks(displayId);
+        Bundle result = new Bundle();
+        result.putInt(VdWire.QUERY_ID, queryId);
+        result.putInt(VdWire.DISPLAY_ID, displayId);
+        if (rows == null) {
+            result.putBoolean(VdWire.QUERY_NULL, true);
+        } else {
+            result.putString(VdWire.ROWS, rows);
+        }
+        event(VdWire.ROOT_TASKS, result);
     }
 
     private void release() throws Exception {

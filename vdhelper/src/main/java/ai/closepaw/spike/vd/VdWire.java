@@ -15,6 +15,10 @@ public final class VdWire {
     public static final int FRAME = CREATE + 1;
     public static final int CLOSE = CREATE + 2;
     public static final int ERROR = CREATE + 3;
+    /** Command: typed root-task query (stage-2 Increment 1 experiment). */
+    public static final int QUERY_ROOT_TASKS = CREATE + 4;
+    /** Event: root-task query response, correlated by QUERY_ID. */
+    public static final int ROOT_TASKS = CREATE + 5;
 
     public static final String WIDTH = "width";
     public static final String HEIGHT = "height";
@@ -24,6 +28,12 @@ public final class VdWire {
     public static final String DISPLAY_ID = "displayId";
     public static final String FLAGS = "flags";
     public static final String DETAIL = "detail";
+    /** Query correlation id (int) echoed by the ROOT_TASKS event. */
+    public static final String QUERY_ID = "queryId";
+    /** Encoded root-task rows (VdProtocol.encodeRootTaskRows); absent when QUERY_NULL. */
+    public static final String ROWS = "rows";
+    /** True when the helper query failed and the answer is null (fail closed). */
+    public static final String QUERY_NULL = "queryNull";
 
     private VdWire() {}
 
@@ -57,7 +67,7 @@ public final class VdWire {
         @Override
         protected final boolean onTransact(int code, Parcel data, Parcel reply, int flags)
                 throws RemoteException {
-            if (code < CREATE || code > ERROR) {
+            if (code < CREATE || code > ROOT_TASKS) {
                 return super.onTransact(code, data, reply, flags);
             }
             data.enforceInterface(descriptor);

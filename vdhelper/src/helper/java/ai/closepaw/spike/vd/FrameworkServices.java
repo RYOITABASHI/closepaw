@@ -124,4 +124,74 @@ final class FrameworkServices {
             managerType.getMethod("releaseVirtualDisplay", callbackType).invoke(manager, callback);
         }
     }
+
+    /**
+     * Typed root-task query for the stage-2 Increment 1 equivalence experiment:
+     * the same IActivityTaskManager.getAllRootTaskInfosOnDisplay the incumbent
+     * Shizuku transport calls, made directly from this shell-identity process.
+     * Field extraction mirrors ShizukuActivityTaskTransport one-for-one so the
+     * only variable under test is the transport. Returns the encoded rows
+     * (VdProtocol codec), or null on ANY failure -- null means fail closed.
+     */
+    static final class Tasks {
+        private static final String ACTIVITY_TASK_MANAGER = "android.app.IActivityTaskManager";
+        /** WindowConfiguration.WINDOWING_MODE_PINNED (hidden). */
+        private static final int WINDOWING_MODE_PINNED = 2;
+
+        private Tasks() {}
+
+        static String queryRootTasks(int displayId) {
+            try {
+                IBinder service = (IBinder) Class.forName("android.os.ServiceManager")
+                        .getMethod("getService", String.class).invoke(null, "activity_task");
+                Object manager = proxy(ACTIVITY_TASK_MANAGER, service);
+                Object result = manager.getClass()
+                        .getMethod("getAllRootTaskInfosOnDisplay", int.class)
+                        .invoke(manager, displayId);
+                if (result == null) return null;
+                java.util.List<String> rows = new java.util.ArrayList<>();
+                for (Object info : (java.util.List<?>) result) {
+                    if (info == null) return null;
+                    rows.add(encodeRow(info));
+                }
+                return VdProtocol.encodeRootTaskRows(rows);
+            } catch (Exception | LinkageError failure) {
+                return null;
+            }
+        }
+
+        private static String encodeRow(Object info) throws Exception {
+            int taskId = info.getClass().getField("taskId").getInt(info);
+            String top = packageOf(field(info, "topActivity"));
+            String base = packageOf(field(info, "baseActivity"));
+            java.util.List<String> packages = new java.util.ArrayList<>();
+            for (String name : new String[]{"baseActivity", "topActivity", "realActivity", "origActivity"}) {
+                String pkg = packageOf(field(info, name));
+                if (pkg != null && !packages.contains(pkg)) packages.add(pkg);
+            }
+            Object intent = field(info, "baseIntent");
+            if (intent != null) {
+                Object component = intent.getClass().getMethod("getComponent").invoke(intent);
+                String pkg = packageOf(component);
+                if (pkg != null && !packages.contains(pkg)) packages.add(pkg);
+            }
+            boolean visible = info.getClass().getField("visible").getBoolean(info);
+            Object config = field(info, "configuration");
+            Object windowConfig = config == null ? null : field(config, "windowConfiguration");
+            Integer mode = windowConfig == null ? null
+                    : (Integer) windowConfig.getClass().getMethod("getWindowingMode").invoke(windowConfig);
+            boolean pinned = mode != null && mode == WINDOWING_MODE_PINNED;
+            return VdProtocol.encodeRootTaskRow(taskId, top, base, packages, visible, pinned);
+        }
+
+        // A successful read may return null. Reflection failures propagate to the whole query.
+        private static Object field(Object target, String name) throws ReflectiveOperationException {
+            return target.getClass().getField(name).get(target);
+        }
+
+        private static String packageOf(Object componentName) throws Exception {
+            if (componentName == null) return null;
+            return (String) componentName.getClass().getMethod("getPackageName").invoke(componentName);
+        }
+    }
 }
