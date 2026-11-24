@@ -1438,7 +1438,9 @@ class AgentService : AccessibilityService() {
             // (read off the main thread; an unreadable list does not cancel - the routine's own
             // ownerHasChrome checks, which fail closed, still stop it at its next step).
             serviceScope.launch(Dispatchers.IO) {
-                val onMainDisplay = chromeTaskInFrontOnMainDisplay() == true
+                val onMainDisplay = chromeTaskInFrontOnMainDisplay(
+                    TaskObservationPolicy.helperRouteEnabled(Build.VERSION.SDK_INT)
+                ) == true
                 withContext(Dispatchers.Main) {
                     if (onMainDisplay && draftJob === job) {
                         Log.i(TAG, "Draft routine: owner opened Chrome (task list); stopping")
