@@ -5,6 +5,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Process;
+import android.view.Surface;
 
 import java.io.File;
 import java.io.IOException;
@@ -13,7 +14,7 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.regex.Pattern;
 
-/** Standalone shell process serving task observations on one worker thread. */
+/** Session-scoped shell process serving task observations and VD lifecycle. */
 public final class TaskHelperMain {
     private static final long STARTUP_TIMEOUT_MS = 40_000L;
     private static final int MIN_SDK = 33;
@@ -26,6 +27,7 @@ public final class TaskHelperMain {
     private final TimerTask startupDeadline = killTask();
     private final String secret = TaskHelperProtocol.newChallenge();
     private volatile IBinder receiver;
+    private TaskHelperFramework.Display display;
 
     private TaskHelperMain(Handler worker) {
         this.worker = worker;
@@ -84,8 +86,11 @@ public final class TaskHelperMain {
                 case TaskHelperWire.QUERY_ROOT_TASKS:
                     queryRootTasks(payload);
                     break;
-                case TaskHelperWire.CLOSE:
-                    closeNow();
+                case TaskHelperWire.CREATE_DISPLAY:
+                case TaskHelperWire.RELEASE_DISPLAY:
+                case TaskHelperWire.SET_DISPLAY_SURFACE:
+                case TaskHelperWire.SET_DISPLAY_IME_POLICY:
+                    displayCommand(code, payload);
                     break;
                 default:
                     throw new IllegalArgumentException("Unknown task helper command");
@@ -95,6 +100,102 @@ public final class TaskHelperMain {
                     ? payload.getInt(TaskHelperWire.QUERY_ID) : null;
             reportFailure(failure, queryId);
         }
+    }
+
+    private void displayCommand(int code, Bundle request) throws Exception {
+        if (receiver == null) return;
+        Bundle result = new Bundle();
+        result.putInt(TaskHelperWire.REQUEST_ID, request.getInt(TaskHelperWire.REQUEST_ID));
+        result.putInt(TaskHelperWire.OPERATION, code);
+        result.putInt(TaskHelperWire.DISPLAY_ID, request.getInt(TaskHelperWire.DISPLAY_ID, -1));
+        boolean success = false;
+        try {
+            if (code == TaskHelperWire.CREATE_DISPLAY) {
+                if (!createDisplay(request)) return;
+                if (display != null) {
+                    result.putInt(TaskHelperWire.DISPLAY_ID, display.id);
+                    result.putBoolean(TaskHelperWire.IME_AT_CREATION, display.imeAtCreation);
+                    result.putBinder(TaskHelperWire.DISPLAY_CALLBACK, display.token);
+                    success = true;
+                }
+            } else {
+                if (display == null || display.id != request.getInt(TaskHelperWire.DISPLAY_ID, -1)) {
+                    throw new IllegalArgumentException("Display does not belong to this helper");
+                }
+                switch (code) {
+                    case TaskHelperWire.RELEASE_DISPLAY:
+                        display.release();
+                        display = null;
+                        break;
+                    case TaskHelperWire.SET_DISPLAY_SURFACE:
+                        Surface surface = getSurface(request);
+                        try {
+                            display.setSurface(surface);
+                        } finally {
+                            surface.release();
+                        }
+                        break;
+                    case TaskHelperWire.SET_DISPLAY_IME_POLICY:
+                        display.setImePolicy(getImePolicy(request));
+                        break;
+                    default:
+                        throw new IllegalArgumentException("Unknown display command");
+                }
+                success = true;
+            }
+        } catch (Exception | LinkageError failure) {
+            System.err.println(describe(failure));
+        }
+        result.putBoolean(TaskHelperWire.SUCCESS, success);
+        event(TaskHelperWire.DISPLAY_RESULT, result);
+    }
+
+    private boolean createDisplay(Bundle request) throws Exception {
+        if (display != null) {
+            // A second create cannot be safely rejected as though no display exists.
+            kill();
+            return false;
+        }
+        Surface surface = getSurface(request);
+        try {
+            int policy = getImePolicy(request);
+            TaskHelperFramework.Display candidate = new TaskHelperFramework.Display();
+            try {
+                candidate.create(surface, request.getInt(TaskHelperWire.WIDTH),
+                        request.getInt(TaskHelperWire.HEIGHT), request.getInt(TaskHelperWire.DENSITY),
+                        request.getInt(TaskHelperWire.FLAGS), policy,
+                        request.getBoolean(TaskHelperWire.SKIP_IME_BUILDER));
+            } catch (Exception | LinkageError failure) {
+                // Settle a possibly allocated display before reporting a rejection.
+                try {
+                    candidate.release();
+                } catch (Exception | LinkageError cleanupFailure) {
+                    kill();
+                    return false;
+                }
+                throw failure;
+            }
+            if (candidate.id > 0) display = candidate;
+            return true;
+        } finally {
+            surface.release();
+        }
+    }
+
+    private static Surface getSurface(Bundle request) {
+        Surface surface = request.getParcelable(TaskHelperWire.SURFACE, Surface.class);
+        if (surface == null) throw new IllegalArgumentException("Missing display surface");
+        if (!surface.isValid()) {
+            surface.release();
+            throw new IllegalArgumentException("Invalid display surface");
+        }
+        return surface;
+    }
+
+    private static int getImePolicy(Bundle request) {
+        int policy = request.getInt(TaskHelperWire.IME_POLICY, -1);
+        if (policy != 1 && policy != 2) throw new IllegalArgumentException("Invalid VD IME policy");
+        return policy;
     }
 
     private void closeNow() {

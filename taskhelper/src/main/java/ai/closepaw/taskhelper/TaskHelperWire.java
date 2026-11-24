@@ -17,6 +17,25 @@ public final class TaskHelperWire {
     public static final int CLOSE = ATTACH + 3;
     public static final int ERROR = ATTACH + 4;
 
+    public static final int CREATE_DISPLAY = ATTACH + 5;
+    public static final int RELEASE_DISPLAY = ATTACH + 6;
+    public static final int SET_DISPLAY_SURFACE = ATTACH + 7;
+    public static final int SET_DISPLAY_IME_POLICY = ATTACH + 8;
+    public static final int DISPLAY_RESULT = ATTACH + 9;
+
+    public static final String REQUEST_ID = "requestId";
+    public static final String OPERATION = "operation";
+    public static final String SUCCESS = "success";
+    public static final String WIDTH = "width";
+    public static final String HEIGHT = "height";
+    public static final String DENSITY = "density";
+    public static final String FLAGS = "flags";
+    public static final String SURFACE = "surface";
+    public static final String IME_POLICY = "imePolicy";
+    public static final String IME_AT_CREATION = "imeAtCreation";
+    public static final String DISPLAY_CALLBACK = "displayCallback";
+    public static final String SKIP_IME_BUILDER = "skipImeBuilder";
+
     public static final String RECEIVER = "receiver";
     public static final String DISPLAY_ID = "displayId";
     public static final String DETAIL = "detail";
@@ -59,7 +78,7 @@ public final class TaskHelperWire {
         @Override
         protected final boolean onTransact(int code, Parcel data, Parcel reply, int flags)
                 throws RemoteException {
-            if (code < ATTACH || code > ERROR) {
+            if (code < ATTACH || code > DISPLAY_RESULT) {
                 return super.onTransact(code, data, reply, flags);
             }
             data.enforceInterface(descriptor);
