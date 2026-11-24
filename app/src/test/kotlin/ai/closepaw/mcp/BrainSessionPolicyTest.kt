@@ -229,6 +229,78 @@ class BrainSessionPolicyTest {
         assertNull(listOf(neitherCenterInside).resolveTapTarget(observed.identity()))
     }
 
+    @Test
+    fun tapDiagnosisIdentifiesTextMismatch() {
+        val observed = button("example:id/first")
+        val candidate = observed.copy(text = "Cancel")
+
+        assertTapDiagnosis(observed, listOf(candidate), TapMatchKind.NO_MATCH, listOf(1, 0, 0, 0, 0), null)
+    }
+
+    @Test
+    fun tapDiagnosisIdentifiesDescriptionMismatch() {
+        val observed = button("example:id/first")
+        val candidate = observed.copy(index = 7, description = "Cancel")
+
+        assertTapDiagnosis(observed, listOf(candidate), TapMatchKind.NO_MATCH, listOf(1, 1, 0, 0, 0), candidate)
+    }
+
+    @Test
+    fun tapDiagnosisIdentifiesResourceIdMismatch() {
+        val observed = button("example:id/first")
+        val candidate = observed.copy(resourceId = "example:id/second")
+
+        assertTapDiagnosis(observed, listOf(candidate), TapMatchKind.NO_MATCH, listOf(1, 1, 1, 0, 0), candidate)
+    }
+
+    @Test
+    fun tapDiagnosisIdentifiesBoundsMismatch() {
+        val observed = button("example:id/first")
+        val candidate = observed.copy(bounds = Bounds(101, 0, 201, 100))
+
+        assertTapDiagnosis(observed, listOf(candidate), TapMatchKind.NO_MATCH, listOf(1, 1, 1, 1, 0), candidate)
+    }
+
+    @Test
+    fun tapDiagnosisReportsAmbiguousDuplicatesAndKeepsFirstTextMatch() {
+        val observed = button("example:id/first")
+        val firstTextMatch = observed.copy(index = 9, description = "Other")
+        val duplicate = observed.copy(index = 1, bounds = Bounds(4, 3, 104, 103))
+
+        assertTapDiagnosis(
+            observed, listOf(firstTextMatch, observed, duplicate),
+            TapMatchKind.AMBIGUOUS, listOf(3, 3, 2, 2, 2), firstTextMatch,
+        )
+    }
+
+    @Test
+    fun tapDiagnosisReportsAbsentTarget() {
+        val observed = button("example:id/first").copy(packageName = "example")
+        val unrelated = listOf(
+            observed.copy(packageName = "other"),
+            observed.copy(className = "Label"),
+        )
+
+        assertTapDiagnosis(observed, unrelated, TapMatchKind.NO_MATCH, listOf(0, 0, 0, 0, 0), null)
+    }
+
+    private fun assertTapDiagnosis(
+        observed: PerceptionElement,
+        elements: List<PerceptionElement>,
+        kind: TapMatchKind,
+        counts: List<Int>,
+        bestCandidate: PerceptionElement?,
+    ) {
+        val diagnosis = elements.diagnoseTapMatch(observed.identity())
+
+        assertEquals(kind, diagnosis.kind)
+        assertEquals(
+            counts,
+            listOf(diagnosis.pkgClass, diagnosis.text, diagnosis.description, diagnosis.resourceId, diagnosis.boundsCompatible),
+        )
+        assertEquals(bestCandidate, diagnosis.bestCandidate)
+    }
+
     private fun button(resourceId: String) = PerceptionElement(
         index = 0,
         text = "Continue",

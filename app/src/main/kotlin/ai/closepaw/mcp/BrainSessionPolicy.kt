@@ -24,6 +24,46 @@ internal fun PerceptionElement.identity() =
 internal fun List<PerceptionElement>.resolveTapTarget(observed: ElementIdentity): PerceptionElement? =
     singleOrNull { it.identity().matchesForTap(observed) }
 
+internal enum class TapMatchKind { NO_MATCH, UNIQUE_MATCH, AMBIGUOUS }
+
+internal data class TapMatchDiagnosis(
+    val pkgClass: Int,
+    val text: Int,
+    val description: Int,
+    val resourceId: Int,
+    val boundsCompatible: Int,
+    val bestCandidate: PerceptionElement?,
+) {
+    val kind: TapMatchKind
+        get() = when (boundsCompatible) {
+            0 -> TapMatchKind.NO_MATCH
+            1 -> TapMatchKind.UNIQUE_MATCH
+            else -> TapMatchKind.AMBIGUOUS
+        }
+}
+
+internal fun List<PerceptionElement>.diagnoseTapMatch(observed: ElementIdentity): TapMatchDiagnosis {
+    var pkgClass = 0
+    var text = 0
+    var description = 0
+    var resourceId = 0
+    var boundsCompatible = 0
+    var bestCandidate: PerceptionElement? = null
+    for (candidate in this) {
+        if (candidate.packageName != observed.packageName || candidate.className != observed.className) continue
+        pkgClass++
+        if (candidate.text != observed.text) continue
+        text++
+        if (bestCandidate == null) bestCandidate = candidate
+        if (candidate.description != observed.description) continue
+        description++
+        if (candidate.resourceId != observed.resourceId) continue
+        resourceId++
+        if (candidate.bounds.isCompatibleWith(observed.bounds)) boundsCompatible++
+    }
+    return TapMatchDiagnosis(pkgClass, text, description, resourceId, boundsCompatible, bestCandidate)
+}
+
 private fun ElementIdentity.matchesForTap(observed: ElementIdentity): Boolean =
     packageName == observed.packageName &&
         className == observed.className &&

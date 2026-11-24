@@ -19,8 +19,11 @@ import ai.closepaw.mcp.McpSessionArgs
 import ai.closepaw.mcp.McpTypedOpError
 import ai.closepaw.mcp.brainSignature
 import ai.closepaw.mcp.completeBrainTerminal
+import ai.closepaw.mcp.diagnoseTapMatch
 import ai.closepaw.mcp.identity
 import ai.closepaw.mcp.resolveTapTarget
+import ai.closepaw.model.Bounds
+import ai.closepaw.model.PerceptionElement
 import ai.closepaw.model.ScreenSnapshot
 import ai.closepaw.perception.Perceptor
 import ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
@@ -947,7 +950,11 @@ internal class AgentServiceBrainSessions(
         if (preResult is CaptureResult.Unavailable) {
             return rejected("capture_unavailable", preResult.note)
         }
-        if (tapIndex != null && tapElement == null) return rejected("element_changed")
+        if (tapIndex != null && tapElement == null) {
+            val refusal = rejected("element_changed")
+            logTapRefusal(observedIdentity, pre?.snapshot?.elements.orEmpty())
+            return refusal
+        }
         val snapshotTargetMatches: ((ScreenSnapshot) -> Boolean)? = if (tapElement != null) {
             params.put("element_index", tapElement.index)
             val identity = tapElement.identity()
@@ -1419,6 +1426,49 @@ internal class AgentServiceBrainSessions(
         type = type,
         data = payload,
     )
+
+    private fun logTapRefusal(observed: ElementIdentity?, elements: List<PerceptionElement>) {
+        val diagnosis = observed?.let { elements.diagnoseTapMatch(it) }
+        val details = buildJsonObject {
+            put("kind", diagnosis?.kind?.name ?: "MAP_MISS")
+            put("stored", observed?.let { identity ->
+                buildJsonObject {
+                    put("packageName", identity.packageName)
+                    put("className", identity.className)
+                    put("text", identity.text)
+                    put("description", identity.description)
+                    put("resourceId", identity.resourceId)
+                    put("bounds", identity.bounds.toTapAuditJson())
+                }
+            } ?: JsonNull)
+            put("snapshotSize", elements.size)
+            put("counts", diagnosis?.let { counts ->
+                buildJsonObject {
+                    put("pkgClass", counts.pkgClass)
+                    put("text", counts.text)
+                    put("description", counts.description)
+                    put("resourceId", counts.resourceId)
+                    put("boundsCompatible", counts.boundsCompatible)
+                }
+            } ?: JsonNull)
+            put("bestCandidate", diagnosis?.bestCandidate?.let { candidate ->
+                buildJsonObject {
+                    put("index", candidate.index)
+                    put("description", candidate.description)
+                    put("resourceId", candidate.resourceId)
+                    put("bounds", candidate.bounds.toTapAuditJson())
+                }
+            } ?: JsonNull)
+        }
+        Log.i("ClosePawMcpAudit", "tap_refusal_diag $details")
+    }
+
+    private fun Bounds.toTapAuditJson(): JsonObject = buildJsonObject {
+        put("left", left)
+        put("top", top)
+        put("right", right)
+        put("bottom", bottom)
+    }
 
     private companion object {
         private val RANDOM = SecureRandom()
