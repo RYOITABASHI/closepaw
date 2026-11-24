@@ -18,17 +18,23 @@ internal class RoutedTaskRead(
         val stats: TaskReadSourceStats = TaskReadSourceStats(),
         private val onSource: (ServedSource) -> Unit = {},
 ) {
-    fun helperRows(displayId: Int, sdkInt: Int, routeEnabled: Boolean, source: HelperRowSource?): List<TaskHelperRow>? {
+    fun helperRows(
+            displayId: Int,
+            sdkInt: Int,
+            routeEnabled: Boolean,
+            source: HelperRowSource?,
+            countFallback: Boolean = true,
+    ): List<TaskHelperRow>? {
         if (displayId < 0 || !TaskObservationPolicy.useHelperRoute(sdkInt, routeEnabled, source != null)) {
             return null
         }
         val rows = source?.queryRows(displayId)
-        if (rows == null) {
-            stats.fallback.incrementAndGet()
-            onSource(ServedSource.INCUMBENT)
-        } else {
+        if (rows != null) {
             stats.helperServed.incrementAndGet()
             onSource(ServedSource.HELPER)
+        } else if (countFallback) {
+            stats.fallback.incrementAndGet()
+            onSource(ServedSource.INCUMBENT)
         }
         return rows
     }
@@ -38,7 +44,7 @@ internal class RoutedTaskRead(
      * mapped through [mapRows]; otherwise the [incumbent] call's own result is
      * served. Returns null only when the helper did not answer AND the incumbent
      * returned null. A negative display id serves nothing (null) and consults
-     * neither route, matching the existing call sites.
+     * neither route. With [requireHelper], an enabled helper route returns null if unavailable.
      */
     fun <T> served(
             displayId: Int,
@@ -46,11 +52,14 @@ internal class RoutedTaskRead(
             routeEnabled: Boolean,
             source: HelperRowSource?,
             incumbent: () -> T?,
+            requireHelper: Boolean = false,
             mapRows: (List<TaskHelperRow>) -> T,
     ): Served<T>? {
         if (displayId < 0) return null
-        val rows = helperRows(displayId, sdkInt, routeEnabled, source)
+        val strict = requireHelper && TaskObservationPolicy.helperRouteEnabled(sdkInt, routeEnabled)
+        val rows = helperRows(displayId, sdkInt, routeEnabled, source, countFallback = !strict)
         if (rows != null) return Served(mapRows(rows), ServedSource.HELPER)
+        if (strict) return null
         return incumbent()?.let { Served(it, ServedSource.INCUMBENT) }
     }
 }

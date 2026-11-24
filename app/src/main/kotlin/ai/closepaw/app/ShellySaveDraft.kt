@@ -231,16 +231,18 @@ object ShellySaveDraft {
     }
 
     /**
-     * Fails closed: an unknown foreground app counts as Chrome, unless the task list was read and
-     * its front task on the main display is not Chrome's. [frontTaskIsChrome] is null when the task
-     * list could not be read. (2026-11-12: with the notification shade open after the owner tapped
-     * "approve", the main display had no focused window and every run stopped "chrome-opened".)
+     * A known main-display task takes precedence over the window, which can belong to the run
+     * display. With the helper route enabled, an unknown task blocks admission. Otherwise the
+     * window can decide and an unknown window also blocks admission.
      */
-    // When the task list was read it decides: the window lookup falls back to the active window,
-    // which during a run is the run's own Chrome on the virtual display (build 38 still stopped
-    // every run "chrome-opened" with Spark in front of the main display).
-    fun chromeInFront(foregroundPackage: String?, frontTaskIsChrome: Boolean? = null): Boolean =
-        frontTaskIsChrome ?: (foregroundPackage == null || foregroundPackage == ChromeFlagDeepLink.CHROME_PACKAGE)
+    fun chromeInFront(
+        foregroundPackage: String?,
+        frontTaskIsChrome: Boolean? = null,
+        requireTaskObservation: Boolean = false,
+    ): Boolean = frontTaskIsChrome ?: (
+        requireTaskObservation || foregroundPackage == null ||
+            foregroundPackage == ChromeFlagDeepLink.CHROME_PACKAGE
+    )
 
     /** A window event that means the owner just opened Chrome on the main display. */
     fun ownerOpenedChrome(packageName: String?, isActivityWindow: Boolean, onMainDisplay: Boolean): Boolean =

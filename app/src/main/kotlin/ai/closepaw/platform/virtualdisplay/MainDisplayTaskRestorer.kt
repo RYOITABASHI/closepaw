@@ -55,7 +55,6 @@ internal class MainDisplayTaskRestorer(
         private const val TAG = "MainDisplayTasks"
         private const val MAIN = Display.DEFAULT_DISPLAY
         /** FLAG_ACTIVITY_NEW_TASK (0x10000000) | FLAG_ACTIVITY_NO_ANIMATION (0x10000), for `am -f`. */
-        private const val FLAG_NEW_TASK_NO_ANIMATION = 0x10000000 or 0x10000
         /** Bounded wait for VD-release task reparenting before the handover refront (~1.5 s). */
         private const val HANDOVER_POLLS = 30
         private const val HANDOVER_POLL_MS = 50L
@@ -444,30 +443,13 @@ internal class MainDisplayTaskRestorer(
         false
     }
 
-    /**
-     * HOME on display 0: binder startActivity (no process spawn, no animation); the shell
-     * `am start` (now with FLAG_ACTIVITY_NO_ANIMATION) only when the binder start fails.
-     */
+    /** HOME on display 0 through the typed startActivityAsUser route. */
     private fun refrontHome(): Boolean {
-        val intent = try {
-            Intent(Intent.ACTION_MAIN)
-                    .addCategory(Intent.CATEGORY_HOME)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-        } catch (e: Exception) {
-            null
+        val intent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
         }
-        if (intent != null && shizuku.startActivityAsShell(intent, noAnimationOptions(launchDisplayId = MAIN))) {
-            return true
-        }
-        Log.w(TAG, "restore: binder HOME start failed; falling back to am start")
-        return shizuku.executeShellCommand(
-                arrayOf(
-                        "am", "start", "--display", "$MAIN",
-                        "-a", "android.intent.action.MAIN",
-                        "-c", "android.intent.category.HOME",
-                        "-f", "0x" + Integer.toHexString(FLAG_NEW_TASK_NO_ANIMATION),
-                )
-        ) == 0
+        return shizuku.startActivityAsShell(intent, noAnimationOptions(launchDisplayId = MAIN))
     }
 
     /** ActivityOptions without a transition animation (null when it cannot be built). */

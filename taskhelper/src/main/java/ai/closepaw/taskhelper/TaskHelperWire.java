@@ -23,6 +23,18 @@ public final class TaskHelperWire {
     public static final int SET_DISPLAY_IME_POLICY = ATTACH + 8;
     public static final int DISPLAY_RESULT = ATTACH + 9;
 
+    public static final int REMOVE_TASK = ATTACH + 5;
+    public static final int MOVE_ROOT_TASK_TO_DISPLAY = ATTACH + 6;
+    public static final int START_ACTIVITY_FROM_RECENTS = ATTACH + 7;
+    public static final int MOVE_TASK_TO_FRONT = ATTACH + 8;
+    public static final int START_ACTIVITY_AS_USER = ATTACH + 9;
+    public static final int WRITE_RESULT = ATTACH + 10;
+
+    public static final String TASK_ID = "taskId";
+    public static final String INTENT = "intent";
+    public static final String OPTIONS = "options";
+    public static final String WRITE_OK = "writeOk";
+
     public static final String REQUEST_ID = "requestId";
     public static final String OPERATION = "operation";
     public static final String SUCCESS = "success";
@@ -47,6 +59,11 @@ public final class TaskHelperWire {
     public static final String QUERY_NULL = "queryNull";
 
     private TaskHelperWire() {}
+
+    /** Writes and lifecycle commands share offsets, but have distinct correlation fields. */
+    static boolean isTaskWriteCommand(int code, boolean hasQueryId, boolean hasRequestId) {
+        return code >= REMOVE_TASK && code <= START_ACTIVITY_AS_USER && hasQueryId && !hasRequestId;
+    }
 
     public static void send(IBinder target, String descriptor, int code, String secret, Bundle payload)
             throws RemoteException {
@@ -78,7 +95,7 @@ public final class TaskHelperWire {
         @Override
         protected final boolean onTransact(int code, Parcel data, Parcel reply, int flags)
                 throws RemoteException {
-            if (code < ATTACH || code > DISPLAY_RESULT) {
+            if (code < ATTACH || code > WRITE_RESULT) {
                 return super.onTransact(code, data, reply, flags);
             }
             data.enforceInterface(descriptor);

@@ -36,7 +36,8 @@ import ai.closepaw.draft.DraftOutcome
 import ai.closepaw.draft.SaveDraftRequest
 import ai.closepaw.draft.SaveDraftResult
 import ai.closepaw.draft.SaveDraftRoutine
-import ai.closepaw.platform.virtualdisplay.ShizukuClient
+import ai.closepaw.platform.virtualdisplay.MainDisplayTaskReader
+import ai.closepaw.platform.virtualdisplay.TaskObservationPolicy
 import ai.closepaw.platform.virtualdisplay.VirtualDisplaySurfaceSwitchFailure
 import ai.closepaw.util.recycleCompat
 import kotlinx.coroutines.CoroutineScope
@@ -1044,24 +1045,28 @@ class AgentService : AccessibilityService() {
     // ── Save-draft routine (fixed, LLM-free; see ShellySaveDraftReceiver) ──
 
     /** True when Chrome is, or may be, what the user has in front on the main display. */
-    internal fun isChromeInFront(): Boolean {
+    internal suspend fun isChromeInFront(): Boolean {
         val window = currentForegroundPackageOnDefaultDisplay()
-        val task = chromeTaskInFrontOnMainDisplay()
-        val chrome = ShellySaveDraft.chromeInFront(window, task)
+        val requireTaskObservation = TaskObservationPolicy.helperRouteEnabled(Build.VERSION.SDK_INT)
+        val task = chromeTaskInFrontOnMainDisplay(requireTaskObservation)
+        val chrome = ShellySaveDraft.chromeInFront(window, task, requireTaskObservation)
         if (chrome) Log.i(TAG, "chrome in front: windowIsChrome=${window == ChromeFlagDeepLink.CHROME_PACKAGE} windowKnown=${window != null} task=$task")
         return chrome
     }
 
-    private val taskReader by lazy { ShizukuClient() }
+    private val taskReader by lazy { MainDisplayTaskReader(this) }
 
     /**
      * A second look, from the task list: true when the front visible root task on the main display
-     * is Chrome's. Null when the list cannot be read (the window check then fails closed).
+     * is Chrome's. Null when the front task cannot be determined.
      */
-    private fun chromeTaskInFrontOnMainDisplay(): Boolean? = try {
-        val tasks = taskReader.rootTasksWithPackagesOnDisplay(Display.DEFAULT_DISPLAY)
+    private suspend fun chromeTaskInFrontOnMainDisplay(useHelper: Boolean): Boolean? = try {
+        val tasks = taskReader.read(useHelper)
         val front = tasks?.firstOrNull { it.visible != false } ?: tasks?.firstOrNull()
-        if (front == null) null else ChromeFlagDeepLink.CHROME_PACKAGE in front.packages
+        if (front == null || (useHelper && front.packages.isEmpty())) null
+        else ChromeFlagDeepLink.CHROME_PACKAGE in front.packages
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
         null
     }
@@ -1433,7 +1438,9 @@ class AgentService : AccessibilityService() {
             // (read off the main thread; an unreadable list does not cancel - the routine's own
             // ownerHasChrome checks, which fail closed, still stop it at its next step).
             serviceScope.launch(Dispatchers.IO) {
-                val onMainDisplay = chromeTaskInFrontOnMainDisplay() == true
+                val onMainDisplay = chromeTaskInFrontOnMainDisplay(
+                    TaskObservationPolicy.helperRouteEnabled(Build.VERSION.SDK_INT)
+                ) == true
                 withContext(Dispatchers.Main) {
                     if (onMainDisplay && draftJob === job) {
                         Log.i(TAG, "Draft routine: owner opened Chrome (task list); stopping")

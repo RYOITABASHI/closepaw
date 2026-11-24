@@ -78,7 +78,15 @@ public final class TaskHelperMain {
     }
 
     private void handle(int code, Bundle payload) {
+        boolean write = false;
         try {
+            boolean hasQueryId = payload.containsKey(TaskHelperWire.QUERY_ID);
+            boolean hasRequestId = payload.containsKey(TaskHelperWire.REQUEST_ID);
+            write = TaskHelperWire.isTaskWriteCommand(code, hasQueryId, hasRequestId);
+            if (write) {
+                writeTask(code, payload);
+                return;
+            }
             switch (code) {
                 case TaskHelperWire.ATTACH:
                     attach(payload);
@@ -90,13 +98,21 @@ public final class TaskHelperMain {
                 case TaskHelperWire.RELEASE_DISPLAY:
                 case TaskHelperWire.SET_DISPLAY_SURFACE:
                 case TaskHelperWire.SET_DISPLAY_IME_POLICY:
+                    if (!hasRequestId || hasQueryId) {
+                        throw new IllegalArgumentException("Invalid display command correlation");
+                    }
                     displayCommand(code, payload);
                     break;
                 default:
                     throw new IllegalArgumentException("Unknown task helper command");
             }
         } catch (Exception | LinkageError failure) {
-            Integer queryId = code == TaskHelperWire.QUERY_ROOT_TASKS
+            if (write && failure instanceof android.os.RemoteException) {
+                // The result send was ambiguous. Let the app deadline resolve it as unknown.
+                System.err.println(describe(failure));
+                return;
+            }
+            Integer queryId = (code == TaskHelperWire.QUERY_ROOT_TASKS || write)
                     ? payload.getInt(TaskHelperWire.QUERY_ID) : null;
             reportFailure(failure, queryId);
         }
@@ -232,6 +248,26 @@ public final class TaskHelperMain {
             result.putString(TaskHelperWire.ROWS, rows);
         }
         event(TaskHelperWire.ROOT_TASKS, result);
+    }
+
+    private void writeTask(int code, Bundle payload) throws Exception {
+        if (receiver == null) throw new IllegalStateException("Task helper has no app lease");
+        int id = payload.getInt(TaskHelperWire.QUERY_ID, 0);
+        if (id == 0) throw new IllegalArgumentException("Missing write correlation id");
+        Bundle result = new Bundle();
+        result.putInt(TaskHelperWire.QUERY_ID, id);
+        try {
+            result.putBoolean(TaskHelperWire.WRITE_OK, TaskHelperFramework.Tasks.write(code, payload));
+        } catch (Exception failure) {
+            if (!(failure instanceof android.os.RemoteException)
+                    && !(failure.getCause() instanceof android.os.RemoteException)) {
+                throw failure;
+            }
+            // An absent acknowledgement value means the mutation may have happened.
+            // Keep the helper alive because it may still own the virtual display.
+            System.err.println(describe(failure));
+        }
+        event(TaskHelperWire.WRITE_RESULT, result);
     }
 
     private void event(int code, Bundle payload) throws android.os.RemoteException {

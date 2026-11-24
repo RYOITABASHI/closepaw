@@ -1,6 +1,7 @@
 package ai.closepaw.taskhelper;
 
 import android.content.AttributionSource;
+import android.content.Intent;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -137,9 +138,7 @@ final class TaskHelperFramework {
 
         static String queryRootTasks(int displayId) {
             try {
-                IBinder service = (IBinder) Class.forName("android.os.ServiceManager")
-                        .getMethod("getService", String.class).invoke(null, "activity_task");
-                Object manager = proxy(ACTIVITY_TASK_MANAGER, service);
+                Object manager = manager();
                 Object result = manager.getClass()
                         .getMethod("getAllRootTaskInfosOnDisplay", int.class)
                         .invoke(manager, displayId);
@@ -153,6 +152,60 @@ final class TaskHelperFramework {
             } catch (Exception | LinkageError failure) {
                 return null;
             }
+        }
+
+        private static Object manager() throws Exception {
+            IBinder service = (IBinder) Class.forName("android.os.ServiceManager")
+                    .getMethod("getService", String.class).invoke(null, "activity_task");
+            return proxy(ACTIVITY_TASK_MANAGER, service);
+        }
+
+        @SuppressWarnings("deprecation")
+        static boolean write(int code, Bundle payload) throws Exception {
+            Object manager = manager();
+            Class<?> api = Class.forName(ACTIVITY_TASK_MANAGER);
+            Object optionsValue = payload.get(TaskHelperWire.OPTIONS);
+            if (optionsValue != null && !(optionsValue instanceof Bundle)) {
+                throw new IllegalArgumentException("Invalid activity options");
+            }
+            Bundle options = (Bundle) optionsValue;
+            if (code == TaskHelperWire.START_ACTIVITY_AS_USER) {
+                Object intent = payload.get(TaskHelperWire.INTENT);
+                if (!(intent instanceof Intent)) throw new IllegalArgumentException("Missing intent");
+                return startSucceeded(StartActivityAsUserMethod.resolve(api).invoke(manager,
+                        null, SHELL_PACKAGE, null, intent, null, null, null, 0, 0, null,
+                        options, -2)); // UserHandle.USER_CURRENT
+            }
+            int taskId = requireId(payload, TaskHelperWire.TASK_ID);
+            switch (code) {
+                case TaskHelperWire.REMOVE_TASK:
+                    return (Boolean) api.getMethod("removeTask", int.class).invoke(manager, taskId);
+                case TaskHelperWire.MOVE_ROOT_TASK_TO_DISPLAY:
+                    api.getMethod("moveRootTaskToDisplay", int.class, int.class).invoke(manager,
+                            taskId, requireId(payload, TaskHelperWire.DISPLAY_ID));
+                    return true;
+                case TaskHelperWire.START_ACTIVITY_FROM_RECENTS:
+                    return startSucceeded(api.getMethod("startActivityFromRecents", int.class,
+                            Bundle.class).invoke(manager, taskId, options));
+                case TaskHelperWire.MOVE_TASK_TO_FRONT:
+                    api.getMethod("moveTaskToFront", Class.forName("android.app.IApplicationThread"),
+                            String.class, int.class, int.class, Bundle.class)
+                            .invoke(manager, null, SHELL_PACKAGE, taskId, 0, null);
+                    return true;
+                default:
+                    throw new IllegalArgumentException("Unknown task write");
+            }
+        }
+
+        private static boolean startSucceeded(Object result) {
+            int code = (Integer) result;
+            return code >= 0 && code < 100;
+        }
+
+        private static int requireId(Bundle payload, String key) {
+            int value = payload.getInt(key, -1);
+            if (value < 0) throw new IllegalArgumentException("Invalid " + key);
+            return value;
         }
 
         private static String encodeRow(Object info) throws Exception {

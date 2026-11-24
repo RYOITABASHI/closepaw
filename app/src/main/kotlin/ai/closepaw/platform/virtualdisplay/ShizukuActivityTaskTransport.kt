@@ -1,5 +1,6 @@
 package ai.closepaw.platform.virtualdisplay
 
+import ai.closepaw.taskhelper.StartActivityAsUserMethod
 import android.content.ComponentName
 import android.content.Intent
 import android.util.Log
@@ -203,8 +204,7 @@ internal class ShizukuActivityTaskTransport(
         /**
          * Start [intent] as the shell for the CURRENT user, as `am start` does (its default user
          * is USER_CURRENT), over binder instead of a process spawn. [options] carries e.g. the
-         * launch display. Uses IActivityTaskManager.startActivityAsUser, looked up by shape (12
-         * parameters, Intent 4th, int userId last): startActivityAsUser(caller, callingPackage,
+         * launch display. Uses IActivityTaskManager.startActivityAsUser, looked up by its exact signature: startActivityAsUser(caller, callingPackage,
          * callingFeatureId, intent, resolvedType, resultTo, resultWho, requestCode, flags,
          * profilerInfo, options, userId) since Android 11. Plain startActivity would resolve the
          * shell's own user (0), which is wrong on a secondary-user session.
@@ -212,13 +212,7 @@ internal class ShizukuActivityTaskTransport(
         fun startActivity(intent: android.content.Intent, options: android.os.Bundle?): Boolean {
                 return try {
                         val proxy = activityTaskManagerProxy()
-                        val method =
-                                proxy.javaClass.methods.firstOrNull { m ->
-                                        m.name == "startActivityAsUser" &&
-                                                m.parameterTypes.size == 12 &&
-                                                m.parameterTypes[3] == android.content.Intent::class.java &&
-                                                m.parameterTypes[11] == Int::class.javaPrimitiveType
-                                } ?: throw NoSuchMethodException("IActivityTaskManager.startActivityAsUser (12 args)")
+                        val method = StartActivityAsUserMethod.resolve(proxy.javaClass)
                         val result =
                                 method.invoke(
                                         proxy,
@@ -245,12 +239,12 @@ internal class ShizukuActivityTaskTransport(
         }
 
         /** Save-draft routine: removes one task by id. False when not removed or the transport failed. */
-        fun removeRootTask(taskId: Int): Boolean {
+        fun removeRootTaskResult(taskId: Int): Boolean? {
                 return try {
                         removeTask(activityTaskManagerProxy(), taskId)
                 } catch (e: Exception) {
                         Log.w(TAG, "remove task failed: taskId=$taskId err=${e.summary()}")
-                        false
+                        null
                 }
         }
 
@@ -310,7 +304,7 @@ internal class ShizukuActivityTaskTransport(
                                 "removeTask",
                                 Int::class.javaPrimitiveType
                         )
-                return method.invoke(proxy, taskId) as? Boolean ?: false
+                return method.invoke(proxy, taskId) as Boolean
         }
 
         private fun rootTaskId(rootTaskInfo: Any): Int {

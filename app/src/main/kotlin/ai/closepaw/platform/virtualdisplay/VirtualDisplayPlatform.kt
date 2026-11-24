@@ -182,6 +182,7 @@ class VirtualDisplayPlatform(
     private val helperShell = AdbShellChannel(service)
     private val taskHelper = TaskHelperSession(service, helperShell, taskHelperOwnership).also {
         shizuku.attachTaskHelper(it)
+        shizuku.attachTaskHelperWriter(it::write) { it.isAlive }
     }
     @Volatile private var helperDisplay: HelperVirtualDisplayPlatform? = null
     private var helperDeathWatch: Job? = null
@@ -703,7 +704,7 @@ class VirtualDisplayPlatform(
                 handover = preparedHandover
             } finally {
                 try {
-                    // Keep the helper alive through the final reads and explicit display release.
+                    // Keep the helper alive through display release and task refronting.
                     when (previous) {
                         is VdState.Running -> releaseDisplayResources(previous.displayId, previous.imageReader)
                         is VdState.Draining -> releaseDisplayResources(previous.displayId, previous.imageReader)
