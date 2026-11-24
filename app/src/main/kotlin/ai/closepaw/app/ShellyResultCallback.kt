@@ -62,7 +62,10 @@ object ShellyResultCallback {
         val summary: String,
         val finishedAtMs: Long,
         val sessionId: String?,
-    )
+    ) {
+        internal var durability: kotlinx.coroutines.Deferred<Unit>? = null
+        internal var dispatch: ((() -> Boolean) -> Unit)? = null
+    }
 
     fun statusFor(kind: ShellyRunState.Finished.Kind): String = when (kind) {
         ShellyRunState.Finished.Kind.DONE -> STATUS_COMPLETED
@@ -170,11 +173,27 @@ object ShellyResultCallback {
 
     internal fun send(context: Context, payload: Payload?, logRequestId: Boolean) {
         payload ?: return
-        val app = context.applicationContext
-        try {
+        fun dispatch() {
+            val send = { sendDurable(context, payload, logRequestId) }
+            val durableDispatch = payload.dispatch
+            if (durableDispatch != null) durableDispatch(send) else send()
+        }
+        val durability = payload.durability
+        if (durability != null) {
+            durability.invokeOnCompletion { failure ->
+                if (failure == null) dispatch()
+            }
+        } else {
+            dispatch()
+        }
+    }
+
+    internal fun sendDurable(context: Context, payload: Payload, logRequestId: Boolean): Boolean {
+        return try {
+            val app = context.applicationContext
             if (!isShellyTrusted(app.packageManager)) {
                 Log.w(TAG, "Shelly is not installed with a pinned signature; result not sent")
-                return
+                return false
             }
             val intent = buildIntent(app, payload)
             if (Build.VERSION.SDK_INT >= 34) {
@@ -186,8 +205,10 @@ object ShellyResultCallback {
             // Never log the summary (free text): status and length only.
             val request = if (logRequestId) " req=${payload.reqId}" else ""
             Log.i(TAG, "sent Shelly result$request status=${payload.status} len=${payload.summary.length}")
+            true
         } catch (e: Exception) {
             Log.w(TAG, "failed to send Shelly result: ${e.javaClass.simpleName}")
+            false
         }
     }
 }
@@ -198,12 +219,19 @@ object ShellyResultCallback {
  * [ShellyRunTracker] once the session exists, and claimed by every terminal reporting path of that
  * start: tracker finished / stopped / replaced, start failure, startup cancellation, service
  * destroy. The first claim wins and gets the payload; every later claim returns null, so Shelly
- * gets exactly one result per start that advertised `result_callback=1`.
+ * gets at most one dispatch per process for a start that advertised `result_callback=1`.
  *
  * A claim is consumed even when [correlation] is null (no result was requested): the start still
  * reached its terminal state, and nothing is sent.
  */
-class ShellyPendingResult(val correlation: ShellyBackgroundRun.ResultCorrelation?) {
+class ShellyPendingResult internal constructor(
+    val correlation: ShellyBackgroundRun.ResultCorrelation?,
+    private val persistTerminal: (ShellyRunState.Finished.Kind, String?, Long, String?) -> Boolean,
+    private val durability: () -> kotlinx.coroutines.Deferred<Unit>?,
+    private val dispatchTerminal: ((() -> Boolean) -> Unit)?,
+) {
+    constructor(correlation: ShellyBackgroundRun.ResultCorrelation?) :
+        this(correlation, { _, _, _, _ -> true }, { null }, null)
     internal val stopIdentity = java.util.UUID.randomUUID().toString()
     private val claimed = AtomicBoolean(false)
 
@@ -211,7 +239,19 @@ class ShellyPendingResult(val correlation: ShellyBackgroundRun.ResultCorrelation
     val isClaimed: Boolean get() = claimed.get()
 
     /** Claims the result; true only for the first caller. */
-    fun claim(): Boolean = claimed.compareAndSet(false, true)
+    private fun claim(): Boolean = claimed.compareAndSet(false, true)
+
+    private fun claimTerminal(
+        kind: ShellyRunState.Finished.Kind,
+        message: String?,
+        nowMs: Long,
+        sessionId: String? = null,
+    ): Boolean = claim() && persistTerminal(kind, message, nowMs, sessionId)
+
+    private fun ShellyResultCallback.Payload?.withDurability() = this?.also {
+        it.durability = durability()
+        it.dispatch = dispatchTerminal
+    }
 
     fun claimBrainTerminal(
         kind: ShellyRunState.Finished.Kind,
@@ -219,13 +259,15 @@ class ShellyPendingResult(val correlation: ShellyBackgroundRun.ResultCorrelation
         nowMs: Long,
         sessionId: String?,
     ): ShellyResultCallback.Payload? =
-        if (claim()) ShellyResultCallback.brainPayload(correlation, kind, message, nowMs, sessionId) else null
+        if (claimTerminal(kind, message, nowMs, sessionId)) ShellyResultCallback.brainPayload(correlation, kind, message, nowMs, sessionId).withDurability() else null
 
     /** The start failed before it ran (refusal inside startup, exception). */
     fun claimFailed(message: String?, nowMs: Long): ShellyResultCallback.Payload? =
-        if (claim()) ShellyResultCallback.failurePayload(correlation, message, nowMs) else null
+        if (claimTerminal(ShellyRunState.Finished.Kind.FAILED, message, nowMs)) ShellyResultCallback.failurePayload(correlation, message, nowMs).withDurability() else null
 
     /** The start was cancelled (service destroyed / scope cancelled) before a tracker existed. */
     fun claimCancelled(nowMs: Long): ShellyResultCallback.Payload? =
-        if (claim()) ShellyResultCallback.cancelledPayload(correlation, nowMs) else null
+        if (claimTerminal(ShellyRunState.Finished.Kind.STOPPED, ShellyResultCallback.CANCELLED_DURING_START_MESSAGE, nowMs)) {
+            ShellyResultCallback.cancelledPayload(correlation, nowMs).withDurability()
+        } else null
 }

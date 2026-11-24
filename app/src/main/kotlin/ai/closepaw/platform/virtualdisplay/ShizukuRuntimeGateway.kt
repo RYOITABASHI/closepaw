@@ -39,12 +39,14 @@ internal class ShizukuRuntimeGateway {
                 }
         }
 
-        fun hasPermission(): Boolean {
+        fun hasPermission(): Boolean = permissionGrantedOrNull() == true
+
+        fun permissionGrantedOrNull(): Boolean? {
                 return try {
                         Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
                 } catch (e: Exception) {
                         Log.w(TAG, "Shizuku permission check failed: ${e.message}")
-                        false
+                        null
                 }
         }
 

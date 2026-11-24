@@ -21,9 +21,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
+import android.content.pm.PackageManager
+import android.os.PowerManager
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
-/** Background work scoped to one MCP listener. */
-internal class McpMaintenance(private val app: Context, private val channel: AdbShellChannel) {
+/** Background work scoped to the enabled MCP controller. */
+internal class McpMaintenance(
+    private val app: Context,
+    private val channel: AdbShellChannel,
+    private val runStore: RunRecoveryStore,
+) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lastRecovery: Long? = null
     private var lastScan: Long? = null
@@ -35,10 +45,50 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
     @Volatile private var lastShizukuPing: ShizukuPingSample? = null
     private val shizukuBinderDeadListener = Shizuku.OnBinderDeadListener {
         lastShizukuPing = ShizukuPingSample(false, SystemClock.elapsedRealtime())
-        checkShizuku()
+        checkRecovery()
     }
-    private val shizukuCheck = Mutex()
+    private val recoveryCheck = Mutex()
     private val shizukuAttempts = ArrayDeque<Long>()
+
+    private data class Check(val atMs: Long, val accessibility: String, val adb: String, val shizuku: String)
+    private data class Heal(val atMs: Long, val detail: String)
+
+    @Volatile private var lastCheck: Check? = null
+    @Volatile private var lastHeal: Heal? = null
+
+    fun status() = buildJsonObject {
+        val check = lastCheck
+        val heal = lastHeal
+        val writes = runStore.writeStatus
+        put("runStoreWritesFailing", writes.failing)
+        put("runStoreLastWriteFailureAtMs", writes.lastFailureAtMs?.let(::JsonPrimitive) ?: JsonNull)
+        put("resident", McpRecoveryService.resident)
+        put("residentStartFailure", McpRecoveryService.startFailure?.let(::JsonPrimitive) ?: JsonNull)
+        put("lastCheckAtMs", check?.atMs?.let(::JsonPrimitive) ?: JsonNull)
+        put("accessibility", check?.accessibility ?: "pending")
+        put("adb", check?.adb ?: "pending")
+        put("shizuku", check?.shizuku ?: "pending")
+        put("lastHealAtMs", heal?.atMs?.let(::JsonPrimitive) ?: JsonNull)
+        put("lastHeal", heal?.detail?.let(::JsonPrimitive) ?: JsonNull)
+        put("writeSecureSettingsGranted", app.canWriteSecureSettings())
+        put("readLogsGranted", app.checkSelfPermission(android.Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED)
+        val batteryExempt = try {
+            app.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(app.packageName)
+        } catch (e: Exception) {
+            Log.w(TAG, "Battery optimization exemption query failed: ${e.javaClass.simpleName}")
+            null
+        }
+        put("batteryOptimizationExempt", batteryExempt?.let(::JsonPrimitive) ?: JsonNull)
+        put("shizukuPermissionGranted", shizuku.permissionGrantedOrNull()?.let(::JsonPrimitive) ?: JsonNull)
+        put("shizukuAlive", shizuku.isAvailable())
+        put("accessibilityBound", AgentService.instance != null)
+        put("adbConnected", channel.isConnected())
+    }
+
+    private fun recordHeal(detail: String) {
+        lastHeal = Heal(System.currentTimeMillis(), detail)
+        Log.i(TAG, detail)
+    }
 
     fun stop() {
         try {
@@ -48,26 +98,55 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         }
     }
 
-    fun onServerStarted() {
+    fun start() {
         shizuku.addBinderDeadListener(shizukuBinderDeadListener)
-        checkAccessibility()
-        rediscover()
-        checkShizuku()
+        checkRecovery()
     }
 
-    fun checkShizuku() {
+    fun checkRecovery() {
         scope.launch {
-            if (!shizukuCheck.tryLock()) return@launch
+            if (!recoveryCheck.tryLock()) return@launch
             try {
-                healShizuku()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                Log.w(TAG, "Shizuku heal failed: ${e.javaClass.simpleName}")
+                val accessibility = checkStep("accessibility") {
+                    checkAccessibility()
+                    if (AgentService.instance != null && accessibilitySettingOn(app)) "ready" else "unavailable"
+                }
+                val adb = checkStep("adb") {
+                    when {
+                        channel.isConnected() -> "connected"
+                        !channel.paired -> "unpaired"
+                        else -> {
+                            ensureRecentScan()
+                            if (channel.connectKnownPorts()) {
+                                recordHeal("adb_reconnected")
+                                "connected"
+                            } else "unavailable"
+                        }
+                    }
+                }
+                val shizukuState = checkStep("shizuku") {
+                    healShizuku()
+                    when {
+                        !pingShizukuBinder() -> "unavailable"
+                        !shizuku.hasPermission() -> "permission_missing"
+                        else -> "ready"
+                    }
+                }
+                lastCheck = Check(System.currentTimeMillis(), accessibility, adb, shizukuState)
+                Log.i(TAG, "Recovery check accessibility=$accessibility adb=$adb shizuku=$shizukuState")
             } finally {
-                shizukuCheck.unlock()
+                recoveryCheck.unlock()
             }
         }
+    }
+
+    private suspend fun checkStep(name: String, block: suspend () -> String): String = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "Recovery check failed: $name", e)
+        "error:${e.javaClass.simpleName}"
     }
 
     private suspend fun healShizuku() {
@@ -91,19 +170,19 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         )
         if (plan == ShizukuHealPlan.NO_OP) return
 
-        // The check mutex guards the history. Only the most recent four claims can affect the gate.
-        if (shizukuAttempts.size == ShizukuHealPlan.MAX_ATTEMPTS_PER_HOUR) shizukuAttempts.removeFirst()
-        shizukuAttempts.addLast(now)
-        Log.i(TAG, "Shizuku heal attempt claimed")
         if (!channel.isConnected()) {
             if (channel.paired) ensureRecentScan()
             if (!channel.paired || !channel.connectKnownPorts()) {
-                Log.w(TAG, "Shizuku heal skipped: ADB unavailable")
+                recordHeal("shizuku_adb_unavailable")
                 return
             }
         }
 
         if (vdBusy() || pingShizukuBinder()) return
+        // The check mutex guards the history. Only the most recent four claims can affect the gate.
+        if (shizukuAttempts.size == ShizukuHealPlan.MAX_ATTEMPTS_PER_HOUR) shizukuAttempts.removeFirst()
+        shizukuAttempts.addLast(SystemClock.elapsedRealtime())
+        recordHeal("shizuku_attempt")
         val disposition = try {
             val probe = channel.exec(ShizukuHealPlan.IDENTITY_PROBE_COMMAND, IDENTITY_TIMEOUT_MS)
             val identity = if (probe.exitCode == 0 && !probe.truncated) {
@@ -124,15 +203,15 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         when (disposition) {
             ShizukuHealDisposition.START_SERVER -> Log.i(TAG, "Shizuku heal disposition: start_server")
             ShizukuHealDisposition.ALIVE_BUT_UNREACHABLE -> {
-                Log.w(TAG, "Shizuku heal report-only: alive_but_unreachable")
+                recordHeal("shizuku_alive_but_unreachable")
                 return
             }
             ShizukuHealDisposition.START_ROUTE_MISSING -> {
-                Log.w(TAG, "Shizuku heal report-only: start_route_missing")
+                recordHeal("shizuku_start_route_missing")
                 return
             }
             ShizukuHealDisposition.PROBE_UNKNOWN -> {
-                Log.w(TAG, "Shizuku heal report-only: probe_unknown")
+                recordHeal("shizuku_probe_unknown")
                 return
             }
         }
@@ -149,28 +228,28 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
             )
         }
         if (result == null) {
-            Log.i(TAG, "Shizuku heal dispatch aborted: binder or VD state changed while queued")
+            recordHeal("shizuku_dispatch_aborted")
             return
         }
         if (result.stdout.contains(ShizukuHealPlan.HEAL_ABORT_MARKER)) {
-            Log.i(TAG, "Shizuku heal aborted: server probe did not permit the restart")
+            recordHeal("shizuku_probe_aborted")
             return
         }
         if (result.exitCode != 0) {
-            Log.w(TAG, "Shizuku start.sh failed with exit code ${result.exitCode}")
+            recordHeal("shizuku_start_failed_${result.exitCode}")
             return
         }
         Log.i(TAG, "Shizuku start.sh exited successfully")
 
         if (!awaitShizukuBinder(STARTUP_POLL_TIMEOUT_MS, pollMs = 250L)) {
-            Log.w(TAG, "Shizuku did not come up after start.sh")
+            recordHeal("shizuku_start_timeout")
             return
         }
         if (!shizuku.hasPermission()) {
-            Log.w(TAG, "Shizuku server is running but permission is not granted for the current UID; not requesting automatically")
+            recordHeal("shizuku_permission_missing")
             return
         }
-        Log.i(TAG, "Shizuku healed via adb start.sh")
+        recordHeal("shizuku_recovered")
         shizukuAttempts.clear()
     }
 
@@ -196,26 +275,30 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
         return true
     }
 
-    fun checkAccessibility() {
-        scope.launch {
-            try {
-                if (accessibilitySettingOn(app) && AgentService.instance != null) return@launch
-                if (!claimRecovery()) return@launch
-                val direct = app.canWriteSecureSettings()
-                if (!direct && !channel.isConnected()) {
-                    if (channel.paired) ensureRecentScan()
-                    if (!channel.paired || !channel.connectKnownPorts()) {
-                        Log.w(TAG, "Accessibility recovery skipped: WRITE_SECURE_SETTINGS not granted and ADB unavailable")
-                        return@launch
-                    }
-                }
-                Log.i(TAG, "Accessibility recovery route=${if (direct) "content_resolver" else "adb"}")
-                recoverAccessibility(direct)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Accessibility recovery failed: ${e.javaClass.simpleName}")
+    private suspend fun checkAccessibility() {
+        if (accessibilitySettingOn(app) && AgentService.instance != null) return
+        if (!claimRecovery()) return
+        val direct = app.canWriteSecureSettings()
+        if (!direct && !channel.isConnected()) {
+            if (channel.paired) ensureRecentScan()
+            if (!channel.paired || !channel.connectKnownPorts()) {
+                recordHeal("accessibility_skipped_no_permission_or_adb")
+                return
             }
+        }
+        val route = if (direct) "content_resolver" else "adb"
+        recordHeal("accessibility_attempt_$route")
+        try {
+            recoverAccessibility(direct)
+            recordHeal(
+                if (AgentService.instance != null && accessibilitySettingOn(app)) "accessibility_recovered_$route"
+                else "accessibility_unbound_$route",
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            recordHeal("accessibility_failed_$route")
+            throw e
         }
     }
 
@@ -324,18 +407,6 @@ internal class McpMaintenance(private val app: Context, private val channel: Adb
     }
 
     private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
-
-    fun rediscover() {
-        scope.launch {
-            try {
-                if (channel.paired) ensureRecentScan()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "ADB rediscovery failed: ${e.javaClass.simpleName}")
-            }
-        }
-    }
 
     private suspend fun ensureRecentScan() {
         val (scan, claimed) = synchronized(this) {
