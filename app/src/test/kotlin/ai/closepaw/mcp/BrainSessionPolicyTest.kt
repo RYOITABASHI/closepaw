@@ -147,7 +147,86 @@ class BrainSessionPolicyTest {
         val matching = observed.copy(index = 1)
         val other = observed.copy(resourceId = "example:id/second")
 
-        assertEquals(matching, listOf(other, matching).singleOrNull { it.identity() == savedIdentity })
+        assertEquals(matching, listOf(other, matching).resolveTapTarget(savedIdentity))
+    }
+
+    @Test
+    fun tapTargetResolvesAfterBoundsJitterAndIndexChange() {
+        val observed = button("example:id/first")
+        val candidate = observed.copy(
+            index = 7,
+            bounds = Bounds(4, 3, 104, 103),
+            center = Point(54, 53),
+        )
+
+        assertEquals(candidate, listOf(candidate).resolveTapTarget(observed.identity()))
+    }
+
+    @Test
+    fun tapGuardAcceptsUniqueJitteredTargetAtDispatchIndex() {
+        val tapElement = button("example:id/first")
+        val candidate = tapElement.copy(
+            bounds = Bounds(4, 3, 104, 103),
+            center = Point(54, 53),
+        )
+
+        assertTrue(listOf(candidate).resolveTapTarget(tapElement.identity())?.index == tapElement.index)
+    }
+
+    @Test
+    fun tapGuardRefusesUniqueTargetAtDifferentIndex() {
+        val tapElement = button("example:id/first")
+        val replacement = tapElement.copy(resourceId = "example:id/other")
+        val movedTarget = tapElement.copy(index = 1)
+
+        assertFalse(
+            listOf(replacement, movedTarget).resolveTapTarget(tapElement.identity())?.index == tapElement.index,
+        )
+    }
+
+    @Test
+    fun tapTargetRefusesChangedText() {
+        val observed = button("example:id/first")
+        val candidate = observed.copy(text = "Cancel")
+
+        assertNull(listOf(candidate).resolveTapTarget(observed.identity()))
+    }
+
+    @Test
+    fun tapTargetRefusesAmbiguousBoundsCompatibleDuplicates() {
+        val observed = button("example:id/first")
+        val duplicate = observed.copy(
+            index = 1,
+            bounds = Bounds(4, 3, 104, 103),
+            center = Point(54, 53),
+        )
+
+        assertNull(listOf(observed, duplicate).resolveTapTarget(observed.identity()))
+    }
+
+    @Test
+    fun tapTargetRefusesRemovedElement() {
+        val observed = button("example:id/first")
+        val unrelated = button("example:id/other")
+
+        assertNull(listOf(unrelated).resolveTapTarget(observed.identity()))
+    }
+
+    @Test
+    fun tapTargetChecksBothCentersAndInclusiveAreaRatioLimits() {
+        val observed = button("example:id/first")
+        // Its center is outside the observed bounds, but it contains the observed center.
+        val doubleArea = observed.copy(bounds = Bounds(50, 0, 250, 100), center = Point(150, 50))
+
+        assertEquals(doubleArea, listOf(doubleArea).resolveTapTarget(observed.identity()))
+        assertEquals(observed, listOf(observed).resolveTapTarget(doubleArea.identity()))
+
+        val tooLarge = doubleArea.copy(bounds = Bounds(50, 0, 251, 100))
+        assertNull(listOf(tooLarge).resolveTapTarget(observed.identity()))
+        assertNull(listOf(observed).resolveTapTarget(tooLarge.identity()))
+
+        val neitherCenterInside = doubleArea.copy(bounds = Bounds(51, 0, 251, 100))
+        assertNull(listOf(neitherCenterInside).resolveTapTarget(observed.identity()))
     }
 
     private fun button(resourceId: String) = PerceptionElement(
