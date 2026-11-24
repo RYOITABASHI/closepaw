@@ -2,7 +2,7 @@ package ai.closepaw.platform.virtualdisplay
 
 internal object TaskHelperInputPolicy {
     // Switch in a separate commit after the device B1/B2 gate.
-    const val HELPER_ROUTE_ENABLED = false
+    const val HELPER_ROUTE_ENABLED = true
 
     fun useHelper(sdkInt: Int, routeEnabled: Boolean = HELPER_ROUTE_ENABLED): Boolean =
         routeEnabled && sdkInt >= 33

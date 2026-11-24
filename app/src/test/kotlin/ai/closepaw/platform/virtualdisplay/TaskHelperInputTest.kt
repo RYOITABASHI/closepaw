@@ -11,7 +11,7 @@ class TaskHelperInputTest {
         assertEquals(TaskHelperWire.ATTACH + 10, TaskHelperWire.WRITE_RESULT)
         assertEquals(TaskHelperWire.ATTACH + 11, TaskHelperWire.INJECT_INPUT)
         assertEquals(TaskHelperWire.ATTACH + 12, TaskHelperWire.INPUT_RESULT)
-        assertFalse(TaskHelperInputPolicy.useHelper(37, TaskHelperInputPolicy.HELPER_ROUTE_ENABLED))
+        assertTrue(TaskHelperInputPolicy.useHelper(37, TaskHelperInputPolicy.HELPER_ROUTE_ENABLED))
         assertFalse(TaskHelperInputPolicy.useHelper(32, true))
         assertTrue(TaskHelperInputPolicy.useHelper(33, true))
     }
