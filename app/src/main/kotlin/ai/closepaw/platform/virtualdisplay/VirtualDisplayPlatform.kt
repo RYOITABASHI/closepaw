@@ -37,9 +37,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import rikka.shizuku.Shizuku
 
 /**
@@ -250,16 +250,24 @@ class VirtualDisplayPlatform(
                     isDispatchCancelled = isDispatchCancelled,
             )
 
-    private val inputInjector = VirtualDisplayInputInjector(shizuku, displayIdProvider)
+    private val shellInput = VirtualDisplayShellInput(helperShell, displayIdProvider) {
+        isDispatchCancelled?.invoke() == true
+    }
+    private val helperInputEnabled = TaskHelperInputPolicy.useHelper(Build.VERSION.SDK_INT)
+    private val inputInjector = VirtualDisplayInputInjector(
+        shizuku, displayIdProvider, shellInput::execute,
+        confirmChannel = shellInput::confirmChannel,
+        helper = if (helperInputEnabled) ::injectWithTaskHelper else null,
+    )
     private val textInjector =
             VirtualDisplayTextInjector(
                     context = service,
-                    shizuku = shizuku,
                     displayIdProvider = displayIdProvider,
                     nodeActionPerformer = nodeActionPerformer,
                     inputInjector = inputInjector,
                     unattended = sessionConfig.unattended,
                     isDispatchCancelled = isDispatchCancelled,
+                    executeShellInput = shellInput::execute,
             )
     private val screenshotProcessor =
             VirtualDisplayScreenshotProcessor(
@@ -310,7 +318,14 @@ class VirtualDisplayPlatform(
                     config = config,
                     displayIdProvider = displayIdProvider,
                     inputInjector = inputInjector,
-                    shizuku = shizuku
+                    executeShellInput = shellInput::execute,
+                    retireDisplay = { displayId, outcome ->
+                        synchronized(taskHelperOwnership) {
+                            if ((arbiter.state as? VdState.Running)?.displayId == displayId) {
+                                arbiter.markBroken("Viewer input failed [$outcome]")
+                            }
+                        }
+                    },
             )
 
     // ── Lifecycle ────────────────────────────────────────────────
@@ -522,10 +537,7 @@ class VirtualDisplayPlatform(
             currentCoroutineContext().ensureActive()
             // A launch/attach failure may fall back only while the shell channel still responds.
             // A cached connected bit can survive a channel cut, so verify it with a round trip.
-            val reachable = withTimeoutOrNull(1_500) {
-                runCatching { helperShell.exec("true", timeoutMs = 1_500).exitCode == 0 }
-                        .getOrDefault(false)
-            } == true
+            val reachable = shellInput.confirmChannel(reconnect = false)
             currentCoroutineContext().ensureActive()
             check(reachable) { "Shell channel unavailable during helper VD startup" }
             Log.w(TAG, "Helper startup failed; trying Shizuku", e)
@@ -540,7 +552,7 @@ class VirtualDisplayPlatform(
                     .onFailure {
                         Log.w(TAG, "Task helper staging sweep failed (${it.javaClass.simpleName})")
                     }
-            if (TaskObservationPolicy.useHelperRoute(
+            if (helperInputEnabled || TaskObservationPolicy.useHelperRoute(
                             Build.VERSION.SDK_INT, TaskObservationPolicy.HELPER_ROUTE_ENABLED, true,
                     )) {
                 runCatching { taskHelper.open(token) { arbiter.state is VdState.Running } }
@@ -549,6 +561,54 @@ class VirtualDisplayPlatform(
                         }
             }
         }
+    }
+
+    private suspend fun injectWithTaskHelper(request: TaskHelperInputRequest): InputOutcome {
+        val running = arbiter.state as? VdState.Running ?: return InputOutcome.INVALID_TARGET_OR_REQUEST
+        if (running.displayId != request.displayId) return InputOutcome.INVALID_TARGET_OR_REQUEST
+
+        val token = taskHelperOwnership.capture()
+        val currentTarget = {
+            arbiter.state === running && taskHelperOwnership.isCurrent(token) &&
+                isDispatchCancelled?.invoke() != true
+        }
+        if (!currentTarget()) return InputOutcome.INVALID_TARGET_OR_REQUEST
+
+        val owner = helperDisplay
+        if (owner != null && !owner.connection.isAlive) return InputOutcome.HELPER_DIED
+        // Keep the owner connection even if it dies after the check above. Unlike
+        // displayConnection(), injectInput() can distinguish a dead Binder from no helper.
+        var connection = owner?.connection ?: taskHelper.displayConnection(token)
+        if (connection == null) {
+            // Observation helpers can reattach to the current Shizuku VD. A dead VD
+            // owner instead goes through the existing Broken -> start lifecycle.
+            try {
+                taskHelper.open(token, currentTarget)
+            } catch (_: TimeoutCancellationException) {
+                currentCoroutineContext().ensureActive()
+                return InputOutcome.TIMEOUT
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w(TAG, "Input helper open failed (${failure.javaClass.simpleName})")
+                return InputOutcome.UNAVAILABLE
+            }
+            connection = taskHelper.displayConnection(token)
+            // Opening a helper can take several seconds. Refresh the pre-dispatch evidence.
+            if (connection != null && !shellInput.confirmChannel(reconnect = false)) return InputOutcome.CHANNEL_UNAVAILABLE
+        }
+        val target = connection ?: return InputOutcome.UNAVAILABLE
+        val outcome = withContext(Dispatchers.IO) {
+            target.injectInput(request) { currentTarget() && taskHelperOwnership.isPublished(token) }
+        }
+        if (outcome == InputOutcome.HELPER_DIED && owner == null) {
+            // The dispatcher may have seen DOWN before the binder died. Retire this
+            // VD at run cleanup instead of admitting another write on it.
+            synchronized(taskHelperOwnership) {
+                if (currentTarget()) arbiter.markBroken("Input helper died during dispatch")
+            }
+        }
+        return if (owner != null && !target.isAlive) InputOutcome.HELPER_DIED else outcome
     }
 
     private fun breakHelperDisplay(owner: HelperVirtualDisplayPlatform, reason: String) {
@@ -1072,13 +1132,14 @@ class VirtualDisplayPlatform(
     /** Current surface mode, for UI to check. */
     fun getSurfaceMode(): VirtualDisplaySurfaceMode = surfaceController.mode()
 
+    internal fun viewerTouchTarget(): VdState.Running? = arbiter.state as? VdState.Running
+
     /**
      * Forward a touch stream from VirtualDisplayViewerActivity into the virtual display.
      *
-     * Primary path uses raw MotionEvent injection when InputEvent#setDisplayId is available.
-     * Fallback path uses shell `input tap/swipe --display` when that hidden API is unavailable.
      */
-    fun onViewerTouch(
+    internal suspend fun onViewerTouch(
+            target: VdState.Running,
             action: Int,
             x: Float,
             y: Float,
@@ -1087,15 +1148,24 @@ class VirtualDisplayPlatform(
             viewWidth: Int,
             viewHeight: Int,
     ): Boolean {
-        return viewerTouchHandler.onViewerTouch(
-                action = action,
-                x = x,
-                y = y,
-                downTime = downTime,
-                eventTime = eventTime,
-                viewWidth = viewWidth,
-                viewHeight = viewHeight
-        )
+        return try {
+            arbiter.withRunningLease { running ->
+                if (running !== target) return@withRunningLease false
+                withContext(Dispatchers.IO) {
+                    viewerTouchHandler.onViewerTouch(
+                            action = action,
+                            x = x,
+                            y = y,
+                            downTime = downTime,
+                            eventTime = eventTime,
+                            viewWidth = viewWidth,
+                            viewHeight = viewHeight
+                    )
+                }
+            }
+        } catch (_: PlatformNotRunningException) {
+            false
+        }
     }
 
     // ── Screen Capture ──────────────────────────────────────────

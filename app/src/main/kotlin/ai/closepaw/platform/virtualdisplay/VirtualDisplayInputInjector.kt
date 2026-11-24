@@ -1,5 +1,6 @@
 package ai.closepaw.platform.virtualdisplay
 
+import ai.closepaw.taskhelper.TaskHelperInput
 import android.os.SystemClock
 import android.util.Log
 import android.view.Display
@@ -10,12 +11,12 @@ import android.view.ViewConfiguration
 import ai.closepaw.platform.ActionResult
 import ai.closepaw.platform.SystemButtonType
 import ai.closepaw.platform.UIAction
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
- * Input injector for a virtual display via Shizuku.
+ * Input injector for the session virtual display.
  *
  * Handles tap, long-press, swipe, and system button injection. Encapsulates MotionEvent/KeyEvent
  * construction and display targeting.
@@ -24,43 +25,51 @@ import kotlinx.coroutines.withContext
  * delivered, a best-effort ACTION_CANCEL is sent to release the target UI from pressed/dragging
  * state.
  */
-class VirtualDisplayInputInjector(
+class VirtualDisplayInputInjector internal constructor(
         private val shizuku: ShizukuClient,
-        private val displayIdProvider: () -> Int
+        private val displayIdProvider: () -> Int,
+        private val shell: suspend (Array<String>) -> Int,
+        private val confirmChannel: suspend (Boolean) -> Boolean,
+        private val helper: (suspend (TaskHelperInputRequest) -> InputOutcome)? = null,
 ) {
     companion object {
         private const val TAG = "VirtualDisplayInputInjector"
     }
 
-    fun injectTap(x: Int, y: Int): ActionResult = guarded { injectTapUnguarded(x, y) }
+    suspend fun injectTap(x: Int, y: Int): ActionResult = guarded { injectTapUnguarded(x, y) }
 
-    private fun injectTapUnguarded(x: Int, y: Int): ActionResult {
+    private suspend fun injectTapUnguarded(x: Int, y: Int): ActionResult {
         val displayId = targetDisplayId()
                 ?: return ActionResult.Failure("Virtual display not started (refusing to inject into display ${displayIdProvider()})")
 
-        if (!supportsDisplayIdInjection()) {
-            return shellTap(displayId, x, y)
+        return route(
+                TaskHelperInputRequest(TaskHelperInput.TAP, displayId, x.toFloat(), y.toFloat()),
+                "Tap at ($x,$y)",
+        ) {
+            if (!supportsDisplayIdInjection()) {
+                return@route shellTap(displayId, x, y)
+            }
+
+            val downTime = SystemClock.uptimeMillis()
+            val tapDuration = ViewConfiguration.getTapTimeout().toLong()
+            val down = motionEvent(downTime, downTime, MotionEvent.ACTION_DOWN,
+                x.toFloat(), y.toFloat(), displayId)
+            val ok = try {
+                val up = motionEvent(downTime, downTime + tapDuration, MotionEvent.ACTION_UP,
+                    x.toFloat(), y.toFloat(), displayId)
+                try {
+                    shizuku.injectInputEvent(down) && shizuku.injectInputEvent(up)
+                } finally {
+                    up.recycle()
+                }
+            } finally {
+                down.recycle()
+            }
+            if (!ok) sendBestEffortCancel(downTime, x.toFloat(), y.toFloat(), displayId)
+
+            return@route if (ok) ActionResult.Success("Tap at ($x,$y)")
+            else ActionResult.Failure("Tap inject failed at ($x,$y)")
         }
-
-        val downTime = SystemClock.uptimeMillis()
-        val tapDuration = ViewConfiguration.getTapTimeout().toLong()
-        val down =
-                motionEvent(downTime, downTime, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat())
-        val up =
-                motionEvent(
-                        downTime,
-                        downTime + tapDuration,
-                        MotionEvent.ACTION_UP,
-                        x.toFloat(),
-                        y.toFloat()
-                )
-
-        val ok = shizuku.injectInputEvent(down) && shizuku.injectInputEvent(up)
-        down.recycle()
-        up.recycle()
-
-        return if (ok) ActionResult.Success("Tap at ($x,$y)")
-        else ActionResult.Failure("Tap inject failed at ($x,$y)")
     }
 
     suspend fun injectLongPress(x: Int, y: Int, durationMs: Long): ActionResult =
@@ -70,44 +79,50 @@ class VirtualDisplayInputInjector(
         val displayId = targetDisplayId()
                 ?: return ActionResult.Failure("Virtual display not started (refusing to inject into display ${displayIdProvider()})")
 
-        if (!supportsDisplayIdInjection()) {
-            return shellLongPress(displayId, x, y, durationMs)
-        }
-
-        val downTime = SystemClock.uptimeMillis()
-        val down =
-                motionEvent(downTime, downTime, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat())
-
-        if (!shizuku.injectInputEvent(down)) {
-            down.recycle()
-            return ActionResult.Failure("Long press DOWN inject failed at ($x,$y)")
-        }
-        down.recycle()
-
-        // DOWN delivered — ensure cleanup on cancellation or failure
-        var upSent = false
-        try {
-            delay(durationMs)
-
-            val up =
-                    motionEvent(
-                            downTime,
-                            SystemClock.uptimeMillis(),
-                            MotionEvent.ACTION_UP,
-                            x.toFloat(),
-                            y.toFloat()
-                    )
-            upSent = shizuku.injectInputEvent(up)
-            up.recycle()
-
-            return if (upSent) {
-                ActionResult.Success("Long press at ($x,$y) for ${durationMs}ms")
-            } else {
-                ActionResult.Failure("Long press UP inject failed at ($x,$y)")
+        return route(
+                TaskHelperInputRequest(TaskHelperInput.LONG_PRESS, displayId, x.toFloat(), y.toFloat(),
+                    durationMs = durationMs),
+                "Long press at ($x,$y) for ${durationMs}ms",
+        ) {
+            if (!supportsDisplayIdInjection()) {
+                return@route shellLongPress(displayId, x, y, durationMs)
             }
-        } finally {
-            if (!upSent) {
-                sendBestEffortCancel(downTime, x.toFloat(), y.toFloat())
+
+            val downTime = SystemClock.uptimeMillis()
+            val down =
+                    motionEvent(downTime, downTime, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat(), displayId)
+
+            if (!shizuku.injectInputEvent(down)) {
+                down.recycle()
+                return@route ActionResult.Failure("Long press DOWN inject failed at ($x,$y)")
+            }
+            down.recycle()
+
+            // DOWN delivered — ensure cleanup on cancellation or failure
+            var upSent = false
+            try {
+                delay(durationMs)
+
+                val up =
+                        motionEvent(
+                                downTime,
+                                SystemClock.uptimeMillis(),
+                                MotionEvent.ACTION_UP,
+                                x.toFloat(),
+                                y.toFloat(), displayId
+                        )
+                upSent = shizuku.injectInputEvent(up)
+                up.recycle()
+
+                return@route if (upSent) {
+                    ActionResult.Success("Long press at ($x,$y) for ${durationMs}ms")
+                } else {
+                    ActionResult.Failure("Long press UP inject failed at ($x,$y)")
+                }
+            } finally {
+                if (!upSent) {
+                    sendBestEffortCancel(downTime, x.toFloat(), y.toFloat(), displayId)
+                }
             }
         }
     }
@@ -118,81 +133,87 @@ class VirtualDisplayInputInjector(
         val displayId = targetDisplayId()
                 ?: return ActionResult.Failure("Virtual display not started (refusing to inject into display ${displayIdProvider()})")
 
-        if (!supportsDisplayIdInjection()) {
-            return shellSwipe(displayId, action)
-        }
+        return route(
+                TaskHelperInputRequest(TaskHelperInput.SWIPE, displayId, action.startX.toFloat(),
+                    action.startY.toFloat(), action.endX.toFloat(), action.endY.toFloat(), action.durationMs),
+                "Swipe (${action.startX},${action.startY}) → (${action.endX},${action.endY})",
+        ) {
+            if (!supportsDisplayIdInjection()) {
+                return@route shellSwipe(displayId, action)
+            }
 
-        val downTime = SystemClock.uptimeMillis()
-        val steps = 20
-        val stepMs = (action.durationMs / steps).coerceAtLeast(1)
+            val downTime = SystemClock.uptimeMillis()
+            val steps = 20
+            val stepMs = (action.durationMs / steps).coerceAtLeast(1)
 
-        val down =
-                motionEvent(
-                        downTime,
-                        downTime,
-                        MotionEvent.ACTION_DOWN,
-                        action.startX.toFloat(),
-                        action.startY.toFloat()
-                )
-        if (!shizuku.injectInputEvent(down)) {
+            val down =
+                    motionEvent(
+                            downTime,
+                            downTime,
+                            MotionEvent.ACTION_DOWN,
+                            action.startX.toFloat(),
+                            action.startY.toFloat(), displayId
+                    )
+            if (!shizuku.injectInputEvent(down)) {
+                down.recycle()
+                return@route ActionResult.Failure("Swipe DOWN inject failed")
+            }
             down.recycle()
-            return ActionResult.Failure("Swipe DOWN inject failed")
-        }
-        down.recycle()
 
-        // DOWN delivered — ensure cleanup on cancellation or failure
-        var completedCleanly = false
-        var lastX = action.startX.toFloat()
-        var lastY = action.startY.toFloat()
-        try {
-            for (i in 1..steps) {
-                delay(stepMs)
-                val t = i.toFloat() / steps
-                lastX = action.startX + (action.endX - action.startX) * t
-                lastY = action.startY + (action.endY - action.startY) * t
-                val move =
+            // DOWN delivered — ensure cleanup on cancellation or failure
+            var completedCleanly = false
+            var lastX = action.startX.toFloat()
+            var lastY = action.startY.toFloat()
+            try {
+                for (i in 1..steps) {
+                    delay(stepMs)
+                    val t = i.toFloat() / steps
+                    lastX = action.startX + (action.endX - action.startX) * t
+                    lastY = action.startY + (action.endY - action.startY) * t
+                    val move =
+                            motionEvent(
+                                    downTime,
+                                    SystemClock.uptimeMillis(),
+                                    MotionEvent.ACTION_MOVE,
+                                    lastX,
+                                    lastY, displayId
+                            )
+                    val moveOk = shizuku.injectInputEvent(move)
+                    move.recycle()
+                    if (!moveOk) {
+                        return@route ActionResult.Failure("Swipe MOVE inject failed at step $i")
+                    }
+                }
+
+                val up =
                         motionEvent(
                                 downTime,
                                 SystemClock.uptimeMillis(),
-                                MotionEvent.ACTION_MOVE,
-                                lastX,
-                                lastY
+                                MotionEvent.ACTION_UP,
+                                action.endX.toFloat(),
+                                action.endY.toFloat(), displayId
                         )
-                val moveOk = shizuku.injectInputEvent(move)
-                move.recycle()
-                if (!moveOk) {
-                    return ActionResult.Failure("Swipe MOVE inject failed at step $i")
-                }
-            }
+                completedCleanly = shizuku.injectInputEvent(up)
+                up.recycle()
 
-            val up =
-                    motionEvent(
-                            downTime,
-                            SystemClock.uptimeMillis(),
-                            MotionEvent.ACTION_UP,
-                            action.endX.toFloat(),
-                            action.endY.toFloat()
+                return@route if (completedCleanly) {
+                    ActionResult.Success(
+                            "Swipe (${action.startX},${action.startY}) → (${action.endX},${action.endY})"
                     )
-            completedCleanly = shizuku.injectInputEvent(up)
-            up.recycle()
-
-            return if (completedCleanly) {
-                ActionResult.Success(
-                        "Swipe (${action.startX},${action.startY}) → (${action.endX},${action.endY})"
-                )
-            } else {
-                ActionResult.Failure("Swipe UP inject failed")
-            }
-        } finally {
-            if (!completedCleanly) {
-                sendBestEffortCancel(downTime, lastX, lastY)
+                } else {
+                    ActionResult.Failure("Swipe UP inject failed")
+                }
+            } finally {
+                if (!completedCleanly) {
+                    sendBestEffortCancel(downTime, lastX, lastY, displayId)
+                }
             }
         }
     }
 
-    fun injectSystemButton(button: SystemButtonType): ActionResult = guarded { injectSystemButtonUnguarded(button) }
+    suspend fun injectSystemButton(button: SystemButtonType): ActionResult = guarded { injectSystemButtonUnguarded(button) }
 
-    private fun injectSystemButtonUnguarded(button: SystemButtonType): ActionResult {
+    private suspend fun injectSystemButtonUnguarded(button: SystemButtonType): ActionResult {
         val displayId = targetDisplayId()
                 ?: return ActionResult.Failure("Virtual display not started (refusing to inject into display ${displayIdProvider()})")
 
@@ -204,18 +225,27 @@ class VirtualDisplayInputInjector(
                     SystemButtonType.ENTER -> KeyEvent.KEYCODE_ENTER
                 }
 
-        if (!supportsDisplayIdInjection()) {
-            return shellKeyEvent(displayId, keyCode, button)
+        return route(
+                TaskHelperInputRequest(TaskHelperInput.KEY, displayId, action = keyCode),
+                "System button: $button",
+        ) {
+            if (!supportsDisplayIdInjection()) {
+                return@route shellKeyEvent(displayId, keyCode, button)
+            }
+
+            val now = SystemClock.uptimeMillis()
+            val down = keyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, displayId)
+            val up = keyEvent(now, now + 10, KeyEvent.ACTION_UP, keyCode, displayId)
+
+            val ok = shizuku.injectInputEvent(down) && shizuku.injectInputEvent(up)
+            if (!ok && targetDisplayId() == displayId) {
+                val cancelledUp = KeyEvent.changeFlags(up, KeyEvent.FLAG_CANCELED)
+                if (setDisplayId(cancelledUp, displayId)) shizuku.injectInputEvent(cancelledUp)
+            }
+
+            return@route if (ok) ActionResult.Success("System button: $button")
+            else ActionResult.Failure("System button inject failed: $button")
         }
-
-        val now = SystemClock.uptimeMillis()
-        val down = keyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode)
-        val up = keyEvent(now, now + 10, KeyEvent.ACTION_UP, keyCode)
-
-        val ok = shizuku.injectInputEvent(down) && shizuku.injectInputEvent(up)
-
-        return if (ok) ActionResult.Success("System button: $button")
-        else ActionResult.Failure("System button inject failed: $button")
     }
 
     /**
@@ -225,8 +255,7 @@ class VirtualDisplayInputInjector(
      */
     private fun targetDisplayId(): Int? {
         val id = displayIdProvider()
-        if (id == Display.INVALID_DISPLAY) return null
-        if (id == Display.DEFAULT_DISPLAY) {
+        if (id <= Display.DEFAULT_DISPLAY) {
             Log.e(TAG, "Refusing to inject into the default display")
             return null
         }
@@ -238,11 +267,12 @@ class VirtualDisplayInputInjector(
             eventTime: Long,
             action: Int,
             x: Float,
-            y: Float
+            y: Float,
+            displayId: Int,
     ): MotionEvent {
         val event = MotionEvent.obtain(downTime, eventTime, action, x, y, 0)
         event.source = InputDevice.SOURCE_TOUCHSCREEN
-        if (!setDisplayId(event, displayIdProvider())) {
+        if (!setDisplayId(event, displayId)) {
             event.recycle()
             throw UntargetedInputEventException(action)
         }
@@ -257,25 +287,105 @@ class VirtualDisplayInputInjector(
      * Inject one raw MotionEvent action to the virtual display.
      * Used by the Viewer to forward user touch input (down/move/up stream).
      */
-    fun injectMotionAction(
+    internal suspend fun injectMotionAction(
             action: Int,
             x: Float,
             y: Float,
             downTime: Long,
             eventTime: Long,
-    ): Boolean {
-        targetDisplayId() ?: return false
-        if (action != MotionEvent.ACTION_DOWN &&
-                action != MotionEvent.ACTION_MOVE &&
-                action != MotionEvent.ACTION_UP &&
-                action != MotionEvent.ACTION_CANCEL
-        ) {
+    ): ViewerMotionResult {
+        val invalid = InputOutcome.INVALID_TARGET_OR_REQUEST
+        val unavailable = InputOutcome.CHANNEL_UNAVAILABLE
+        val displayId = targetDisplayId() ?: return ViewerMotionResult(invalid)
+        val request = TaskHelperInputRequest(TaskHelperInput.MOTION, displayId, x, y,
+            action = action, downTime = downTime, eventTime = eventTime)
+        if (!request.valid) return ViewerMotionResult(invalid)
+        if (!channelConfirmed()) return ViewerMotionResult(unavailable)
+        if (targetDisplayId() != displayId) return ViewerMotionResult(invalid)
+
+        val outcome = helper?.invoke(request)
+        logHelper(request, outcome)
+        val helperMayHaveDispatched = outcome?.mayHaveDispatchedMotion() == true
+        if (outcome.blocksFallback()) {
+            // Target invalidation can also be reported after the helper has dispatched.
+            return ViewerMotionResult(checkNotNull(outcome), mayHaveDispatched = outcome == invalid)
+        }
+        if (outcome != null && !channelConfirmed(reconnect = false)) {
+            return ViewerMotionResult(unavailable, helperMayHaveDispatched)
+        }
+        if (targetDisplayId() != displayId) return ViewerMotionResult(invalid, helperMayHaveDispatched)
+        if (outcome == InputOutcome.CONFIRMED) return ViewerMotionResult(outcome)
+        if (!supportsDisplayIdInjection()) {
+            return ViewerMotionResult(InputOutcome.UNAVAILABLE, helperMayHaveDispatched)
+        }
+        currentCoroutineContext().ensureActive()
+        return try {
+            val event = motionEvent(downTime, eventTime, action, x, y, displayId)
+            val accepted = try { shizuku.injectInputEvent(event) } finally { event.recycle() }
+            Log.i(TAG, "input kind=viewer route=shizuku accepted=$accepted")
+            val result = when {
+                !channelConfirmed(reconnect = false) -> unavailable
+                targetDisplayId() != displayId -> invalid
+                accepted -> InputOutcome.CONFIRMED
+                else -> InputOutcome.REJECTED
+            }
+            // The transport also returns false after an exception during dispatch.
+            ViewerMotionResult(result, mayHaveDispatched = true)
+        } catch (_: UntargetedInputEventException) {
+            ViewerMotionResult(invalid, helperMayHaveDispatched)
+        }
+    }
+
+    internal suspend fun channelConfirmed(reconnect: Boolean = true): Boolean {
+        val confirmed = confirmChannel(reconnect)
+        currentCoroutineContext().ensureActive()
+        return confirmed
+    }
+
+    internal suspend fun cancelViewerMotion(displayId: Int, downTime: Long, x: Float, y: Float): Boolean {
+        if (targetDisplayId() != displayId || !channelConfirmed(reconnect = false) || !supportsDisplayIdInjection()) {
             return false
         }
-        val event = motionEvent(downTime, eventTime, action, x, y)
-        val ok = shizuku.injectInputEvent(event)
-        event.recycle()
-        return ok
+        return sendBestEffortCancel(downTime, x, y, displayId)
+    }
+
+    internal fun supportsRawViewerInput(): Boolean = helper != null || supportsDisplayIdInjection()
+
+    private suspend inline fun route(
+        request: TaskHelperInputRequest,
+        success: String,
+        fallback: () -> ActionResult,
+    ): ActionResult {
+        if (!channelConfirmed()) return channelUnavailable()
+        if (targetDisplayId() != request.displayId) {
+            return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
+        }
+        // Oversized legacy durations continue through the incumbent path.
+        val outcome = if (request.valid) helper?.invoke(request) else null
+        logHelper(request, outcome)
+        if (outcome.blocksFallback()) return ActionResult.Failure("Input dispatch failed [$outcome]")
+        if (outcome != null && !channelConfirmed(reconnect = false)) return channelUnavailable()
+        if (targetDisplayId() != request.displayId) {
+            return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
+        }
+        if (outcome == InputOutcome.CONFIRMED) return ActionResult.Success(success)
+        currentCoroutineContext().ensureActive()
+        val result = fallback()
+        if (!channelConfirmed(reconnect = false)) return channelUnavailable()
+        if (targetDisplayId() != request.displayId) {
+            return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
+        }
+        Log.i(TAG, "input kind=${request.kind} route=incumbent accepted=${result is ActionResult.Success}")
+        return if (outcome != null && result is ActionResult.Failure) {
+            ActionResult.Failure("Helper input $outcome; ${result.reason}")
+        } else result
+    }
+
+    private fun channelUnavailable() =
+        ActionResult.Failure("Input dispatch failed [${InputOutcome.CHANNEL_UNAVAILABLE}]")
+
+    private fun logHelper(request: TaskHelperInputRequest, outcome: InputOutcome?) {
+        if (outcome != null) Log.i(TAG, "input kind=${request.kind} route=helper outcome=$outcome")
     }
 
     /**
@@ -317,8 +427,8 @@ class VirtualDisplayInputInjector(
 
     // ---- Shell fallback helpers (used when setDisplayId reflection is unavailable) ----
 
-    private fun shellTap(displayId: Int, x: Int, y: Int): ActionResult {
-        val exitCode = shizuku.executeShellCommand(
+    private suspend fun shellTap(displayId: Int, x: Int, y: Int): ActionResult {
+        val exitCode = shell(
                 arrayOf("input", "-d", "$displayId", "tap", "$x", "$y")
         )
         return if (exitCode == 0) ActionResult.Success("Tap at ($x,$y) [shell]")
@@ -331,14 +441,12 @@ class VirtualDisplayInputInjector(
             y: Int,
             durationMs: Long
     ): ActionResult {
-        val exitCode = withContext(Dispatchers.IO) {
-            shizuku.executeShellCommand(
+        val exitCode = shell(
                     arrayOf(
                             "input", "-d", "$displayId", "swipe",
                             "$x", "$y", "$x", "$y", "$durationMs"
                     )
             )
-        }
         return if (exitCode == 0) {
             ActionResult.Success("Long press at ($x,$y) for ${durationMs}ms [shell]")
         } else {
@@ -347,8 +455,7 @@ class VirtualDisplayInputInjector(
     }
 
     private suspend fun shellSwipe(displayId: Int, action: UIAction.Swipe): ActionResult {
-        val exitCode = withContext(Dispatchers.IO) {
-            shizuku.executeShellCommand(
+        val exitCode = shell(
                     arrayOf(
                             "input", "-d", "$displayId", "swipe",
                             "${action.startX}", "${action.startY}",
@@ -356,7 +463,6 @@ class VirtualDisplayInputInjector(
                             "${action.durationMs}"
                     )
             )
-        }
         return if (exitCode == 0) {
             ActionResult.Success(
                     "Swipe (${action.startX},${action.startY}) → (${action.endX},${action.endY}) [shell]"
@@ -366,39 +472,40 @@ class VirtualDisplayInputInjector(
         }
     }
 
-    private fun shellKeyEvent(
+    private suspend fun shellKeyEvent(
             displayId: Int,
             keyCode: Int,
             button: SystemButtonType
     ): ActionResult {
-        val exitCode = shizuku.executeShellCommand(
+        val exitCode = shell(
                 arrayOf("input", "-d", "$displayId", "keyevent", "$keyCode")
         )
         return if (exitCode == 0) ActionResult.Success("System button: $button [shell]")
         else ActionResult.Failure("Shell keyevent failed: $button, exit=$exitCode")
     }
 
-    private fun keyEvent(downTime: Long, eventTime: Long, action: Int, keyCode: Int): KeyEvent {
+    private fun keyEvent(downTime: Long, eventTime: Long, action: Int, keyCode: Int, displayId: Int): KeyEvent {
         val event = KeyEvent(downTime, eventTime, action, keyCode, 0)
-        if (!setDisplayId(event, displayIdProvider())) throw UntargetedInputEventException(action)
+        if (!setDisplayId(event, displayId)) throw UntargetedInputEventException(action)
         return event
     }
 
     /** Send a best-effort ACTION_CANCEL to release the target UI from pressed/dragging state. */
-    private fun sendBestEffortCancel(downTime: Long, x: Float, y: Float) {
-        try {
+    private fun sendBestEffortCancel(downTime: Long, x: Float, y: Float, displayId: Int): Boolean {
+        if (targetDisplayId() != displayId) return false
+        return try {
             val cancel =
                     motionEvent(
                             downTime,
                             SystemClock.uptimeMillis(),
                             MotionEvent.ACTION_CANCEL,
                             x,
-                            y
+                            y, displayId
                     )
-            shizuku.injectInputEvent(cancel)
-            cancel.recycle()
+            try { shizuku.injectInputEvent(cancel) } finally { cancel.recycle() }
         } catch (e: Exception) {
             Log.w(TAG, "Best-effort ACTION_CANCEL failed", e)
+            false
         }
     }
 
@@ -426,12 +533,12 @@ class VirtualDisplayInputInjector(
      * id is not a virtual display or the hidden API did not take effect.
      */
     private fun setDisplayId(event: android.view.InputEvent, id: Int): Boolean {
-        if (id == Display.INVALID_DISPLAY || id == Display.DEFAULT_DISPLAY) return false
+        if (id <= Display.DEFAULT_DISPLAY) return false
         val method = setDisplayIdMethod ?: return false
         return try {
             method.invoke(event, id) // void method — null return is normal
             val readBack = getDisplayIdMethod?.invoke(event) as? Int
-            if (readBack != null && readBack != id) {
+            if (readBack != id) {
                 Log.e(TAG, "displayId mismatch after set: wanted=$id got=$readBack")
                 false
             } else {

@@ -72,7 +72,6 @@ class VirtualDisplayTextInjectorTest {
     private suspend fun assertFocusedDelivery(ignoredSetText: Boolean) {
         val events = mutableListOf<String>()
         val nodes = mockk<NodeActionPerformer>()
-        val shizuku = mockk<ShizukuClient>()
         var text = ""
         coEvery { nodes.performFocusNodeAt(10, 20) } coAnswers {
             events.add("focus")
@@ -88,16 +87,17 @@ class VirtualDisplayTextInjectorTest {
             if (!ignoredSetText) text = "hello"
             ActionResult.Success()
         }
-        every { shizuku.executeQuietShellCommand(any()) } answers {
+        val shell: suspend (Array<String>) -> Int = { command ->
             events.add("shell")
-            assertThat(firstArg<Array<String>>().toList()).containsExactly("input", "-d", "7", "text", "hello").inOrder()
+            assertThat(command.toList()).containsExactly("input", "-d", "7", "text", "hello").inOrder()
             text = "hello"
             0
         }
         val injector = VirtualDisplayTextInjector(
-            mockk(), shizuku, { 7 }, nodes, mockk(),
+            mockk(), { 7 }, nodes, mockk(),
             clipboardProvider = { error("Clipboard must remain untouched") },
             unattended = true,
+            executeShellInput = shell,
         )
 
         val result = injector.inject(UIAction.InjectText("hello", focusX = 10, focusY = 20))

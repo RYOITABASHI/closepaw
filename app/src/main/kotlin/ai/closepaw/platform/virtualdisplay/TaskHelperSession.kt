@@ -2,18 +2,21 @@ package ai.closepaw.platform.virtualdisplay
 
 import ai.closepaw.adb.AdbShellChannel
 import ai.closepaw.taskhelper.HelperRegistration
+import ai.closepaw.taskhelper.TaskHelperInput
 import ai.closepaw.taskhelper.TaskHelperProtocol
 import ai.closepaw.taskhelper.TaskHelperRendezvousProvider
 import ai.closepaw.taskhelper.TaskHelperWire
 import android.content.Context
 import android.os.Bundle
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -50,7 +53,7 @@ internal class TaskHelperSession(
 
     suspend fun open(token: TaskHelperOwnership.Token, shouldOpen: () -> Boolean = { true }) = lifecycle.withLock {
         if (!ownership.isCurrent(token)) return@withLock
-        if (ownership.installedGeneration() == token.generation && process != null) return@withLock
+        if (ownership.installedGeneration() == token.generation && active?.isAlive == true) return@withLock
         if (!shouldOpen()) return@withLock
         sweepStaleStaging()
         val previous = ownership.installedGeneration()
@@ -217,6 +220,7 @@ internal class TaskHelperSession(
         private val events = Events(registration)
         private val queryLock = ReentrantLock()
         private val displayLock = ReentrantLock()
+        private val inputLock = ReentrantLock()
         private val displayCommandsUsable = AtomicBoolean(true)
         // Keep a stalled Binder transaction outside the caller's deadline.
         private val sender = ScheduledThreadPoolExecutor(1) { task ->
@@ -385,11 +389,67 @@ internal class TaskHelperSession(
             }
         }
 
+        fun injectInput(input: TaskHelperInputRequest, isCurrentTarget: () -> Boolean): InputOutcome {
+            if (!input.valid) return InputOutcome.INVALID_TARGET_OR_REQUEST
+            val deadline = SystemClock.uptimeMillis() + input.timeoutMs
+            // A single pending mutation keeps input dispatch ordered, with the lock wait
+            // included in the caller's deadline.
+            try {
+                if (!inputLock.tryLock(input.timeoutMs, TimeUnit.MILLISECONDS)) return InputOutcome.TIMEOUT
+                try {
+                    if (!isAlive) return InputOutcome.HELPER_DIED
+                    val request = InputRequest(ids.incrementAndGet(), input)
+                    events.inputPending.set(request)
+                    try {
+                        val sending = sender.submit {
+                            when {
+                                !isAlive -> request.reply.complete(InputOutcome.HELPER_DIED)
+                                !isCurrentTarget() -> request.reply.complete(InputOutcome.INVALID_TARGET_OR_REQUEST)
+                                SystemClock.uptimeMillis() >= deadline -> request.reply.complete(InputOutcome.TIMEOUT)
+                                events.inputPending.get() === request -> {
+                                    runCatching {
+                                        send(TaskHelperWire.INJECT_INPUT, input.payload(request.id, deadline))
+                                    }.onFailure {
+                                        request.reply.complete(
+                                            if (isAlive) InputOutcome.EXCEPTION else InputOutcome.HELPER_DIED,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        try {
+                            val result = request.reply.get(deadline - SystemClock.uptimeMillis(),
+                                TimeUnit.MILLISECONDS)
+                            return when {
+                                !isAlive -> InputOutcome.HELPER_DIED
+                                !isCurrentTarget() -> InputOutcome.INVALID_TARGET_OR_REQUEST
+                                else -> result
+                            }
+                        } finally {
+                            sending.cancel(false)
+                        }
+                    } finally {
+                        events.inputPending.compareAndSet(request, null)
+                    }
+                } finally {
+                    inputLock.unlock()
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return InputOutcome.UNCONFIRMED
+            } catch (_: TimeoutException) {
+                return if (isAlive) InputOutcome.TIMEOUT else InputOutcome.HELPER_DIED
+            } catch (_: Exception) {
+                return if (isAlive) InputOutcome.EXCEPTION else InputOutcome.HELPER_DIED
+            }
+        }
+
         fun beginClose() {
             closed.set(true)
             events.pending.get()?.complete(null)
             events.pendingWrite.get()?.answer?.complete(TaskWriteResult.UNKNOWN)
             events.displayPending.get()?.reply?.complete(null)
+            events.inputPending.get()?.reply?.complete(InputOutcome.HELPER_DIED)
         }
 
         suspend fun awaitHelperDeath(): Boolean {
@@ -421,6 +481,10 @@ internal class TaskHelperSession(
         val reply = CompletableFuture<Bundle?>()
     }
 
+    private class InputRequest(val id: Int, val input: TaskHelperInputRequest) {
+        val reply = CompletableFuture<InputOutcome>()
+    }
+
     private class Events(registration: HelperRegistration) :
             TaskHelperWire.Endpoint(TaskHelperWire.EVENTS), IBinder.DeathRecipient {
         val attached = CompletableDeferred<Unit>()
@@ -428,6 +492,7 @@ internal class TaskHelperSession(
         val pending = AtomicReference<TaskHelperQuery?>()
         val pendingWrite = AtomicReference<PendingWrite?>()
         val displayPending = AtomicReference<DisplayRequest?>()
+        val inputPending = AtomicReference<InputRequest?>()
 
         init {
             bindPeer(TaskHelperProtocol.SHELL_UID, registration.pid, registration.secret)
@@ -479,6 +544,25 @@ internal class TaskHelperSession(
                         }
                     }
                 }
+                TaskHelperWire.INPUT_RESULT -> {
+                    val request = inputPending.get() ?: return
+                    val outcome = runCatching {
+                        if (payload.get(TaskHelperWire.REQUEST_ID) != request.id) return
+                        if (payload.get(TaskHelperWire.DISPLAY_ID) != request.input.displayId) {
+                            InputOutcome.UNCONFIRMED
+                        } else {
+                            val motion = request.input.kind == TaskHelperInput.MOTION
+                            inputOutcome(
+                                motion,
+                                payload.get(TaskHelperInput.REFLECTION_OK),
+                                payload.get(if (motion) TaskHelperInput.ACCEPTED else TaskHelperInput.DOWN),
+                                payload.get(TaskHelperInput.UP),
+                                payload.get(TaskHelperInput.ERROR),
+                            )
+                        }
+                    }.getOrDefault(InputOutcome.UNCONFIRMED)
+                    request.reply.complete(outcome)
+                }
                 TaskHelperWire.ERROR -> {
                     val id = payload.get(TaskHelperWire.QUERY_ID)
                     if (id is Int) {
@@ -498,6 +582,7 @@ internal class TaskHelperSession(
             pending.get()?.binderDied()
             pendingWrite.get()?.answer?.complete(TaskWriteResult.UNKNOWN)
             displayPending.get()?.reply?.complete(null)
+            inputPending.get()?.reply?.complete(InputOutcome.HELPER_DIED)
         }
     }
 

@@ -2,6 +2,7 @@ package ai.closepaw.taskhelper;
 
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Process;
@@ -27,7 +28,10 @@ public final class TaskHelperMain {
     private final TimerTask startupDeadline = killTask();
     private final String secret = TaskHelperProtocol.newChallenge();
     private volatile IBinder receiver;
-    private TaskHelperFramework.Display display;
+    private volatile TaskHelperFramework.Display display;
+    private final TaskHelperInputInjector input = new TaskHelperInputInjector();
+    private volatile boolean ownsDisplayLifecycle;
+    private Handler inputWorker;
 
     private TaskHelperMain(Handler worker) {
         this.worker = worker;
@@ -94,6 +98,9 @@ public final class TaskHelperMain {
                 case TaskHelperWire.QUERY_ROOT_TASKS:
                     queryRootTasks(payload);
                     break;
+                case TaskHelperWire.INJECT_INPUT:
+                    queueInput(payload);
+                    break;
                 case TaskHelperWire.CREATE_DISPLAY:
                 case TaskHelperWire.RELEASE_DISPLAY:
                 case TaskHelperWire.SET_DISPLAY_SURFACE:
@@ -116,6 +123,25 @@ public final class TaskHelperMain {
                     ? payload.getInt(TaskHelperWire.QUERY_ID) : null;
             reportFailure(failure, queryId);
         }
+    }
+
+    private void queueInput(Bundle payload) {
+        if (receiver == null) return;
+        if (inputWorker == null) {
+            // Long presses must not block root-task reads or display lifecycle operations.
+            HandlerThread thread = new HandlerThread("closepaw-task-helper-input");
+            thread.start();
+            inputWorker = new Handler(thread.getLooper());
+        }
+        inputWorker.post(() -> {
+            TaskHelperFramework.Display owner = display;
+            int target = owner != null ? owner.id : (ownsDisplayLifecycle ? 0 : -1);
+            try {
+                event(TaskHelperWire.INPUT_RESULT, input.execute(payload, target));
+            } catch (android.os.RemoteException gone) {
+                kill();
+            }
+        });
     }
 
     private void displayCommand(int code, Bundle request) throws Exception {
@@ -191,7 +217,10 @@ public final class TaskHelperMain {
                 }
                 throw failure;
             }
-            if (candidate.id > 0) display = candidate;
+            if (candidate.id > 0) {
+                ownsDisplayLifecycle = true;
+                display = candidate;
+            }
             return true;
         } finally {
             surface.release();

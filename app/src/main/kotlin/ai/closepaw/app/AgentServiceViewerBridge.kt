@@ -1,7 +1,9 @@
 package ai.closepaw.app
 
 import android.util.Log
+import android.view.MotionEvent
 import android.view.SurfaceView
+import ai.closepaw.platform.virtualdisplay.VdState
 import ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
 import ai.closepaw.platform.virtualdisplay.VirtualDisplaySurfaceSwitchFailure
 import ai.closepaw.ui.overlay.model.CapsuleMode
@@ -57,7 +59,13 @@ internal class AgentServiceViewerBridge(
         platformProvider()?.switchToImageReader()
     }
 
-    fun onViewerTouch(
+    fun viewerTouchTarget(): VdState.Running? {
+        if (overlayControllerProvider()?.stateHolder?.mode?.value !is CapsuleMode.Takeover) return null
+        return platformProvider()?.viewerTouchTarget()
+    }
+
+    suspend fun onViewerTouch(
+        target: VdState.Running,
         action: Int,
         x: Float,
         y: Float,
@@ -67,9 +75,10 @@ internal class AgentServiceViewerBridge(
         viewHeight: Int
     ): Boolean {
         val currentMode = overlayControllerProvider()?.stateHolder?.mode?.value
-        if (currentMode !is CapsuleMode.Takeover) return true
+        if (currentMode !is CapsuleMode.Takeover && action != MotionEvent.ACTION_CANCEL) return false
         val platform = platformProvider() ?: return false
         return platform.onViewerTouch(
+            target = target,
             action = action,
             x = x,
             y = y,
