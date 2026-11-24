@@ -21,6 +21,37 @@ internal data class ElementIdentity(
 internal fun PerceptionElement.identity() =
     ElementIdentity(packageName, className, text, description, bounds, resourceId)
 
+internal fun List<PerceptionElement>.resolveTapTarget(observed: ElementIdentity): PerceptionElement? =
+    singleOrNull { it.identity().matchesForTap(observed) }
+
+private fun ElementIdentity.matchesForTap(observed: ElementIdentity): Boolean =
+    packageName == observed.packageName &&
+        className == observed.className &&
+        text == observed.text &&
+        description == observed.description &&
+        resourceId == observed.resourceId &&
+        bounds.isCompatibleWith(observed.bounds)
+
+private fun Bounds.isCompatibleWith(observed: Bounds): Boolean {
+    val candidateArea = area()
+    val observedArea = observed.area()
+    if (candidateArea <= 0.0 || observedArea <= 0.0) return false
+    return candidateArea / observedArea in 0.5..2.0 &&
+        (observed.containsCenterOf(this) || containsCenterOf(observed))
+}
+
+private fun Bounds.area(): Double {
+    val width = right.toDouble() - left
+    val height = bottom.toDouble() - top
+    return if (width > 0.0 && height > 0.0) width * height else 0.0
+}
+
+private fun Bounds.containsCenterOf(other: Bounds): Boolean {
+    val centerX = (other.left.toDouble() + other.right) / 2
+    val centerY = (other.top.toDouble() + other.bottom) / 2
+    return centerX >= left && centerX <= right && centerY >= top && centerY <= bottom
+}
+
 /**
  * D4 generic defaults for brain-driven sessions.
  *

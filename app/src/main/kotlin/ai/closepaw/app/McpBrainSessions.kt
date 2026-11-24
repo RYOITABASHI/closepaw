@@ -20,6 +20,7 @@ import ai.closepaw.mcp.McpTypedOpError
 import ai.closepaw.mcp.brainSignature
 import ai.closepaw.mcp.completeBrainTerminal
 import ai.closepaw.mcp.identity
+import ai.closepaw.mcp.resolveTapTarget
 import ai.closepaw.model.ScreenSnapshot
 import ai.closepaw.perception.Perceptor
 import ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
@@ -914,7 +915,7 @@ internal class AgentServiceBrainSessions(
         val tapIndex = if (name == McpHandler.TOOL_TAP) McpSessionArgs.elementIndex(args) else null
         val observedIdentity = tapIndex?.let { brain.observedElements?.get(it) }
         val tapElement = observedIdentity?.let { identity ->
-            pre?.snapshot?.elements?.singleOrNull { it.identity() == identity }
+            pre?.snapshot?.elements?.resolveTapTarget(identity)
         }
         val target = if (tapIndex == null) initialTarget else {
             val fingerprint = tapElement?.let {
@@ -951,7 +952,7 @@ internal class AgentServiceBrainSessions(
             params.put("element_index", tapElement.index)
             val identity = tapElement.identity()
             val matches: (ScreenSnapshot) -> Boolean = { snapshot ->
-                snapshot.elements.singleOrNull { it.identity() == identity }?.index == tapElement.index
+                snapshot.elements.resolveTapTarget(identity)?.index == tapElement.index
             }
             matches
         } else null
