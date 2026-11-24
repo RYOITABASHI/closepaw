@@ -20,6 +20,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import ai.closepaw.app.AgentService
+import ai.closepaw.platform.virtualdisplay.VirtualDisplaySurfaceSwitchFailure
 import kotlinx.coroutines.launch
 
 /**
@@ -43,6 +44,17 @@ class VirtualDisplayViewerActivity : ComponentActivity() {
     }
 
     private var surfaceView: SurfaceView? = null
+    internal var lastSurfaceSwitchFailure: VirtualDisplaySurfaceSwitchFailure? = null
+        private set
+
+    private inline fun switchViewerSurface(switch: () -> Unit) {
+        try {
+            switch()
+        } catch (failure: VirtualDisplaySurfaceSwitchFailure) {
+            lastSurfaceSwitchFailure = failure
+            Log.w(TAG, "Virtual display surface switch failed", failure)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,11 +65,11 @@ class VirtualDisplayViewerActivity : ComponentActivity() {
             VirtualDisplayViewerScreen(
                 onSurfaceReady = { sv ->
                     surfaceView = sv
-                    AgentService.instance?.notifyViewerVisible(sv)
+                    switchViewerSurface { AgentService.instance?.notifyViewerVisible(sv) }
                 },
                 onSurfaceDestroyed = {
                     surfaceView = null
-                    AgentService.instance?.notifyViewerHidden()
+                    switchViewerSurface { AgentService.instance?.notifyViewerHidden() }
                 },
                 onSurfaceTouch = { view, event ->
                     AgentService.instance?.onViewerTouch(
@@ -90,7 +102,7 @@ class VirtualDisplayViewerActivity : ComponentActivity() {
         super.onStart()
         Log.d(TAG, "onStart")
         surfaceView?.let { sv ->
-            AgentService.instance?.notifyViewerVisible(sv)
+            switchViewerSurface { AgentService.instance?.notifyViewerVisible(sv) }
         }
         // Notify service: show capsule overlay, hide island, set SCREEN_VIEWING context
         AgentService.instance?.onViewerOpened()
@@ -107,7 +119,7 @@ class VirtualDisplayViewerActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         Log.d(TAG, "onStop")
-        AgentService.instance?.notifyViewerHidden()
+        switchViewerSurface { AgentService.instance?.notifyViewerHidden() }
         // Notify service: hide capsule overlay, show island, set BACKGROUND context
         AgentService.instance?.onViewerClosed()
         if (!isChangingConfigurations) {

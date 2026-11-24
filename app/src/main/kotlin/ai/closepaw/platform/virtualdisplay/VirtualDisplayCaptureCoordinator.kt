@@ -105,9 +105,14 @@ internal class VirtualDisplayCaptureCoordinator(
         }
 
         suspend fun captureScreenshot(): VDScreenshotCapture? {
-                return when (surfaceController.mode()) {
-                        VirtualDisplaySurfaceMode.IMAGE_READER -> captureFromImageReader()
-                        VirtualDisplaySurfaceMode.LIVE_PREVIEW -> captureFromPixelCopy()
+                return try {
+                        when (surfaceController.mode()) {
+                                VirtualDisplaySurfaceMode.IMAGE_READER -> captureFromImageReader()
+                                VirtualDisplaySurfaceMode.LIVE_PREVIEW -> captureFromPixelCopy()
+                        }
+                } catch (failure: VirtualDisplaySurfaceSwitchFailure) {
+                        Log.w(TAG, "ImageReader fallback failed", failure)
+                        null
                 }
         }
 

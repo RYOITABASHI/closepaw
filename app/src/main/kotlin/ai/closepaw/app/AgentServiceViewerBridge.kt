@@ -3,6 +3,7 @@ package ai.closepaw.app
 import android.util.Log
 import android.view.SurfaceView
 import ai.closepaw.platform.virtualdisplay.VirtualDisplayPlatform
+import ai.closepaw.platform.virtualdisplay.VirtualDisplaySurfaceSwitchFailure
 import ai.closepaw.ui.overlay.model.CapsuleMode
 
 internal class AgentServiceViewerBridge(
@@ -46,10 +47,12 @@ internal class AgentServiceViewerBridge(
         finishViewerActivity()
     }
 
+    @Throws(VirtualDisplaySurfaceSwitchFailure::class)
     fun notifyViewerVisible(surfaceView: SurfaceView) {
         platformProvider()?.switchToLivePreview(surfaceView)
     }
 
+    @Throws(VirtualDisplaySurfaceSwitchFailure::class)
     fun notifyViewerHidden() {
         platformProvider()?.switchToImageReader()
     }

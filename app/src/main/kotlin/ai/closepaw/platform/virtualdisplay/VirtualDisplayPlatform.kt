@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.Display
+import android.view.Surface
 import android.view.SurfaceView
 import android.view.accessibility.AccessibilityWindowInfo
 import ai.closepaw.adb.AdbShellChannel
@@ -26,13 +27,19 @@ import ai.closepaw.protocol.SessionConfig
 import ai.closepaw.trace.TraceRecorder
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
 import ai.closepaw.util.recycleCompat
+import java.io.IOException
 import java.util.WeakHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import rikka.shizuku.Shizuku
 
 /**
@@ -109,7 +116,7 @@ internal fun vdOptionalDisplayFlags(sdkInt: Int, backgroundRun: Boolean): Int =
         if (backgroundRun && sdkInt >= 34) VD_FOCUS_ISOLATION_FLAGS else 0
 
 /**
- * VirtualDisplayPlatform — AndroidPlatform running on a Shizuku virtual display.
+ * AndroidPlatform running on a session-owned virtual display.
  *
  * Lifecycle is serialized through [VdLifecycleArbiter]: start/stop take exclusive access,
  * captureScreen/performAction run under a shared Running lease. Binder death transitions
@@ -172,9 +179,13 @@ class VirtualDisplayPlatform(
      * for every deferred helper close, so stale work can never publish or
      * kill another generation's helper (see TaskHelperOwnership). */
     private val taskHelperOwnership = TaskHelperOwnership()
-    private val taskHelper = TaskHelperSession(service, AdbShellChannel(service), taskHelperOwnership).also {
+    private val helperShell = AdbShellChannel(service)
+    private val taskHelper = TaskHelperSession(service, helperShell, taskHelperOwnership).also {
         shizuku.attachTaskHelper(it)
     }
+    @Volatile private var helperDisplay: HelperVirtualDisplayPlatform? = null
+    private var helperDeathWatch: Job? = null
+    private var unsettledDisplay: TaskHelperSession.Connection? = null
     @Volatile private var hasRunDisplay = false
     @Volatile private var startFailure: String? = null
     @Volatile private var lastCaptureFailure: String? = null
@@ -279,7 +290,7 @@ class VirtualDisplayPlatform(
             )
     private val surfaceController =
             VirtualDisplaySurfaceController(
-                    shizuku = shizuku,
+                    setSurface = ::setDisplaySurface,
                     displayIdProvider = displayIdProvider,
                     imageReaderProvider = imageReaderProvider
             )
@@ -311,7 +322,7 @@ class VirtualDisplayPlatform(
             throw IllegalStateException(reason)
         }
         arbiter.withLifecycleTransition { previous ->
-            if (previous is VdState.Running) {
+            if (previous is VdState.Running && canReuseDisplay(previous)) {
                 // A new run (Hot Idle follow-up) needs the VD: a deferred display-0 restore is
                 // executed and CONFIRMED first (bounded retry), so the run never starts with the
                 // user's tasks still on the VD. If that cannot be confirmed, the start fails (the
@@ -322,17 +333,18 @@ class VirtualDisplayPlatform(
                     // The previous task's run-end restore (requested before the session went
                     // Idle) decides / records its deferral first, then the reconcile sees it.
                     runEnd.awaitRunEnd() // never releases it: a result report it waits for stays first
+                    if (!canReuseDisplay(previous)) return@let
                     val outcome = restorer.reconcileBeforeRun(previous.displayId)
                     if (outcome == MainDisplayReconcileOutcome.FAILED) restorer.dropDeferral()
                     syncScreenOffReceiver()
-                    if (outcome == MainDisplayReconcileOutcome.FAILED) {
+                    if (outcome == MainDisplayReconcileOutcome.FAILED && canReuseDisplay(previous)) {
                         throw IllegalStateException(
                                 "Display-0 tasks ${restorer.unreconciledTaskIds()} are still on the " +
                                         "virtual display; not starting a run on it"
                         )
                     }
                 }
-                return@withLifecycleTransition
+                if (canReuseDisplay(previous)) return@withLifecycleTransition
             }
 
             startFailure = null
@@ -345,23 +357,28 @@ class VirtualDisplayPlatform(
                 }
 
                 // Clean up leaked resources from a Broken state before allocating new ones
-                if (previous is VdState.Broken) {
+                val broken = arbiter.state as? VdState.Broken
+                if (broken != null) {
                     Log.w(TAG, "start() from Broken state — cleaning up old resources first")
                     // The broken session's helper retires asynchronously (its close is
-                    // generation-checked and reaper-backed): the restart does not wait
-                    // for the old helper's death confirmation. Reads stop resolving it
-                    // immediately.
+                    // generation-checked and reaper-backed). Detach reads immediately
+                    // and settle display ownership before allocating another VD.
                     val brokenHelperClose = taskHelperOwnership.capture()
                     taskHelper.detachActive()
-                    deferralScope.launch { taskHelper.close(brokenHelperClose) }
                     binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
                     binderDeadListener = null
                     surfaceController.reset()
-                    shizuku.releaseVirtualDisplay(previous.displayId)
-                    previous.imageReader.close()
+                    releaseDisplay(broken.displayId)
+                    deferralScope.launch { taskHelper.close(brokenHelperClose) }
+                    broken.imageReader.close()
                     shizuku.clearCachedProxies()
+                    arbiter.transitionTo(VdState.Stopped)
                 }
 
+                check(unsettledDisplay?.isDeathObserved() != false) {
+                    "Previous helper VD teardown is still unconfirmed"
+                }
+                unsettledDisplay = null
                 shizuku.bypassHiddenApis()
 
                 val reader =
@@ -372,49 +389,50 @@ class VirtualDisplayPlatform(
                                 IMAGE_READER_MAX_IMAGES
                         )
 
-                val id =
-                        try {
-                            shizuku.createVirtualDisplay(
-                                    name = "closepaw_agent_display",
-                                    width = config.width,
-                                    height = config.height,
-                                    densityDpi = config.densityDpi,
-                                    surface = reader.surface,
-                                    flags = DISPLAY_FLAGS,
-                                    imePolicy = DISPLAY_IME_POLICY_HIDE,
-                                    optionalFlags = vdOptionalDisplayFlags(
-                                            android.os.Build.VERSION.SDK_INT,
-                                            backgroundRun = sessionConfig.preserveMainDisplayTasks ||
-                                                    sessionConfig.isolateFocus,
-                                    )
-                            )
-                        } catch (e: Exception) {
-                            startFailure = "virtual display creation failed: ${e.javaClass.simpleName}"
-                            reader.close()
-                            throw e
-                        }
-
-                if (id < 0) {
-                    startFailure = "virtual display creation failed (returned $id)"
-                    reader.close()
-                    throw IllegalStateException("Failed to create virtual display (returned $id)")
-                }
-
-                // IME policy before anything can launch on the VD (the IME display is resolved at
-                // startInput time). Fail-open: a missing API or permission only loses this layer.
-                val atCreation = try {
-                    shizuku.imePolicyAppliedAtCreation(id)
-                } catch (e: Exception) {
-                    false
-                }
-                synchronized(imePolicyLock) {
-                    appliedImePolicy = if (atCreation) DISPLAY_IME_POLICY_HIDE else null
-                }
-                reconcileImePolicy(id)
-
-                // Resources allocated — register binder death listener and commit state.
-                // If anything fails here, roll back: release display, close reader, reset state.
+                val helperToken = taskHelperOwnership.mint()
+                var id = Display.INVALID_DISPLAY
                 try {
+                    val optionalFlags = vdOptionalDisplayFlags(
+                            Build.VERSION.SDK_INT,
+                            backgroundRun = sessionConfig.preserveMainDisplayTasks || sessionConfig.isolateFocus,
+                    )
+                    if (VirtualDisplayLifecyclePolicy.useHelper(
+                                    Build.VERSION.SDK_INT, VirtualDisplayLifecyclePolicy.HELPER_ENABLED,
+                            )) {
+                        val connection = openDisplayHelper(helperToken)
+                        if (connection != null) {
+                            unsettledDisplay = connection
+                            helperDisplay = withContext(Dispatchers.IO) {
+                                HelperVirtualDisplayPlatform.create(
+                                        connection, config.width, config.height, config.densityDpi,
+                                        reader.surface, DISPLAY_FLAGS, optionalFlags, DISPLAY_IME_POLICY_HIDE,
+                                )
+                            }
+                            unsettledDisplay = null
+                            if (helperDisplay == null) Log.w(TAG, "Helper VD create rejected; trying Shizuku")
+                        }
+                    }
+                    val owner = helperDisplay
+                    id = owner?.displayId ?: shizuku.createVirtualDisplay(
+                            name = "closepaw_agent_display",
+                            width = config.width,
+                            height = config.height,
+                            densityDpi = config.densityDpi,
+                            surface = reader.surface,
+                            flags = DISPLAY_FLAGS,
+                            imePolicy = DISPLAY_IME_POLICY_HIDE,
+                            optionalFlags = optionalFlags,
+                    )
+                    check(id > 0) { "Failed to create virtual display (returned $id)" }
+                    Log.i(TAG, "VD lifecycle source=${if (owner == null) "SHIZUKU" else "HELPER"} displayId=$id")
+
+                    // Apply initial HIDE before anything can launch on the VD.
+                    synchronized(imePolicyLock) {
+                        val atCreation = owner?.imeAtCreation ?: shizuku.imePolicyAppliedAtCreation(id)
+                        appliedImePolicy = if (atCreation) DISPLAY_IME_POLICY_HIDE else null
+                    }
+                    reconcileImePolicy(id, starting = true)
+
                     val listener =
                             Shizuku.OnBinderDeadListener {
                                 Log.e(TAG, "Shizuku binder died! displayId=$id")
@@ -440,12 +458,22 @@ class VirtualDisplayPlatform(
                     shizuku.addBinderDeadListener(listener)
 
                     arbiter.transitionTo(VdState.Running(id, reader))
-                    hasRunDisplay = true
-                    startFailure = null
+                    if (owner != null) {
+                        helperDeathWatch = deferralScope.launch {
+                            owner.connection.awaitDeath()
+                            breakHelperDisplay(owner, "Task helper Binder died")
+                        }
+                    }
                     // A viewer open/close that arrived before Running was published saw no running
                     // display and only recorded its state: apply the latest one now.
                     reconcileImePolicy(id)
                     delay(SURFACE_READY_DELAY_MS)
+                    check(arbiter.state is VdState.Running && owner?.connection?.isAlive != false) {
+                        "Virtual display lost during startup"
+                    }
+                    hasRunDisplay = true
+                    startFailure = null
+                    startTaskObservation(helperToken)
 
                     Log.i(
                             TAG,
@@ -456,8 +484,12 @@ class VirtualDisplayPlatform(
                     startFailure = "virtual display startup failed: ${e.javaClass.simpleName}"
                     binderDeadListener?.let { shizuku.removeBinderDeadListener(it) }
                     binderDeadListener = null
-                    shizuku.releaseVirtualDisplay(id)
-                    reader.close()
+                    try {
+                        releaseDisplay(id)
+                    } finally {
+                        postTaskHelperClose()
+                        reader.close()
+                    }
                     shizuku.clearCachedProxies()
                     arbiter.transitionTo(VdState.Stopped)
                     throw e
@@ -470,22 +502,94 @@ class VirtualDisplayPlatform(
             } finally {
                 ShizukuHealGate.endVdActivation()
             }
-            val helperToken = taskHelperOwnership.mint()
-            deferralScope.launch {
-                runCatching { taskHelper.sweepStaleStaging() }
-                        .onFailure {
-                            Log.w(TAG, "Task helper staging sweep failed (${it.javaClass.simpleName})")
-                        }
-                val helperEnabled = TaskObservationPolicy.useHelperRoute(
-                        Build.VERSION.SDK_INT, TaskObservationPolicy.HELPER_ROUTE_ENABLED, true,
-                )
-                if (helperEnabled) {
-                    runCatching {
-                        taskHelper.open(helperToken) { arbiter.state is VdState.Running }
-                    }.onFailure {
-                        Log.w(TAG, "Task helper startup failed (${it.javaClass.simpleName}); using incumbent observation")
+        }
+    }
+
+    private fun canReuseDisplay(running: VdState.Running): Boolean {
+        if (helperDisplay?.connection?.isAlive == false) {
+            arbiter.markBroken("Task helper Binder lost before run")
+            return false
+        }
+        return arbiter.state === running
+    }
+
+    private suspend fun openDisplayHelper(token: TaskHelperOwnership.Token): TaskHelperSession.Connection? {
+        try {
+            taskHelper.open(token)
+            return checkNotNull(taskHelper.displayConnection(token)) { "Helper disconnected after attach" }
+        } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
+            // A launch/attach failure may fall back only while the shell channel still responds.
+            // A cached connected bit can survive a channel cut, so verify it with a round trip.
+            val reachable = withTimeoutOrNull(1_500) {
+                runCatching { helperShell.exec("true", timeoutMs = 1_500).exitCode == 0 }
+                        .getOrDefault(false)
+            } == true
+            currentCoroutineContext().ensureActive()
+            check(reachable) { "Shell channel unavailable during helper VD startup" }
+            Log.w(TAG, "Helper startup failed; trying Shizuku", e)
+            return null
+        }
+    }
+
+    private fun startTaskObservation(token: TaskHelperOwnership.Token) {
+        if (taskHelper.displayConnection(token) != null) return
+        deferralScope.launch {
+            runCatching { taskHelper.sweepStaleStaging() }
+                    .onFailure {
+                        Log.w(TAG, "Task helper staging sweep failed (${it.javaClass.simpleName})")
                     }
-                }
+            if (TaskObservationPolicy.useHelperRoute(
+                            Build.VERSION.SDK_INT, TaskObservationPolicy.HELPER_ROUTE_ENABLED, true,
+                    )) {
+                runCatching { taskHelper.open(token) { arbiter.state is VdState.Running } }
+                        .onFailure {
+                            Log.w(TAG, "Task helper startup failed (${it.javaClass.simpleName}); using incumbent observation")
+                        }
+            }
+        }
+    }
+
+    private fun breakHelperDisplay(owner: HelperVirtualDisplayPlatform, reason: String) {
+        val token = synchronized(taskHelperOwnership) {
+            val running = arbiter.state as? VdState.Running ?: return
+            if (helperDisplay !== owner || running.displayId != owner.displayId) return
+            arbiter.markBroken(reason)
+            taskHelperOwnership.capture()
+        }
+        Log.w(TAG, reason)
+        val broken = arbiter.state as? VdState.Broken ?: return
+        postTaskHelperCloseIfCurrent(token) { arbiter.state === broken }
+    }
+
+    private fun setDisplaySurface(displayId: Int, surface: Surface): Boolean {
+        if (displayId <= 0 || (arbiter.state as? VdState.Running)?.displayId != displayId) return false
+        val owner = helperDisplay?.takeIf { it.displayId == displayId }
+                ?: return shizuku.setVirtualDisplaySurface(displayId, surface)
+        return try {
+            owner.setSurface(surface, shizuku)
+        } catch (e: IOException) {
+            // Reapply the previous surface over the ordered helper queue first.
+            val previousSurface = surfaceController.currentSurface()
+            val restored = previousSurface?.isValid == true &&
+                    (owner.restoreSurface(previousSurface) ||
+                            (helperDisplay === owner &&
+                                    (arbiter.state as? VdState.Running)?.displayId == displayId &&
+                                    owner.reassertSurface(previousSurface, shizuku)))
+            throw VirtualDisplaySurfaceSwitchFailure(displayId, restored, e)
+        }
+    }
+
+    private fun releaseDisplay(displayId: Int) {
+        synchronized(imePolicyLock) {
+            helperDeathWatch?.cancel()
+            helperDeathWatch = null
+            val owner = helperDisplay
+            helperDisplay = null
+            if (owner == null) {
+                shizuku.releaseVirtualDisplay(displayId)
+            } else if (!owner.connection.isDeathObserved() && !owner.release(shizuku)) {
+                unsettledDisplay = owner.connection
             }
         }
     }
@@ -501,7 +605,7 @@ class VirtualDisplayPlatform(
      *
      * Only the two posts in [stop] use this unconditional form. Both run
      * inside the arbiter-serialized lifecycle transition. The only mint is
-     * at the end of [start]'s transition, which is mutually exclusive with
+     * inside [start]'s transition, which is mutually exclusive with
      * [stop]'s. A mint cannot interleave between capture and invalidation,
      * so the captured token belongs to the ending session. The Shizuku
      * binder-death listener takes its Broken transition and captures its token
@@ -582,7 +686,7 @@ class VirtualDisplayPlatform(
                 // Protected tasks still on the VD are kept by the cleanup below, so the release hands
                 // them to display 0, where they land on top. Decide the refront that undoes that now
                 // (from display 0 as the user has it), execute it once the release has handed them over.
-                handover = mainDisplayTasks?.let { restorer ->
+                val preparedHandover = mainDisplayTasks?.let { restorer ->
                     when (previous) {
                         is VdState.Running -> restorer.prepareHandover(previous.displayId)
                         is VdState.Draining -> restorer.prepareHandover(previous.displayId)
@@ -590,42 +694,41 @@ class VirtualDisplayPlatform(
                         VdState.Stopped -> null
                     }
                 }
+                when (previous) {
+                    is VdState.Running -> removeRootTasksBeforeRelease(previous.displayId)
+                    is VdState.Draining -> removeRootTasksBeforeRelease(previous.displayId)
+                    is VdState.Broken -> removeRootTasksBeforeRelease(previous.displayId)
+                    VdState.Stopped -> Unit
+                }
+                handover = preparedHandover
             } finally {
-                // Keep the helper alive through the restore and handover planning reads
-                // above, but post its teardown even when one of them throws: an
-                // exception must not skip helper teardown. Asynchronous teardown
-                // cannot delay surface reset or display release.
-                // Posting also invalidates ownership so an in-flight open cannot publish after stop.
-                postTaskHelperClose()
+                try {
+                    // Keep the helper alive through the final reads and explicit display release.
+                    when (previous) {
+                        is VdState.Running -> releaseDisplayResources(previous.displayId, previous.imageReader)
+                        is VdState.Draining -> releaseDisplayResources(previous.displayId, previous.imageReader)
+                        is VdState.Broken -> releaseDisplayResources(previous.displayId, previous.imageReader)
+                        VdState.Stopped -> Unit
+                    }
+                    handover?.let { plan -> mainDisplayTasks?.refrontAfterHandover(plan) }
+                } finally {
+                    postTaskHelperClose()
+                    shizuku.clearCachedProxies()
+                    arbiter.transitionTo(VdState.Stopped)
+                }
             }
 
-            // Clean up resources from Running, Draining, or Broken state
-            when (previous) {
-                is VdState.Running -> {
-                    releaseDisplayResources(previous.displayId, previous.imageReader)
-                }
-                is VdState.Draining -> {
-                    releaseDisplayResources(previous.displayId, previous.imageReader)
-                }
-                is VdState.Broken -> {
-                    releaseDisplayResources(previous.displayId, previous.imageReader)
-                }
-                VdState.Stopped -> {} // Already handled by early return above
-            }
-
-            handover?.let { plan -> mainDisplayTasks?.refrontAfterHandover(plan) }
-
-            shizuku.clearCachedProxies()
-            arbiter.transitionTo(VdState.Stopped)
 
             Log.i(TAG, "Stopped")
         }
     }
 
     private fun releaseDisplayResources(displayId: Int, imageReader: ImageReader) {
-        removeRootTasksBeforeRelease(displayId)
-        shizuku.releaseVirtualDisplay(displayId)
-        imageReader.close()
+        try {
+            releaseDisplay(displayId)
+        } finally {
+            imageReader.close()
+        }
     }
 
     /**
@@ -909,17 +1012,28 @@ class VirtualDisplayPlatform(
     }
 
     /** Apply the policy [viewerOpen] calls for, unless it is already in effect. Fail-open. */
-    private fun reconcileImePolicy(displayId: Int) {
+    private fun reconcileImePolicy(displayId: Int, starting: Boolean = false) {
         synchronized(imePolicyLock) {
+            if (!starting && (arbiter.state as? VdState.Running)?.displayId != displayId) return
             val policy = if (viewerOpen) DISPLAY_IME_POLICY_FALLBACK_DISPLAY else DISPLAY_IME_POLICY_HIDE
             if (appliedImePolicy == policy) return
             try {
-                if (shizuku.setDisplayImePolicy(displayId, policy)) {
+                val owner = helperDisplay?.takeIf { it.displayId == displayId }
+                val applied = if (owner == null) shizuku.setDisplayImePolicy(displayId, policy)
+                else try {
+                    owner.setImePolicy(policy, shizuku)
+                } catch (e: IOException) {
+                    if (starting) throw e
+                    breakHelperDisplay(owner, e.message.orEmpty())
+                    false
+                }
+                if (applied) {
                     appliedImePolicy = policy
                 } else {
                     Log.w(TAG, "VD IME policy $policy not applied (display $displayId); per-action suppression only")
                 }
             } catch (e: Exception) {
+                if (starting && e is IOException) throw e
                 Log.w(TAG, "VD IME policy $policy failed (display $displayId); continuing", e)
             }
         }
@@ -930,6 +1044,7 @@ class VirtualDisplayPlatform(
     /**
      * Switch VirtualDisplay output to the Viewer's SurfaceView for 60fps live preview. Called when
      * the Viewer Activity becomes visible.
+     * @throws VirtualDisplaySurfaceSwitchFailure if the switch cannot be confirmed.
      */
     fun switchToLivePreview(surfaceView: SurfaceView) {
         if (arbiter.state !is VdState.Running) return
@@ -946,6 +1061,7 @@ class VirtualDisplayPlatform(
     /**
      * Switch VirtualDisplay output back to the ImageReader for headless capture. Called when the
      * Viewer Activity is hidden or destroyed.
+     * @throws VirtualDisplaySurfaceSwitchFailure if the switch cannot be confirmed.
      */
     fun switchToImageReader() {
         if (arbiter.state !is VdState.Running) return

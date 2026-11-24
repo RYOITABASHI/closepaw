@@ -2,18 +2,26 @@ package ai.closepaw.platform.virtualdisplay
 
 import android.accessibilityservice.AccessibilityService
 import android.media.ImageReader
+import android.os.Bundle
+import android.os.IBinder
+import android.os.SystemClock
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import ai.closepaw.protocol.SessionConfig
+import ai.closepaw.taskhelper.TaskHelperWire
 import ai.closepaw.trace.NoopTraceRecorder
 import com.google.common.truth.Truth.assertThat
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
 import io.mockk.verify
 import io.mockk.verifyOrder
+import java.io.IOException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -165,6 +173,150 @@ class VirtualDisplayPlatformStopTest {
             imageReader.close()
             shizuku.clearCachedProxies()
         }
+    }
+
+    @Test
+    fun `start replaces a running display before the watcher marks the dead helper Broken`() = runTest {
+        assertStartReplacesDeadHelper(listOf(false))
+    }
+
+    @Test
+    fun `start replaces a running display when its helper dies during the liveness checks`() = runTest {
+        assertStartReplacesDeadHelper(listOf(true, false))
+    }
+
+    private suspend fun assertStartReplacesDeadHelper(liveness: List<Boolean>) {
+        val oldReader = mockk<ImageReader>(relaxed = true)
+        val newReader = mockk<ImageReader>(relaxed = true)
+        val connection = mockk<TaskHelperSession.Connection>()
+        every { connection.isAlive } returnsMany liveness
+        every { connection.isDeathObserved() } returns true
+        val owner = mockk<HelperVirtualDisplayPlatform>()
+        every { owner.connection } returns connection
+        val shizuku = mockk<ShizukuClient>(relaxed = true)
+        every { shizuku.createVirtualDisplay(any(), any(), any(), any(), any(), any(), any(), any()) } returns 113
+        val platform = platform(service(), shizuku)
+        setState(platform, VdState.Running(112, oldReader))
+        setHelperDisplay(platform, owner)
+
+        mockkStatic(SystemClock::class, ImageReader::class)
+        try {
+            every { SystemClock.elapsedRealtime() } returns 0L
+            every { ImageReader.newInstance(any(), any(), any(), any()) } returns newReader
+            platform.start()
+
+            assertThat(arbiter(platform).state).isEqualTo(VdState.Running(113, newReader))
+            verify(exactly = 1) { oldReader.close() }
+        } finally {
+            unmockkStatic(SystemClock::class, ImageReader::class)
+        }
+    }
+
+    @Test
+    fun `unconfirmed surface switch preserves the running display and current surface mode`() = runTest {
+        val displayId = 112
+        val oldSurface = mockk<Surface>()
+        every { oldSurface.isValid } returns true
+        val reader = mockk<ImageReader>()
+        every { reader.surface } returns oldSurface
+        val state = VdState.Running(displayId, reader)
+        val shizuku = mockk<ShizukuClient>(relaxed = true)
+        val platform = platform(service(), shizuku)
+        setState(platform, state)
+
+        val surface = mockk<Surface>()
+        every { surface.isValid } returns true
+        val owner = mockk<HelperVirtualDisplayPlatform>(relaxed = true)
+        every { owner.displayId } returns displayId
+        every { owner.setSurface(surface, shizuku) } throws IOException("Helper VD surface result unconfirmed")
+        every { owner.restoreSurface(oldSurface) } returns true
+        setHelperDisplay(platform, owner)
+
+        val failure = assertThrows(VirtualDisplaySurfaceSwitchFailure::class.java) {
+            platform.switchToLivePreview(surfaceView(surface))
+        }
+        assertThat(failure.previousSurfaceRestored).isTrue()
+
+        assertThat(platform.getSurfaceMode()).isEqualTo(VirtualDisplaySurfaceMode.IMAGE_READER)
+        assertThat(arbiter(platform).state).isEqualTo(state)
+        verify(exactly = 1) { owner.restoreSurface(oldSurface) }
+        verify(exactly = 0) { owner.release(any()) }
+        verify(exactly = 0) { reader.close() }
+        verify(exactly = 0) { owner.reassertSurface(any(), any()) }
+
+        every { owner.setSurface(surface, shizuku) } returns true
+        platform.switchToLivePreview(surfaceView(surface))
+        assertThat(platform.getSurfaceMode()).isEqualTo(VirtualDisplaySurfaceMode.LIVE_PREVIEW)
+    }
+
+    @Test
+    fun `unconfirmed helper restore reasserts the old surface and reports the outcome`() = runTest {
+        val displayId = 112
+        val oldSurface = mockk<Surface>()
+        every { oldSurface.isValid } returns true
+        val reader = mockk<ImageReader>()
+        every { reader.surface } returns oldSurface
+        val state = VdState.Running(displayId, reader)
+        val shizuku = mockk<ShizukuClient>(relaxed = true)
+        val platform = platform(service(), shizuku)
+        setState(platform, state)
+
+        val surface = mockk<Surface>()
+        every { surface.isValid } returns true
+        val token = mockk<IBinder>()
+        val connection = mockk<TaskHelperSession.Connection>()
+        val created = mockk<Bundle>(relaxed = true)
+        every { created.getBoolean(TaskHelperWire.SUCCESS) } returns true
+        every { created.getInt(TaskHelperWire.DISPLAY_ID) } returns displayId
+        every { created.getBinder(TaskHelperWire.DISPLAY_CALLBACK) } returns token
+        every { connection.displayCommand(TaskHelperWire.CREATE_DISPLAY, -1, any()) } returns created
+        val acknowledged = mockk<Bundle>()
+        every { acknowledged.getBoolean(TaskHelperWire.SUCCESS) } returns true
+        every { connection.displayCommand(TaskHelperWire.SET_DISPLAY_SURFACE, displayId, any()) } returnsMany
+                listOf(null, null, null, null, acknowledged, acknowledged, null, acknowledged)
+        every { shizuku.setHelperDisplaySurface(token, oldSurface) } returns true andThen false
+        val owner = checkNotNull(HelperVirtualDisplayPlatform.create(
+                connection, 1080, 2400, 440, oldSurface, 0, 0, 0,
+        ))
+        setHelperDisplay(platform, owner)
+        val view = surfaceView(surface)
+
+        val restored = assertThrows(VirtualDisplaySurfaceSwitchFailure::class.java) {
+            platform.switchToLivePreview(view)
+        }
+        assertThat(restored.previousSurfaceRestored).isTrue()
+        val unknown = assertThrows(VirtualDisplaySurfaceSwitchFailure::class.java) {
+            platform.switchToLivePreview(view)
+        }
+        assertThat(unknown.previousSurfaceRestored).isFalse()
+        verifyOrder {
+            connection.displayCommand(TaskHelperWire.SET_DISPLAY_SURFACE, displayId, any())
+            connection.displayCommand(TaskHelperWire.SET_DISPLAY_SURFACE, displayId, any())
+            shizuku.setHelperDisplaySurface(token, oldSurface)
+            connection.displayCommand(TaskHelperWire.SET_DISPLAY_SURFACE, displayId, any())
+            connection.displayCommand(TaskHelperWire.SET_DISPLAY_SURFACE, displayId, any())
+            shizuku.setHelperDisplaySurface(token, oldSurface)
+        }
+        assertThat(arbiter(platform).state).isEqualTo(state)
+        verify(exactly = 0) { connection.displayCommand(TaskHelperWire.RELEASE_DISPLAY, any(), any()) }
+        verify(exactly = 0) { shizuku.releaseHelperDisplay(any()) }
+        verify(exactly = 0) { reader.close() }
+
+        platform.switchToImageReader()
+        verify(exactly = 5) { connection.displayCommand(TaskHelperWire.SET_DISPLAY_SURFACE, displayId, any()) }
+
+        platform.switchToLivePreview(view)
+        val returnFailure = assertThrows(VirtualDisplaySurfaceSwitchFailure::class.java) {
+            platform.switchToImageReader()
+        }
+        assertThat(returnFailure.previousSurfaceRestored).isTrue()
+        assertThat(platform.getSurfaceMode()).isEqualTo(VirtualDisplaySurfaceMode.LIVE_PREVIEW)
+    }
+
+    private fun setHelperDisplay(platform: VirtualDisplayPlatform, owner: HelperVirtualDisplayPlatform) {
+        val field = VirtualDisplayPlatform::class.java.getDeclaredField("helperDisplay")
+        field.isAccessible = true
+        field.set(platform, owner)
     }
 
     private fun platform(

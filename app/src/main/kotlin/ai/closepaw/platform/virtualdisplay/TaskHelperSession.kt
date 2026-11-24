@@ -11,6 +11,7 @@ import android.os.IBinder
 import android.util.Log
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -96,6 +97,10 @@ internal class TaskHelperSession(
             ownership.markRetired(token.generation)
             throw failure
         }
+    }
+
+    fun displayConnection(token: TaskHelperOwnership.Token): Connection? = synchronized(ownership) {
+        active?.takeIf { ownership.isCurrent(token) && ownership.isPublished(token) && it.isAlive }
     }
 
     override fun queryRows(displayId: Int): List<TaskHelperRow>? =
@@ -208,6 +213,8 @@ internal class TaskHelperSession(
     class Connection(private val registration: HelperRegistration) {
         private val events = Events(registration)
         private val queryLock = ReentrantLock()
+        private val displayLock = ReentrantLock()
+        private val displayCommandsUsable = AtomicBoolean(true)
         // Keep a stalled Binder transaction outside the caller's deadline.
         private val sender = ScheduledThreadPoolExecutor(1) { task ->
             Thread(task, "closepaw-task-helper-send").apply { isDaemon = true }
@@ -277,9 +284,62 @@ internal class TaskHelperSession(
             }
         }
 
+        suspend fun awaitDeath() = events.dead.await()
+
+        /** Null denotes an unconfirmed mutation. Never retry a create on that result. */
+        fun displayCommand(operation: Int, displayId: Int = -1, payload: Bundle = Bundle()): Bundle? {
+            // An unconfirmed surface switch can be undone on the same command queue.
+            val disableOnUnconfirmed = operation != TaskHelperWire.SET_DISPLAY_SURFACE
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DISPLAY_TIMEOUT_MS)
+            try {
+                if (!displayLock.tryLock(DISPLAY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                    if (disableOnUnconfirmed) displayCommandsUsable.set(false)
+                    return null
+                }
+                try {
+                    if (!isAlive || !displayCommandsUsable.get()) return null
+                    var confirmed = false
+                    val request = DisplayRequest(ids.incrementAndGet(), operation, displayId)
+                    events.displayPending.set(request)
+                    try {
+                        payload.putInt(TaskHelperWire.REQUEST_ID, request.id)
+                        payload.putInt(TaskHelperWire.DISPLAY_ID, displayId)
+                        val sending = sender.submit {
+                            if (events.displayPending.get() === request && isAlive &&
+                                    displayCommandsUsable.get() && System.nanoTime() < deadline) {
+                                runCatching { send(operation, payload) }
+                                        .onFailure { request.reply.complete(null) }
+                            } else {
+                                request.reply.complete(null)
+                            }
+                        }
+                        try {
+                            return request.reply.get(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)
+                                    .takeIf { isAlive && displayCommandsUsable.get() }
+                                    .also { confirmed = it != null }
+                        } finally {
+                            sending.cancel(false)
+                        }
+                    } finally {
+                        if (!confirmed && disableOnUnconfirmed) displayCommandsUsable.set(false)
+                        events.displayPending.compareAndSet(request, null)
+                    }
+                } finally {
+                    displayLock.unlock()
+                }
+            } catch (_: InterruptedException) {
+                if (disableOnUnconfirmed) displayCommandsUsable.set(false)
+                Thread.currentThread().interrupt()
+                return null
+            } catch (_: Exception) {
+                return null
+            }
+        }
+
         fun beginClose() {
             closed.set(true)
             events.pending.get()?.complete(null)
+            events.displayPending.get()?.reply?.complete(null)
         }
 
         suspend fun awaitHelperDeath(): Boolean {
@@ -303,11 +363,16 @@ internal class TaskHelperSession(
                 TaskHelperWire.send(binder, TaskHelperWire.COMMANDS, code, registration.secret, payload)
     }
 
+    private class DisplayRequest(val id: Int, val operation: Int, val displayId: Int) {
+        val reply = CompletableFuture<Bundle?>()
+    }
+
     private class Events(registration: HelperRegistration) :
             TaskHelperWire.Endpoint(TaskHelperWire.EVENTS), IBinder.DeathRecipient {
         val attached = CompletableDeferred<Unit>()
         val dead = CompletableDeferred<Unit>()
         val pending = AtomicReference<TaskHelperQuery?>()
+        val displayPending = AtomicReference<DisplayRequest?>()
 
         init {
             bindPeer(TaskHelperProtocol.SHELL_UID, registration.pid, registration.secret)
@@ -334,6 +399,23 @@ internal class TaskHelperSession(
                     }.getOrNull()
                     query.complete(rows)
                 }
+                TaskHelperWire.DISPLAY_RESULT -> {
+                    val request = displayPending.get() ?: return
+                    val reply = runCatching {
+                        if (payload.get(TaskHelperWire.REQUEST_ID) != request.id) return
+                        val displayId = payload.get(TaskHelperWire.DISPLAY_ID)
+                        val success = payload.get(TaskHelperWire.SUCCESS)
+                        payload.takeIf {
+                            matchesDisplayResult(
+                                    request.operation, request.displayId,
+                                    payload.get(TaskHelperWire.OPERATION), displayId, success,
+                            ) && (request.operation != TaskHelperWire.CREATE_DISPLAY || success != true ||
+                                    (payload.getBinder(TaskHelperWire.DISPLAY_CALLBACK) != null &&
+                                            payload.get(TaskHelperWire.IME_AT_CREATION) is Boolean))
+                        }
+                    }.getOrNull()
+                    request.reply.complete(reply)
+                }
                 TaskHelperWire.ERROR -> {
                     val id = payload.get(TaskHelperWire.QUERY_ID)
                     if (id is Int) {
@@ -349,6 +431,7 @@ internal class TaskHelperSession(
             dead.complete(Unit)
             attached.completeExceptionally(IOException("Task helper Binder died"))
             pending.get()?.binderDied()
+            displayPending.get()?.reply?.complete(null)
         }
     }
 
@@ -356,9 +439,24 @@ internal class TaskHelperSession(
         const val DEX_ASSET = "closepaw-task-helper-v1.dex"
         private const val TAG = "TaskHelperSession"
         private const val OPEN_TIMEOUT_MS = 10_000L
+        private const val DISPLAY_TIMEOUT_MS = 1_500L
         private const val CLOSE_WAIT_MS = 1_000L
         private const val CLEANUP_ATTEMPTS = 3
         private const val CLEANUP_RETRY_DELAY_MS = 250L
         private const val STALE_STAGING_FILE = "closepaw-task-helper-stale.txt"
     }
+}
+
+
+/** Reject mismatched targets and malformed replies before allowing a fallback or a commit. */
+internal fun matchesDisplayResult(
+    operation: Int,
+    requestedDisplayId: Int,
+    replyOperation: Any?,
+    replyDisplayId: Any?,
+    success: Any?,
+): Boolean {
+    if (operation != replyOperation || replyDisplayId !is Int || success !is Boolean) return false
+    return if (operation == TaskHelperWire.CREATE_DISPLAY && success) replyDisplayId > 0
+    else replyDisplayId == requestedDisplayId
 }

@@ -2,6 +2,7 @@ package ai.closepaw.platform.virtualdisplay
 
 import android.hardware.display.IVirtualDisplayCallback
 import android.os.Build
+import android.os.IBinder
 import android.util.Log
 import android.view.Surface
 import java.lang.reflect.InvocationTargetException
@@ -171,6 +172,29 @@ internal class ShizukuDisplayTransport(
                 } catch (e: Exception) {
                         Log.e(TAG, "Failed to release virtual display $displayId", e)
                 }
+        }
+
+        /** Use the helper's framework callback for a per-call fallback on the same VD. */
+        fun setHelperDisplaySurface(token: IBinder, surface: Surface): Boolean = try {
+                val proxy = proxyProvider.displayManagerProxy()
+                proxy.javaClass.getMethod(
+                        "setVirtualDisplaySurface", IVirtualDisplayCallback::class.java, Surface::class.java
+                ).invoke(proxy, IVirtualDisplayCallback.Stub.asInterface(token), surface)
+                true
+        } catch (e: Exception) {
+                Log.w(TAG, "Helper VD surface fallback failed", e)
+                false
+        }
+
+        fun releaseHelperDisplay(token: IBinder): Boolean = try {
+                val proxy = proxyProvider.displayManagerProxy()
+                proxy.javaClass.getMethod(
+                        "releaseVirtualDisplay", IVirtualDisplayCallback::class.java
+                ).invoke(proxy, IVirtualDisplayCallback.Stub.asInterface(token))
+                true
+        } catch (e: Exception) {
+                Log.w(TAG, "Helper VD release fallback failed", e)
+                false
         }
 
         /** API 33+ (Tiramisu): Uses VirtualDisplayConfig parameter object. */

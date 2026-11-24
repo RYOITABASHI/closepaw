@@ -17,7 +17,7 @@ class VirtualDisplaySurfaceControllerTest {
 
     private fun controller() =
         VirtualDisplaySurfaceController(
-            shizuku = shizuku,
+            setSurface = shizuku::setVirtualDisplaySurface,
             displayIdProvider = { 7 },
             imageReaderProvider = { imageReader }
         )
@@ -40,6 +40,32 @@ class VirtualDisplaySurfaceControllerTest {
         assertThat(c.mode()).isEqualTo(VirtualDisplaySurfaceMode.LIVE_PREVIEW)
         assertThat(c.liveSurfaceView()).isSameInstanceAs(view)
         verify { shizuku.setVirtualDisplaySurface(7, surface) }
+    }
+
+    @Test
+    fun `surface changes commit state only on success in either direction`() {
+        val readerSurface = mockk<Surface>()
+        val viewerSurface = mockk<Surface>()
+        val holder = mockk<SurfaceHolder>()
+        val view = mockk<SurfaceView>()
+        every { imageReader.surface } returns readerSurface
+        every { viewerSurface.isValid } returns true
+        every { holder.surface } returns viewerSurface
+        every { view.holder } returns holder
+        every { shizuku.setVirtualDisplaySurface(7, viewerSurface) } returnsMany listOf(false, true)
+        every { shizuku.setVirtualDisplaySurface(7, readerSurface) } returnsMany listOf(false, true)
+
+        val controller = controller()
+        controller.switchToLivePreview(view)
+        assertThat(controller.mode()).isEqualTo(VirtualDisplaySurfaceMode.IMAGE_READER)
+        controller.switchToLivePreview(view)
+        assertThat(controller.mode()).isEqualTo(VirtualDisplaySurfaceMode.LIVE_PREVIEW)
+
+        controller.switchToImageReader()
+        assertThat(controller.liveSurfaceView()).isSameInstanceAs(view)
+        controller.switchToImageReader()
+        assertThat(controller.mode()).isEqualTo(VirtualDisplaySurfaceMode.IMAGE_READER)
+        assertThat(controller.liveSurfaceView()).isNull()
     }
 
     @Test

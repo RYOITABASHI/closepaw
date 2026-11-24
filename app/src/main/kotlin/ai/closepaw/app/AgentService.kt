@@ -37,6 +37,7 @@ import ai.closepaw.draft.SaveDraftRequest
 import ai.closepaw.draft.SaveDraftResult
 import ai.closepaw.draft.SaveDraftRoutine
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
+import ai.closepaw.platform.virtualdisplay.VirtualDisplaySurfaceSwitchFailure
 import ai.closepaw.util.recycleCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -1644,10 +1645,12 @@ class AgentService : AccessibilityService() {
         }
     }
 
+    @Throws(VirtualDisplaySurfaceSwitchFailure::class)
     fun notifyViewerVisible(surfaceView: SurfaceView) {
         viewerBridge.notifyViewerVisible(surfaceView)
     }
 
+    @Throws(VirtualDisplaySurfaceSwitchFailure::class)
     fun notifyViewerHidden() {
         viewerBridge.notifyViewerHidden()
     }

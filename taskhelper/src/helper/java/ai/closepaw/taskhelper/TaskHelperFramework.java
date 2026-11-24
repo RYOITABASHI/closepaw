@@ -4,6 +4,8 @@ import android.content.AttributionSource;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.Parcel;
+import android.view.Surface;
 
 
 /** Framework Binder calls made directly from the app_process shell identity. */
@@ -53,6 +55,76 @@ final class TaskHelperFramework {
         } finally {
             am.getMethod("removeContentProviderExternalAsUser", String.class, IBinder.class, int.class)
                     .invoke(manager, authority, reference, userId);
+        }
+    }
+
+    /** API 33+ lifecycle using a callback Binder owned by this shell process. */
+    static final class Display {
+        private static final String MANAGER = "android.hardware.display.IDisplayManager";
+        private static final String CONFIG = "android.hardware.display.VirtualDisplayConfig";
+        private static final String CALLBACK = "android.hardware.display.IVirtualDisplayCallback";
+
+        private final Class<?> managerType = Class.forName(MANAGER);
+        private final Object manager = service(MANAGER, "display");
+        private final Class<?> callbackType = Class.forName(CALLBACK);
+        final IBinder token = new Binder() {
+            @Override
+            protected boolean onTransact(int code, Parcel data, Parcel reply, int flags)
+                    throws android.os.RemoteException {
+                if (code >= FIRST_CALL_TRANSACTION && code <= FIRST_CALL_TRANSACTION + 2) {
+                    data.enforceInterface(CALLBACK);
+                    return true;
+                }
+                return super.onTransact(code, data, reply, flags);
+            }
+        };
+        private final Object callback = proxy(CALLBACK, token);
+        int id = -1;
+        boolean imeAtCreation;
+
+        Display() throws Exception {}
+
+        void create(Surface surface, int width, int height, int density, int flags,
+                    int imePolicy, boolean skipImeBuilder) throws Exception {
+            Class<?> builderType = Class.forName(CONFIG + "$Builder");
+            Object builder = builderType.getConstructor(String.class, int.class, int.class, int.class)
+                    .newInstance("closepaw_agent_display", width, height, density);
+            builderType.getMethod("setSurface", Surface.class).invoke(builder, surface);
+            builderType.getMethod("setFlags", int.class).invoke(builder, flags);
+            if (!skipImeBuilder) {
+                try {
+                    builderType.getMethod("setDisplayImePolicy", int.class).invoke(builder, imePolicy);
+                    imeAtCreation = true;
+                } catch (ReflectiveOperationException | LinkageError ignored) {
+                    // The app can request the standalone WindowManager path (Q7).
+                }
+            }
+            Object config = builderType.getMethod("build").invoke(builder);
+            id = (int) managerType.getMethod("createVirtualDisplay", Class.forName(CONFIG),
+                    callbackType, Class.forName("android.media.projection.IMediaProjection"), String.class)
+                    .invoke(manager, config, callback, null, SHELL_PACKAGE);
+        }
+
+        void setSurface(Surface surface) throws Exception {
+            managerType.getMethod("setVirtualDisplaySurface", callbackType, Surface.class)
+                    .invoke(manager, callback, surface);
+        }
+
+        void release() throws Exception {
+            managerType.getMethod("releaseVirtualDisplay", callbackType).invoke(manager, callback);
+        }
+
+        // Q7: standalone helper call is device-unproven, including viewer policy changes.
+        void setImePolicy(int policy) throws Exception {
+            String windows = "android.view.IWindowManager";
+            Class.forName(windows).getMethod("setDisplayImePolicy", int.class, int.class)
+                    .invoke(service(windows, "window"), id, policy);
+        }
+
+        private static Object service(String descriptor, String name) throws Exception {
+            IBinder binder = (IBinder) Class.forName("android.os.ServiceManager")
+                    .getMethod("getService", String.class).invoke(null, name);
+            return proxy(descriptor, binder);
         }
     }
 

@@ -3,6 +3,7 @@ package ai.closepaw.platform.virtualdisplay
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.IBinder
 import android.util.Log
 import android.view.InputEvent
 import android.view.Surface
@@ -138,6 +139,12 @@ class ShizukuClient {
      *
      * @return true if the surface was switched successfully
      */
+    internal fun setHelperDisplaySurface(token: IBinder, surface: Surface): Boolean =
+            displayTransport.setHelperDisplaySurface(token, surface)
+
+    internal fun releaseHelperDisplay(token: IBinder): Boolean =
+            displayTransport.releaseHelperDisplay(token)
+
     fun setVirtualDisplaySurface(displayId: Int, surface: Surface): Boolean {
         return displayTransport.setVirtualDisplaySurface(displayId, surface)
     }
