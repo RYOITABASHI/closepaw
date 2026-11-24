@@ -39,6 +39,7 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import java.lang.reflect.InvocationHandler
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -56,7 +57,11 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import net.bytebuddy.ByteBuddy
+import net.bytebuddy.description.modifier.Visibility
+import net.bytebuddy.implementation.InvocationHandlerAdapter
 import org.json.JSONObject
+import org.junit.AssumptionViolatedException
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -939,21 +944,6 @@ class ShellyBackgroundRunTest {
 
     // ── Gate fix round: binder start results outside 0..99 are failures ──
 
-    /** Shape-compatible IActivityTaskManager stand-in for the binder HOME start. */
-    class FakeStartProxy(private val result: Int) {
-        var calls = 0
-
-        @Suppress("UNUSED_PARAMETER")
-        fun startActivityAsUser(
-            caller: Any?, callingPackage: String?, callingFeatureId: String?, intent: android.content.Intent?,
-            resolvedType: String?, resultTo: Any?, resultWho: String?, requestCode: Int, flags: Int,
-            profilerInfo: Any?, options: android.os.Bundle?, userId: Int,
-        ): Int {
-            calls++
-            return result
-        }
-    }
-
     @Test
     fun `binder start success is exactly the 0 to 99 range`() {
         assertThat(ShizukuActivityTaskTransport.isStartSuccess(0)).isTrue()
@@ -966,11 +956,40 @@ class ShellyBackgroundRunTest {
 
     @Test
     fun `binder HOME start reports 100 and 101 as failures and 0 as success`() {
+        // The host stub jar omits these types from the exact Binder signature.
+        val callerType: Class<*>
+        val profilerType: Class<*>
+        try {
+            callerType = Class.forName("android.app.IApplicationThread")
+            profilerType = Class.forName("android.app.ProfilerInfo")
+        } catch (e: ClassNotFoundException) {
+            throw AssumptionViolatedException("Android jar lacks hidden activity-start types", e)
+        }
+        val parameterTypes = arrayOf(
+            callerType, String::class.java, String::class.java, android.content.Intent::class.java,
+            String::class.java, android.os.IBinder::class.java, String::class.java,
+            Int::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!, profilerType,
+            android.os.Bundle::class.java, Int::class.javaPrimitiveType!!,
+        )
         for ((result, expected) in listOf(100 to false, 101 to false, 0 to true, -91 to false)) {
-            val proxy = FakeStartProxy(result)
+            var calls = 0
+            val handler = InvocationHandler { _, _, _ ->
+                calls++
+                result
+            }
+            val proxy = ByteBuddy()
+                .subclass(Any::class.java)
+                .defineMethod("startActivityAsUser", Int::class.javaPrimitiveType!!, Visibility.PUBLIC)
+                .withParameters(*parameterTypes)
+                .intercept(InvocationHandlerAdapter.of(handler))
+                .make()
+                .load(javaClass.classLoader)
+                .loaded
+                .getDeclaredConstructor()
+                .newInstance()
             val transport = ShizukuActivityTaskTransport { proxy }
             assertThat(transport.startActivity(android.content.Intent(), null)).isEqualTo(expected)
-            assertThat(proxy.calls).isEqualTo(1)
+            assertThat(calls).isEqualTo(1)
         }
     }
 
