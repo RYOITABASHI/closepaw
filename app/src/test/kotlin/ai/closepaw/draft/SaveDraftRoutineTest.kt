@@ -830,6 +830,23 @@ class SaveDraftRoutineTest {
     }
 
     @Test
+    fun `Chrome surfacing failure reaches the result and stops tab creation`() = runTest {
+        val reason = "Launch delivered but surfacing of com.android.chrome on display 42 could not be verified"
+        val inner = substackBrowser()
+        val browser = object : DraftBrowser by inner {
+            override suspend fun showChrome() {
+                throw DraftChromeLaunchException(reason)
+            }
+        }
+        val result = routine(browser, substack).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.FAILED)
+        assertThat(result.reason).isEqualTo(reason)
+        assertThat(result.wrote).isFalse()
+        assertThat(inner.created).isEmpty()
+    }
+
+    @Test
     fun `without createTarget the tab is proved by a random fragment`() = runTest {
         val restored = listOf(DraftTab("theirs", substack.draftListUrl))
         val browser = FakeBrowser(substack.draftListUrl, substackEditor, restored).apply { createTargetWorks = false }
@@ -838,6 +855,27 @@ class SaveDraftRoutineTest {
         assertThat(browser.opened).containsExactly(substack.draftListUrl + "#closepaw-test")
         assertThat(result.outcome).isEqualTo(DraftOutcome.SAVED)
         assertThat(browser.tabsTouched).containsExactly(FakeBrowser.OURS)
+    }
+
+    @Test
+    fun `fallback Chrome surfacing failure keeps the marker pending for cleanup`() = runTest {
+        val reason = "Launch delivered but com.android.chrome did not come to the front on display 42"
+        val inner = substackBrowser().apply { createTargetWorks = false }
+        val browser = object : DraftBrowser by inner {
+            override suspend fun open(url: String) {
+                inner.opened += url
+                throw DraftChromeLaunchException(reason)
+            }
+        }
+        val result = routine(browser, substack).run()
+
+        assertThat(result.outcome).isEqualTo(DraftOutcome.FAILED)
+        assertThat(result.reason).isEqualTo(reason)
+        assertThat(result.wrote).isFalse()
+        assertThat(inner.opened).containsExactly(substack.draftListUrl + "#closepaw-test")
+        assertThat(inner.launchMarkers).containsExactly("#closepaw-test")
+        assertThat(inner.resolvedMarkers).isEmpty()
+        assertThat(inner.tabsTouched).isEmpty()
     }
 
     @Test

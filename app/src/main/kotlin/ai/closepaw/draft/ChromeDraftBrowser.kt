@@ -212,7 +212,7 @@ internal class ChromeDraftBrowser(
 
     override suspend fun showChrome() {
         val platform = display ?: throw IOException("no virtual display")
-        if (platform.showChrome() is ActionResult.Failure) throw IOException("chrome did not start")
+        requireChromeLaunch(platform.showChrome())
     }
 
     override fun dialogsAnswered(): Int = dialogs.get()
@@ -271,7 +271,15 @@ internal class ChromeDraftBrowser(
 
     override suspend fun open(url: String) {
         val platform = display ?: throw IOException("no virtual display")
-        if (platform.openUrlInChrome(url) is ActionResult.Failure) throw IOException("chrome did not open")
+        requireChromeLaunch(platform.openUrlInChrome(url))
+    }
+
+    private fun requireChromeLaunch(result: ActionResult) {
+        when (result) {
+            is ActionResult.Success -> Unit
+            is ActionResult.Failure -> throw DraftChromeLaunchException(result.reason)
+            is ActionResult.Cancelled -> throw CancellationException(result.reason)
+        }
     }
 
     override suspend fun tabs(): List<DraftTab> =
@@ -498,3 +506,6 @@ private const val FILE_CHOOSER_OPENED = "Page.fileChooserOpened"
 
 /** CDP modifier bit for Ctrl. */
 private const val CTRL = 2
+
+/** Chrome launch failures carry only controller-generated diagnostics. */
+internal class DraftChromeLaunchException(val reason: String) : IOException(reason)

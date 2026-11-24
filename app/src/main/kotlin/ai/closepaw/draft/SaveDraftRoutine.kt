@@ -258,6 +258,8 @@ class SaveDraftRoutine(
                 throw e
             } catch (e: Halt) {
                 resultSoFar(e.reason)
+            } catch (e: DraftChromeLaunchException) {
+                resultSoFar(e.reason)
             } catch (e: Exception) {
                 val at = step
                 logFailure("draft routine failed at step=$at: ${e.javaClass.name}", e)
