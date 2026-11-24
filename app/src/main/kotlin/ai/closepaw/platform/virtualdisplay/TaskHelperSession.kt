@@ -104,6 +104,9 @@ internal class TaskHelperSession(
     fun queryRows(displayId: Int, timeoutMs: Long): List<TaskHelperRow>? =
             if (displayId < 0 || timeoutMs <= 0) null else active?.queryRows(displayId, timeoutMs)
 
+    fun spikeInjectTap(displayId: Int, x: Float, y: Float): Bundle =
+        (active ?: error("No active task helper session")).spikeInjectTap(displayId, x, y)
+
     suspend fun close(token: TaskHelperOwnership.Token, shouldClose: () -> Boolean = { true }) = withContext(NonCancellable) {
         withContext(Dispatchers.IO) {
             lifecycle.withLock {
@@ -277,6 +280,26 @@ internal class TaskHelperSession(
             }
         }
 
+        fun spikeInjectTap(displayId: Int, x: Float, y: Float): Bundle {
+            check(isAlive) { "Task helper is not alive" }
+            val id = ids.incrementAndGet()
+            val reply = java.util.concurrent.CompletableFuture<Bundle>()
+            events.taps[id] = reply
+            try {
+                sender.submit {
+                    runCatching { send(TaskHelperWire.INJECT_TAP, Bundle().apply {
+                        putInt(TaskHelperWire.QUERY_ID, id)
+                        putInt(TaskHelperWire.DISPLAY_ID, displayId)
+                        putFloat("x", x); putFloat("y", y)
+                        putString("tapRequest", TaskHelperProtocol.encodeTapRequest(displayId, x, y))
+                    }) }.onFailure { reply.completeExceptionally(it) }
+                }
+                return reply.get(5, TimeUnit.SECONDS).also {
+                    TaskHelperProtocol.parseTapResult(it.getString("tapResult"))
+                }
+            } finally { events.taps.remove(id) }
+        }
+
         fun beginClose() {
             closed.set(true)
             events.pending.get()?.complete(null)
@@ -305,6 +328,7 @@ internal class TaskHelperSession(
 
     private class Events(registration: HelperRegistration) :
             TaskHelperWire.Endpoint(TaskHelperWire.EVENTS), IBinder.DeathRecipient {
+        val taps = java.util.concurrent.ConcurrentHashMap<Int, java.util.concurrent.CompletableFuture<Bundle>>()
         val attached = CompletableDeferred<Unit>()
         val dead = CompletableDeferred<Unit>()
         val pending = AtomicReference<TaskHelperQuery?>()
@@ -316,6 +340,7 @@ internal class TaskHelperSession(
         @Suppress("DEPRECATION") // Bundle.get preserves the wire type for strict validation.
         override fun receive(code: Int, payload: Bundle) {
             when (code) {
+                TaskHelperWire.TAP_RESULT -> taps[payload.getInt(TaskHelperWire.QUERY_ID)]?.complete(payload)
                 TaskHelperWire.ATTACH -> attached.complete(Unit)
                 TaskHelperWire.ROOT_TASKS -> {
                     val query = pending.get() ?: return
@@ -346,6 +371,7 @@ internal class TaskHelperSession(
         }
 
         override fun binderDied() {
+            taps.values.forEach { it.completeExceptionally(IOException("Task helper Binder died")) }
             dead.complete(Unit)
             attached.completeExceptionally(IOException("Task helper Binder died"))
             pending.get()?.binderDied()

@@ -17,6 +17,9 @@ public final class TaskHelperWire {
     public static final int CLOSE = ATTACH + 3;
     public static final int ERROR = ATTACH + 4;
 
+    public static final int INJECT_TAP = ATTACH + 5;
+    public static final int TAP_RESULT = ATTACH + 6;
+
     public static final String RECEIVER = "receiver";
     public static final String DISPLAY_ID = "displayId";
     public static final String DETAIL = "detail";
@@ -59,7 +62,7 @@ public final class TaskHelperWire {
         @Override
         protected final boolean onTransact(int code, Parcel data, Parcel reply, int flags)
                 throws RemoteException {
-            if (code < ATTACH || code > ERROR) {
+            if (code < ATTACH || code > TAP_RESULT) {
                 return super.onTransact(code, data, reply, flags);
             }
             data.enforceInterface(descriptor);

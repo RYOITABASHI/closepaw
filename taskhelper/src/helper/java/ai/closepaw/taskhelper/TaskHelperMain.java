@@ -84,6 +84,11 @@ public final class TaskHelperMain {
                 case TaskHelperWire.QUERY_ROOT_TASKS:
                     queryRootTasks(payload);
                     break;
+                case TaskHelperWire.INJECT_TAP:
+                    Bundle tap = SpikeTap.inject(payload);
+                    tap.putInt(TaskHelperWire.QUERY_ID, payload.getInt(TaskHelperWire.QUERY_ID));
+                    event(TaskHelperWire.TAP_RESULT, tap);
+                    break;
                 case TaskHelperWire.CLOSE:
                     closeNow();
                     break;

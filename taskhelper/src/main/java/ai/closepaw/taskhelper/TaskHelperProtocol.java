@@ -19,6 +19,43 @@ public final class TaskHelperProtocol {
     private static final Pattern CHALLENGE = Pattern.compile("[0-9a-f]{64}");
     private static final String REGISTRATION_PREFIX = "v1:";
 
+    public static String encodeTapRequest(int displayId, float x, float y) {
+        if (displayId < 0 || !Float.isFinite(x) || !Float.isFinite(y)) throw new IllegalArgumentException("Invalid tap");
+        return displayId + "\n" + x + "\n" + y;
+    }
+    public static final class TapRequest {
+        public final int displayId;
+        public final float x;
+        public final float y;
+
+        private TapRequest(int displayId, float x, float y) {
+            this.displayId = displayId;
+            this.x = x;
+            this.y = y;
+        }
+    }
+
+    public static TapRequest parseTapRequest(String value) {
+        String[] fields = value.split("\n", -1);
+        if (fields.length != 3) throw new IllegalArgumentException("Invalid tap request");
+        int displayId = Integer.parseInt(fields[0]);
+        float x = Float.parseFloat(fields[1]), y = Float.parseFloat(fields[2]);
+        encodeTapRequest(displayId, x, y);
+        return new TapRequest(displayId, x, y);
+    }
+
+    /** Primitive-only spike payload codec; nullable inject values mean not attempted. */
+    public static String encodeTapResult(boolean reflectionOk, Boolean down, Boolean up, String error) {
+        return reflectionOk + "\n" + down + "\n" + up + "\n" + (error == null ? "" : error);
+    }
+    public static String[] parseTapResult(String encoded) {
+        String[] fields = encoded.split("\n", 4);
+        if (fields.length != 4 || !isWireBoolean(fields[0])) throw new IllegalArgumentException("Invalid tap result");
+        for (int i = 1; i < 3; i++) if (!isWireBoolean(fields[i]) && !"null".equals(fields[i]))
+            throw new IllegalArgumentException("Invalid inject result");
+        return fields;
+    }
+
     private TaskHelperProtocol() {}
 
     public static String newChallenge() {

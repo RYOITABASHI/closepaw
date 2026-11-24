@@ -60,6 +60,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -216,6 +217,21 @@ internal class AgentServiceBrainSessions(
                 throw sessionEnded()
             }
             throw McpTypedOpError("unknown_handle", "No external session owns this handle")
+        }
+        if (name == "spike_inject_tap") {
+            return@runBlocking brain.mutex.withLock {
+                checkLive(brain)
+                fun coordinate(key: String): Float = (args[key] as? JsonPrimitive)?.content?.toFloatOrNull()
+                    ?.takeIf { it.isFinite() } ?: throw McpTypedOpError("invalid_params", "Missing finite $key")
+                val platform = brain.session.getServices().platform as? VirtualDisplayPlatform
+                    ?: throw McpTypedOpError("no_session", "No VD session")
+                val result = withContext(Dispatchers.IO) { platform.spikeInjectTap(coordinate("x"), coordinate("y")) }
+                buildJsonObject {
+                    put("reflectionOk", result.getBoolean("reflectionOk"))
+                    for (key in listOf("down", "up")) put(key, if (result.containsKey(key)) JsonPrimitive(result.getBoolean(key)) else JsonNull)
+                    put("error", result.getString("error")?.let(::JsonPrimitive) ?: JsonNull)
+                }
+            }
         }
         brain.noteCallStarted()
         try {

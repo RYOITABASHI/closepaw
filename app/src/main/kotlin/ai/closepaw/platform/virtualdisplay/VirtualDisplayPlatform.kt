@@ -238,6 +238,11 @@ class VirtualDisplayPlatform(
                     isDispatchCancelled = isDispatchCancelled,
             )
 
+    fun spikeInjectTap(x: Float, y: Float): android.os.Bundle {
+        val running = arbiter.state as? VdState.Running ?: error("No running VD session")
+        return taskHelper.spikeInjectTap(running.displayId, x, y)
+    }
+
     private val inputInjector = VirtualDisplayInputInjector(shizuku, displayIdProvider)
     private val textInjector =
             VirtualDisplayTextInjector(

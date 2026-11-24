@@ -22,13 +22,33 @@ class McpSessionToolsTest {
     fun advertisesSessionToolsOnlyWithAnInjectedOperation() {
         val baseTools = setOf("run_goal", "get_run_result", "stop_run", "closepaw_status")
         val sessionTools = setOf("start_session", "observe", "tap", "type_text", "system_button",
-            "open_app", "wait", "finish_run")
+            "open_app", "wait", "finish_run", "spike_inject_tap")
         assertEquals(baseTools, tools(handler()).keys)
         val enabled = tools(handler(sessionOps = { _, _ -> error("Unexpected dispatch") }))
         assertEquals(baseTools + sessionTools, enabled.keys)
         for (name in sessionTools) {
             val schema = enabled.getValue(name).getValue("inputSchema").jsonObject
             assertEquals(name, JsonPrimitive(false), schema["additionalProperties"])
+        }
+    }
+
+    @Test
+    fun spikeTapRequiresBothInjectionsToSucceedAndPreservesThePayload() {
+        val audits = mutableListOf<String>()
+        for (down in listOf(true, false, null)) for (up in listOf(true, false, null)) {
+            val success = down == true && up == true
+            val payload = buildJsonObject {
+                put("reflectionOk", down != null)
+                put("down", down)
+                put("up", up)
+                put("error", if (success) null else "Injection failed")
+            }
+            val handler = handler(audits = audits, sessionOps = { _, _ -> payload })
+            val result = call(handler, session(handler), "spike_inject_tap", """{"runHandle":"valid","x":1,"y":2}""")
+            assertEquals(JsonPrimitive(!success), result["isError"])
+            assertEquals(payload, Json.parseToJsonElement(content(result)))
+            val outcome = if (success) "ok" else "spike_failed"
+            assertEquals("mcp tool=spike_inject_tap handle=valid outcome=$outcome", audits.last())
         }
     }
 

@@ -102,13 +102,19 @@ class McpHandler(
         addAll(TOOLS)
         if (selfUpdate != null) add(SELF_UPDATE_TOOL)
         if (typedOps != null) addAll(TYPED_OP_TOOLS)
-        if (sessionOps != null) addAll(SESSION_OP_TOOLS)
+        if (sessionOps != null) {
+            addAll(SESSION_OP_TOOLS)
+            add(sessionTool("spike_inject_tap", "Inc.4 throwaway helper tap probe", "x", "y") {
+                put("x", buildJsonObject { put("type", "number") })
+                put("y", buildJsonObject { put("type", "number") })
+            })
+        }
     })
     private val toolNames = buildSet {
         addAll(TOOL_NAMES)
         if (selfUpdate != null) add(TOOL_SELF_UPDATE)
         if (typedOps != null) addAll(TYPED_OP_NAMES)
-        if (sessionOps != null) addAll(SESSION_OP_NAMES)
+        if (sessionOps != null) { addAll(SESSION_OP_NAMES); add("spike_inject_tap") }
     }
     private val sessionsLock = Any()
 
@@ -235,12 +241,28 @@ class McpHandler(
             TOOL_STATUS -> status()
             TOOL_SELF_UPDATE -> selfUpdate(args)
             in TYPED_OP_NAMES -> typedOp(name, args)
+            "spike_inject_tap" -> spikeTap(name, args)
             in SESSION_OP_NAMES -> sessionOp(name, args)
             else -> error("unreachable")
         }
         val auditHandle = out.handle?.let(::sanitize)
         audit("mcp tool=$name handle=${auditHandle ?: "-"} outcome=${out.outcome}")
         return out.result
+    }
+
+    private fun spikeTap(name: String, args: JsonObject): ToolOutcome {
+        val payload = try {
+            checkNotNull(sessionOps)(name, args)
+        } catch (e: Exception) {
+            buildJsonObject {
+                put("reflectionOk", false)
+                put("down", JsonNull)
+                put("up", JsonNull)
+                put("error", e.message ?: "Spike failed")
+            }
+        }
+        val success = payload["down"] == JsonPrimitive(true) && payload["up"] == JsonPrimitive(true)
+        return ToolOutcome(handleArg(args), if (success) "ok" else "spike_failed", toolJson(payload, !success))
     }
 
     private fun typedOp(name: String, args: JsonObject): ToolOutcome = try {
@@ -384,16 +406,16 @@ class McpHandler(
         put("status", s.status.wire)
     }
 
-    // Tool result body, same shape as Shelly's toolResultBody: JSON text on success,
-    // "Error: [code] message" with isError on failure.
-    private fun toolOk(data: JsonObject) = buildJsonObject {
+    private fun toolOk(data: JsonObject) = toolJson(data, isError = false)
+
+    private fun toolJson(data: JsonObject, isError: Boolean) = buildJsonObject {
         putJsonArray("content") {
             add(buildJsonObject {
                 put("type", "text")
                 put("text", data.toString())
             })
         }
-        put("isError", false)
+        put("isError", isError)
     }
 
     private fun toolError(handle: String?, outcome: String, message: String, code: String? = null): ToolOutcome {
