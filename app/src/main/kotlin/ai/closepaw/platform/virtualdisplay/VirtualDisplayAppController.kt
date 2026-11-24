@@ -34,7 +34,9 @@ internal class VirtualDisplayAppController(
         suspend fun chromeTaskIds(): Set<Int>? {
                 val displayId = displayIdProvider()
                 return withContext(Dispatchers.IO) {
-                        shizuku.rootTaskIdsOnDisplay(displayId, ChromeFlagDeepLink.CHROME_PACKAGE)
+                        shizuku.rootTaskIdsOnDisplay(
+                                displayId, ChromeFlagDeepLink.CHROME_PACKAGE, requireHelper = true,
+                        )
                 }
         }
 
@@ -42,9 +44,11 @@ internal class VirtualDisplayAppController(
         suspend fun removeTask(taskId: Int): Boolean =
                 withContext(Dispatchers.IO) { shizuku.removeRootTask(taskId) }
 
+        private val mainDisplayTaskReader by lazy { MainDisplayTaskReader(service, shizuku) }
+
         /** Root tasks on the main display, the one in front first; null when unreadable. */
         suspend fun mainDisplayTasks(): List<ShizukuActivityTaskTransport.RootTask>? =
-                withContext(Dispatchers.IO) { shizuku.rootTasksWithPackagesOnDisplay(Display.DEFAULT_DISPLAY) }
+                mainDisplayTaskReader.read()
 
         /** Moves a root task (with its windows) onto this display. */
         suspend fun moveTaskHere(taskId: Int): Boolean {

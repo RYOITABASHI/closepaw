@@ -109,6 +109,9 @@ internal class TaskHelperSession(
     fun queryRows(displayId: Int, timeoutMs: Long): List<TaskHelperRow>? =
             if (displayId < 0 || timeoutMs <= 0) null else active?.queryRows(displayId, timeoutMs)
 
+    fun write(code: Int, payload: Bundle): TaskWriteResult =
+            active?.write(code, payload) ?: TaskWriteResult.FAILED
+
     suspend fun close(token: TaskHelperOwnership.Token, shouldClose: () -> Boolean = { true }) = withContext(NonCancellable) {
         withContext(Dispatchers.IO) {
             lifecycle.withLock {
@@ -336,9 +339,56 @@ internal class TaskHelperSession(
             }
         }
 
+        fun write(code: Int, payload: Bundle): TaskWriteResult {
+            if (!isAlive) return TaskWriteResult.FAILED
+            val budget = TimeUnit.MILLISECONDS.toNanos(TaskObservationPolicy.READ_TIMEOUT_MS)
+            val deadline = System.nanoTime() + budget
+            val dispatch = TaskWriteDispatch(deadline)
+            try {
+                if (!queryLock.tryLock(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)) {
+                    return TaskWriteResult.FAILED
+                }
+                try {
+                    if (!isAlive) return TaskWriteResult.FAILED
+                    val write = PendingWrite(ids.incrementAndGet())
+                    payload.putInt(TaskHelperWire.QUERY_ID, write.id)
+                    events.pendingWrite.set(write)
+                    try {
+                        val sending = sender.submit {
+                            if (events.pendingWrite.get() === write && isAlive &&
+                                    dispatch.tryStart()) {
+                                // A send exception can race with transaction delivery.
+                                runCatching { send(code, payload) }
+                                        .onFailure { write.answer.complete(TaskWriteResult.UNKNOWN) }
+                            } else {
+                                write.answer.complete(TaskWriteResult.FAILED)
+                            }
+                        }
+                        try {
+                            val remaining = deadline - System.nanoTime()
+                            val result = write.answer.get(remaining, TimeUnit.NANOSECONDS)
+                            return if (result == TaskWriteResult.UNKNOWN) dispatch.abort() else result
+                        } finally {
+                            sending.cancel(false)
+                        }
+                    } finally {
+                        events.pendingWrite.compareAndSet(write, null)
+                    }
+                } finally {
+                    queryLock.unlock()
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return dispatch.abort()
+            } catch (_: Exception) {
+                return dispatch.abort()
+            }
+        }
+
         fun beginClose() {
             closed.set(true)
             events.pending.get()?.complete(null)
+            events.pendingWrite.get()?.answer?.complete(TaskWriteResult.UNKNOWN)
             events.displayPending.get()?.reply?.complete(null)
         }
 
@@ -363,6 +413,10 @@ internal class TaskHelperSession(
                 TaskHelperWire.send(binder, TaskHelperWire.COMMANDS, code, registration.secret, payload)
     }
 
+    private class PendingWrite(val id: Int) {
+        val answer = CompletableFuture<TaskWriteResult>()
+    }
+
     private class DisplayRequest(val id: Int, val operation: Int, val displayId: Int) {
         val reply = CompletableFuture<Bundle?>()
     }
@@ -372,6 +426,7 @@ internal class TaskHelperSession(
         val attached = CompletableDeferred<Unit>()
         val dead = CompletableDeferred<Unit>()
         val pending = AtomicReference<TaskHelperQuery?>()
+        val pendingWrite = AtomicReference<PendingWrite?>()
         val displayPending = AtomicReference<DisplayRequest?>()
 
         init {
@@ -416,9 +471,19 @@ internal class TaskHelperSession(
                     }.getOrNull()
                     request.reply.complete(reply)
                 }
+                TaskHelperWire.WRITE_RESULT -> {
+                    val write = pendingWrite.get() ?: return
+                    runCatching {
+                        if (payload.get(TaskHelperWire.QUERY_ID) == write.id) {
+                            write.answer.complete(decodeTaskWriteResult(payload.get(TaskHelperWire.WRITE_OK)))
+                        }
+                    }
+                }
                 TaskHelperWire.ERROR -> {
                     val id = payload.get(TaskHelperWire.QUERY_ID)
                     if (id is Int) {
+                        pendingWrite.get()?.takeIf { it.id == id }
+                                ?.answer?.complete(TaskWriteResult.FAILED)
                         pending.get()?.takeIf { it.id == id }?.complete(null)
                     } else {
                         attached.completeExceptionally(IOException(payload.getString(TaskHelperWire.DETAIL)))
@@ -431,6 +496,7 @@ internal class TaskHelperSession(
             dead.complete(Unit)
             attached.completeExceptionally(IOException("Task helper Binder died"))
             pending.get()?.binderDied()
+            pendingWrite.get()?.answer?.complete(TaskWriteResult.UNKNOWN)
             displayPending.get()?.reply?.complete(null)
         }
     }

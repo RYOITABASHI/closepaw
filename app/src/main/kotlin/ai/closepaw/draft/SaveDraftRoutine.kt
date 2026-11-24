@@ -211,7 +211,7 @@ class SaveDraftRoutine(
     private val browser: DraftBrowser,
     private val request: SaveDraftRequest,
     /** True when the owner is, or may be, using Chrome. Must answer true when it cannot tell. */
-    private val ownerHasChrome: () -> Boolean,
+    private val ownerHasChrome: suspend () -> Boolean,
     private val timing: SaveDraftTiming = SaveDraftTiming(),
     private val now: () -> Long = System::currentTimeMillis,
     private val newMarker: () -> String = ::randomMarker,
@@ -1166,7 +1166,7 @@ class SaveDraftRoutine(
         return answer
     }
 
-    private fun stopIfOwnerHasChrome() {
+    private suspend fun stopIfOwnerHasChrome() {
         if (ownerHasChrome()) throw Halt("chrome-opened")
     }
 

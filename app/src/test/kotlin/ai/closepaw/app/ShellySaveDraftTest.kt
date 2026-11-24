@@ -8,6 +8,14 @@ import org.junit.Test
 
 class ShellySaveDraftTest {
 
+    @Test
+    fun unknownHelperTaskBlocksAdmissionWithKnownNonChromeWindow() {
+        val other = "com.example.other"
+        assertThat(ShellySaveDraft.chromeInFront(other, null, requireTaskObservation = true)).isTrue()
+        assertThat(ShellySaveDraft.chromeInFront(other, false, requireTaskObservation = true)).isFalse()
+        assertThat(ShellySaveDraft.chromeInFront(other, null, requireTaskObservation = false)).isFalse()
+    }
+
     private val reqId = "1760500000000-0123abcd"
     private val nonce = "0123456789abcdef0123456789abcdef"
 
@@ -268,13 +276,14 @@ class ShellySaveDraftTest {
             .replace("\r\n", "\n")
         assertThat(source).contains("MAIN.postDelayed(watchdog, ShellySaveDraft.ANSWER_CAP_MS)")
         assertThat(Regex("decideAndStart\\(target").findAll(source).count()).isEqualTo(1)
-        val inTime = source.substringAfter("Claim.IN_TIME -> {").substringBefore("}\n")
+        val inTime = source.substringAfter("val checks = try {")
+            .substringAfter("Claim.IN_TIME -> {").substringBefore("}\n")
         assertThat(inTime).contains("respond { decideAndStart(target, checks!!)")
         // A deadline that passes between the claim and the commit refuses as too slow.
         assertThat(inTime).contains("?: tooSlow()")
         val decide = source.substringAfter("private fun decideAndStart(")
         assertThat(decide.substringBefore("REPLAY_GUARD.firstUse")).contains("checks.window.isExpired()")
-        // The slow accessibility + Shizuku query runs in gather (the worker), not on main.
+        // The foreground observation runs in the worker before the main-thread decision.
         assertThat(decide).doesNotContain("isChromeInFront()")
         assertThat(source.substringAfter("private fun gather(").substringBefore("private fun decideAndStart"))
             .contains("isChromeInFront()")
@@ -349,9 +358,15 @@ class ShellySaveDraftTest {
         assertThat(body.indexOf("val clear = barrierClear && !deferredPending")).isLessThan(body.indexOf(startCall))
         assertThat(body).contains("val clear = barrierClear && !deferredPending")
         val platform = java.io.File("src/main/kotlin/ai/closepaw/platform/virtualdisplay/VirtualDisplayPlatform.kt").readText()
-        // Every deferral launch is counted.
-        assertThat(Regex("deferralScope\\.launch").findAll(platform).count()).isEqualTo(1) // the helper's own
-        assertThat(Regex("launchDeferralWork\\b").findAll(platform).count()).isAtLeast(4) // helper + 3 sites
+        // Each restore trigger uses the counted launcher. The lifecycle also has its own jobs.
+        for (trigger in listOf("onViewerClosedRecheckDeferral", "onScreenOff", "restoreNowWithoutDeferral")) {
+            val triggerBody = platform.substringAfter("fun $trigger(").substringBefore("\n    }")
+            assertThat(triggerBody).contains("launchDeferralWork")
+            assertThat(triggerBody).doesNotContain("deferralScope.launch")
+        }
+        val countedLaunch = platform.substringAfter("fun launchDeferralWork(").substringBefore("\n    }")
+        assertThat(countedLaunch.substringBefore("deferralScope.launch")).contains("deferralWorkRunning.incrementAndGet()")
+        assertThat(countedLaunch).contains("invokeOnCompletion { deferralWorkRunning.decrementAndGet() }")
     }
 
     @Test
@@ -375,9 +390,12 @@ class ShellySaveDraftTest {
     @Test
     fun `the draft command never reaches logcat`() {
         val controller = java.io.File("src/main/kotlin/ai/closepaw/platform/virtualdisplay/VirtualDisplayAppController.kt").readText()
-        assertThat(controller.substringAfter("private suspend fun startChrome")).contains("executeQuietShellCommand")
-        val routine = java.io.File("src/main/kotlin/ai/closepaw/draft/SaveDraftRoutine.kt").readText()
-        assertThat(routine).doesNotContain("Log.")
+        val start = controller.substringAfter("private suspend fun startChrome").substringBefore("suspend fun launchApp")
+        assertThat(start).contains("shizuku.executeQuietShellCommand(command)")
+        assertThat(start).doesNotContain("executeShellCommand(")
+        val client = java.io.File("src/main/kotlin/ai/closepaw/platform/virtualdisplay/ShizukuClient.kt").readText()
+        val quiet = client.substringAfter("fun executeQuietShellCommand(").substringBefore("\n    }")
+        assertThat(quiet).contains("shellExecutor.execute(command, quiet = true)")
     }
 
     @Test

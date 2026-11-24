@@ -6,6 +6,22 @@ import org.junit.Test
 class ShizukuActivityTaskTransportTest {
 
     @Test
+    fun `startActivity rejects an overload that only matches the old shape`() {
+        val transport = ShizukuActivityTaskTransport { WrongStartActivitySignature() }
+        assertThat(transport.startActivity(android.content.Intent(), null)).isFalse()
+    }
+
+    class WrongStartActivitySignature {
+        @Suppress("UNUSED_PARAMETER")
+        fun startActivityAsUser(
+                caller: Any?, callingPackage: String, feature: String?, intent: android.content.Intent,
+                type: String?, resultTo: android.os.IBinder?, resultWho: String?, request: Int,
+                flags: Int, profiler: Any?, options: android.os.Bundle?, user: Int,
+        ): Int = 0
+    }
+
+
+    @Test
     fun `removes only root task ids returned for display`() {
         val displayId = 112
         val rootInfo =

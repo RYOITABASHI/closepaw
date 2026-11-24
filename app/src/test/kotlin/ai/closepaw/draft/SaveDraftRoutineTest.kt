@@ -589,7 +589,7 @@ class SaveDraftRoutineTest {
         browser: DraftBrowser,
         site: DraftSite,
         images: List<DraftImage> = emptyList(),
-        ownerHasChrome: () -> Boolean = { false },
+        ownerHasChrome: suspend () -> Boolean = { false },
         html: String = "<p>Body text here</p>",
     ) = SaveDraftRoutine(
         browser,

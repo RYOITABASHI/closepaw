@@ -38,8 +38,6 @@ import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.mockkConstructor
-import io.mockk.unmockkConstructor
 import io.mockk.verify
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.Dispatchers
@@ -1197,62 +1195,24 @@ class ShellyBackgroundRunTest {
         assertThat(d.main.first()).isEqualTo(home)
     }
 
-    /**
-     * The mockable android.jar returns null from Intent's fluent builders, which would make the
-     * restorer skip the binder HOME start entirely; make them return the Intent for [block].
-     */
-    private inline fun <T> withFluentIntent(block: () -> T): T {
-        mockkConstructor(android.content.Intent::class)
-        try {
-            every { anyConstructed<android.content.Intent>().addCategory(any()) } answers { self as android.content.Intent }
-            every { anyConstructed<android.content.Intent>().addFlags(any()) } answers { self as android.content.Intent }
-            return block()
-        } finally {
-            unmockkConstructor(android.content.Intent::class)
-        }
-    }
-
     @Test
-    fun `restorer - a rejected binder HOME start falls back to am start`() = runTest {
-      withFluentIntent {
-        val d = FakeDisplays(listOf(shelly, chrome, home))
-        val shizuku = fakeShizuku(d)
-        // What the transport now reports for START_SWITCHES_CANCELED (100) and friends.
-        every { shizuku.startActivityAsShell(any(), any()) } answers { d.log += "binder home rejected"; false }
-        val r = MainDisplayTaskRestorer(shizuku, setOf(launcher))
-        launchShellyOnVd(r, d) // Chrome revealed
-        d.front(home)
-        r.onMainDisplayForeground(launcher) // the user went Home: refront Home owed
-        r.restore(vdId)
-        assertThat(d.log).containsExactly("move ${shelly.taskId}", "binder home rejected", "refront home").inOrder()
-        assertThat(d.main.first()).isEqualTo(home)
-        assertThat(r.protectedTaskIds()).isEmpty()
-        verify(exactly = 1) { shizuku.startActivityAsShell(any(), any()) }
-        verify(exactly = 1) { shizuku.executeShellCommand(any()) }
-      }
-    }
-
-    @Test
-    fun `restorer - a HOME refront whose fallback fails too stays owed`() = runTest {
-      withFluentIntent {
+    fun `restorer - a rejected typed HOME refront stays owed`() = runTest {
         val d = FakeDisplays(listOf(shelly, chrome, home))
         val shizuku = fakeShizuku(d)
         every { shizuku.startActivityAsShell(any(), any()) } answers { d.log += "binder home rejected"; false }
-        every { shizuku.executeShellCommand(any()) } answers { d.log += "am start failed"; 1 }
         val r = MainDisplayTaskRestorer(shizuku, setOf(launcher))
         launchShellyOnVd(r, d)
         d.front(home)
         r.onMainDisplayForeground(launcher)
-        r.restore(vdId) // Shelly moves back (on top), the Home refront fails both ways
+        r.restore(vdId) // Shelly moves back (on top), the typed Home refront fails
         assertThat(d.main.first()).isEqualTo(shelly)
         every { shizuku.startActivityAsShell(any(), any()) } answers { d.log += "refront home"; d.front(home); true }
         r.restore(vdId) // refront-only retry
         assertThat(d.log).containsExactly(
-            "move ${shelly.taskId}", "binder home rejected", "am start failed", "refront home",
+            "move ${shelly.taskId}", "binder home rejected", "refront home",
         ).inOrder()
         assertThat(d.main.first()).isEqualTo(home)
-        verify(exactly = 1) { shizuku.executeShellCommand(any()) } // the retry's binder start succeeded
-      }
+        verify(exactly = 0) { shizuku.executeShellCommand(any()) }
     }
 
     // ── Gate fix round 2: the Recents task refront uses the same 0..99 success range ──

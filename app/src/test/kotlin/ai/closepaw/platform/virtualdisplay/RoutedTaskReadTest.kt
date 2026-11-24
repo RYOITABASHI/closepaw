@@ -7,6 +7,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RoutedTaskReadTest {
+
+    @Test fun strictReadOnlyFallsBackWhenHelperRouteIsDisabled() {
+        val read = RoutedTaskRead()
+        val rows = listOf(TaskHelperRow(7, null, null, emptySet(), null, false))
+        fun serve(enabled: Boolean, source: HelperRowSource?) =
+            read.served(0, 33, enabled, source, { listOf(3) }, requireHelper = true) {
+                it.map { row -> row.taskId }
+            }
+
+        assertNull(serve(true, null))
+        assertNull(serve(true, HelperRowSource { null }))
+        assertEquals(Served(emptyList<Int>(), ServedSource.HELPER), serve(true, HelperRowSource { emptyList() }))
+        assertEquals(Served(listOf(7), ServedSource.HELPER), serve(true, HelperRowSource { rows }))
+        assertEquals(Served(listOf(3), ServedSource.INCUMBENT), serve(false, HelperRowSource { error("disabled") }))
+        assertEquals(0, read.stats.fallback.get())
+    }
+
     @Test fun servedRetriesAfterFailureAndFallsBackAgainAfterLoss() {
         val rows = listOf(TaskHelperRow(7, null, null, emptySet(), null, false))
         var calls = 0

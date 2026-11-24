@@ -186,7 +186,7 @@ class ShellySaveDraftReceiver : BroadcastReceiver() {
         }
         val virtualDisplayReady = probeVirtualDisplayReady(app)
         val chromeInFront = try {
-            AgentService.instance?.isChromeInFront() != false
+            kotlinx.coroutines.runBlocking { AgentService.instance?.isChromeInFront() != false }
         } catch (e: Throwable) {
             true // fails closed, as before
         }
