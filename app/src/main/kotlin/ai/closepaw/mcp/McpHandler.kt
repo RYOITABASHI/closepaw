@@ -87,6 +87,7 @@ class McpHandler(
     private val sessionOps: ((String, JsonObject) -> JsonObject)? = null,
     private val sessionResults: McpExternalResults? = null,
     private val sessionStartRefusal: ((JsonObject, String?) -> Unit)? = null,
+    private val recoveryStatus: () -> JsonObject = { buildJsonObject {} },
 ) {
     data class AdbStatus(
         val paired: Boolean,
@@ -330,6 +331,7 @@ class McpHandler(
         return ToolOutcome(null, "ok", toolOk(buildJsonObject {
             put("version", s.version)
             put("serverOn", true)
+            put("recovery", recoveryStatus())
             put("virtualDisplayReady", s.virtualDisplayReady)
             put("accessibilityReady", s.accessibilityReady)
             put("accessibilitySettingOn", s.accessibilitySettingOn)

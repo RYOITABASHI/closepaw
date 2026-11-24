@@ -61,6 +61,8 @@ class ShizukuClient {
     fun hasPermission(): Boolean =
             runtimeGateway.hasPermission()
 
+    internal fun permissionGrantedOrNull(): Boolean? = runtimeGateway.permissionGrantedOrNull()
+
     /** Request Shizuku permission from the user. */
     fun requestPermission(requestCode: Int) {
         runtimeGateway.requestPermission(requestCode)

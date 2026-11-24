@@ -67,6 +67,7 @@ object ShellyBackgroundRun {
      * started run without it as "no result will come" instead of waiting forever.
      */
     const val RESULT_EXTRA_RESULT_CALLBACK = "result_callback"
+    const val RESULT_EXTRA_RUN_HANDLE = "runHandle"
 
     /**
      * Replacing a session: must the new session wait until the replaced session's shutdown has
@@ -203,9 +204,8 @@ class ShellyRunTracker(
      * still running, already claimed (by any path of this start), or no result was requested.
      */
     fun claimResult(nowMs: Long): ShellyResultCallback.Payload? {
-        if (!isFinished) return null
-        if (!result.claim()) return null
-        return ShellyResultCallback.payloadFor(this, nowMs)
+        val finished = state as? ShellyRunState.Finished ?: return null
+        return result.claimBrainTerminal(finished.kind, finished.message, nowMs, sessionId)
     }
 
     private val vdPackages = LinkedHashSet<String>()

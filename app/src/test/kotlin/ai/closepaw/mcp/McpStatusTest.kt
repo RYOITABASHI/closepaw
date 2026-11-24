@@ -2,6 +2,7 @@ package ai.closepaw.mcp
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -19,6 +20,9 @@ class McpStatusTest {
         assertEquals(JsonPrimitive(false), status["accessibilityReady"])
         assertEquals(JsonPrimitive(false), status["accessibilityBound"])
         assertEquals(JsonPrimitive(true), status["accessibilitySettingOn"])
+        val recovery = status.getValue("recovery").jsonObject
+        assertEquals(JsonPrimitive("unavailable"), recovery["adb"])
+        assertEquals(JsonPrimitive(false), recovery["readLogsGranted"])
         val adb = status.getValue("adbChannel").jsonObject
         assertEquals(JsonPrimitive(37001), adb["lastPort"])
         assertEquals(adb["lastPort"], adb["lastSuccessfulPort"])
@@ -48,6 +52,10 @@ class McpStatusTest {
             audit = {},
             serverVersion = "test",
             adbStatus = { adb },
+            recoveryStatus = { JsonObject(mapOf(
+                "adb" to JsonPrimitive("unavailable"),
+                "readLogsGranted" to JsonPrimitive(false),
+            )) },
         ),
     ) {
         val headers = mapOf("authorization" to "Bearer $TOKEN")

@@ -73,6 +73,7 @@ import org.json.JSONObject
 internal class AgentServiceBrainSessions(
     private val serviceProvider: () -> AgentService?,
     backend: AgentServiceMcpBackend,
+    private val runStore: RunRecoveryStore,
 ) : McpExternalResults {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val sessions = ConcurrentHashMap<String, BrainSession>()
@@ -103,7 +104,7 @@ internal class AgentServiceBrainSessions(
     private class BrainStart(
         val ownerService: AgentService?,
         val handle: String,
-        val pending: ShellyPendingResult,
+        var pending: ShellyPendingResult,
         val correlationIdentity: String?,
     ) {
         val correlation get() = pending.correlation
@@ -124,7 +125,7 @@ internal class AgentServiceBrainSessions(
                 return McpRunRegistry.Snapshot(runHandle, McpRunRegistry.Status.RUNNING, "")
             } else {
                 // Completion may have removed the live entry since the first result lookup.
-                results[runHandle] ?: return null
+                results[runHandle] ?: return runStore.snapshot(runHandle)
             }
         return McpRunRegistry.Snapshot(runHandle, result.status, result.summary)
     }
@@ -292,18 +293,21 @@ internal class AgentServiceBrainSessions(
             throw McpTypedOpError("duplicate_correlation", "This request correlation has already been used")
         }
 
-        val pending = ShellyPendingResult(correlation)
+        var pending = ShellyPendingResult(correlation)
         var callbackDeferred = false
         var ownedStart: BrainStart? = null
         var adopted: BrainSession? = null
         var worker: Deferred<BrainSession>? = null
         try {
             val claim = synchronized(ownershipLock) {
-                val candidate = BrainStart(serviceProvider(), newHandle(), pending, identity)
+                val handle = newHandle()
+                val candidate = BrainStart(serviceProvider(), handle, pending, identity)
                 if (!ownership.reserve(candidate)) {
                     throw McpTypedOpError("busy", "ClosePaw is busy with another task")
                 }
                 ownedStart = candidate
+                pending = runStore.begin(handle, correlation)
+                candidate.pending = pending
                 candidate
             }
             val deadline = SystemClock.elapsedRealtime() + START_TIMEOUT_MS
@@ -415,6 +419,7 @@ internal class AgentServiceBrainSessions(
                     adopted = ready
                     synchronized(ready.terminalGate) {
                         sessions[ready.handle] = ready
+                        runStore.markRunning(ready.handle)
                         ready.expiry = scope.launch {
                             delay((BrainSessionLimits.MAX_SESSION_WALL_CLOCK_MS - ready.elapsedMs()).coerceAtLeast(0L))
                             terminate(ready, "External session exceeded its wall-clock limit")
@@ -1339,15 +1344,16 @@ internal class AgentServiceBrainSessions(
                 if (deferPublication) return@publish
                 brain.expiry?.cancel()
                 brain.healthWatcher?.cancel()
+                val payload = brain.pending.claimBrainTerminal(
+                    kind, message, System.currentTimeMillis(), brain.session.sessionId.value,
+                )
                 synchronized(ownershipLock) {
                     ownership.protect(brain.handle)
                     results[brain.handle] = BrainRunRecord(status, truncateSummary(message), recorded)
                     sessions.remove(brain.handle, brain)
                     brain.correlationIdentity?.let(reservations::release)
                 }
-                backend.sendBrainResult(
-                    brain.pending.claimBrainTerminal(kind, message, System.currentTimeMillis(), brain.session.sessionId.value),
-                )
+                backend.sendBrainResult(payload)
                 published = true
                 synchronized(resultsLock) { resultsLock.notifyAll() }
             },

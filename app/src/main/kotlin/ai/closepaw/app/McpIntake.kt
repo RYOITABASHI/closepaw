@@ -64,7 +64,6 @@ internal object McpRunStatus {
 internal class AgentServiceMcpBackend(
     private val app: Context,
     private val registry: McpRunRegistry,
-    private val maintenance: McpMaintenance,
     private val adbChannel: AdbShellChannel,
 ) : McpBackend {
     private val main = Handler(Looper.getMainLooper())
@@ -154,7 +153,7 @@ internal class AgentServiceMcpBackend(
                 is ShellyBackgroundRun.Decision.Start -> {
                     val handle = registry.issue()
                     val guard = service!!.startShellyRun(
-                        goal, decision.platformMode, origin = ShellyRunOrigin.MCP,
+                        goal, decision.platformMode, origin = ShellyRunOrigin.MCP, runHandle = handle,
                     ) { finished ->
                         McpRunStatus.complete(registry, handle, finished)
                         guards.remove(handle)
@@ -182,9 +181,6 @@ internal class AgentServiceMcpBackend(
     override fun status(): McpBackend.Status {
         val bound = AgentService.instance != null
         val settingOn = accessibilitySettingOn(app)
-        if (!settingOn || !bound) maintenance.checkAccessibility()
-        maintenance.rediscover()
-        maintenance.checkShizuku()
         return McpBackend.Status(
             version = BuildConfig.VERSION_NAME,
             virtualDisplayReady = probeVirtualDisplayReady(app, adbChannel),
@@ -264,6 +260,7 @@ internal object McpServerController {
     @Synchronized
     fun sync(context: Context) {
         val app = context.applicationContext
+        val runStore = RunRecoveryStore.get(app)
         val store = McpSettingsStore(app)
         if (!store.isEnabled()) {
             stopLocked()
@@ -272,10 +269,12 @@ internal object McpServerController {
         if (server?.isRunning == true) return
         token = store.tokenOrCreate()
         val channel = adbChannel ?: AdbShellChannel(app).also { adbChannel = it }
-        maintenance?.stop()
-        val worker = McpMaintenance(app, channel)
-        val backend = AgentServiceMcpBackend(app, registry, worker, channel)
-        val brains = brainSessions ?: AgentServiceBrainSessions({ AgentService.instance }, backend)
+        val worker = maintenance ?: McpMaintenance(app, channel, runStore).also {
+            maintenance = it
+            it.start()
+        }
+        val backend = AgentServiceMcpBackend(app, registry, channel)
+        val brains = brainSessions ?: AgentServiceBrainSessions({ AgentService.instance }, backend, runStore)
             .also { brainSessions = it }
         brains.updateBackend(backend)
         backend.brainStopHandler = brains::stop
@@ -302,27 +301,35 @@ internal object McpServerController {
             sessionOps = brains::handle,
             sessionResults = brains,
             sessionStartRefusal = brains::reportRefusedStart,
+            recoveryStatus = worker::status,
         )
         val s = McpHttpServer(h, onError = { Log.w(TAG, it) })
         try {
             s.start()
             server = s
             handler = h
-            maintenance = worker
-            worker.onServerStarted()
             _state.value = State.Running(s.boundPort)
             Log.i(TAG, "MCP server listening on 0.0.0.0:${s.boundPort}")
         } catch (e: IOException) {
-            worker.stop()
             Log.w(TAG, "MCP server failed to start: ${e.javaClass.simpleName}")
             _state.value = State.Failed(e.javaClass.simpleName)
         }
     }
 
     @Synchronized
+    fun checkRecovery() {
+        maintenance?.checkRecovery()
+    }
+
+    @Synchronized
     fun setEnabled(context: Context, enabled: Boolean) {
         McpSettingsStore(context.applicationContext).setEnabled(enabled)
         sync(context)
+        if (enabled) {
+            McpRecoveryService.ensureStarted(context, "settings_enabled")
+        } else {
+            context.stopService(android.content.Intent(context, McpRecoveryService::class.java))
+        }
     }
 
     /** Current token (created on first use), for the settings screen. */

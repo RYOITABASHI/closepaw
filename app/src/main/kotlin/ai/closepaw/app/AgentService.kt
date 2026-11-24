@@ -447,15 +447,30 @@ class AgentService : AccessibilityService() {
         syncMcpListener()
     }
 
+    private var mcpWatchdog: Job? = null
+
     private fun syncMcpListener() {
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                McpServerController.sync(applicationContext)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "MCP startup failed: ${e.javaClass.simpleName}")
+        McpRecoveryService.ensureStarted(applicationContext, "accessibility")
+        if (mcpWatchdog?.isActive != true) {
+            mcpWatchdog = serviceScope.launch {
+                while (true) {
+                    kotlinx.coroutines.delay(McpRecoveryService.CHECK_INTERVAL_MS)
+                    McpRecoveryService.ensureStarted(applicationContext, "accessibility_watchdog")
+                    if (!McpRecoveryService.resident) syncMcpAndCheck()
+                }
             }
+        }
+        serviceScope.launch { syncMcpAndCheck() }
+    }
+
+    private suspend fun syncMcpAndCheck() = withContext(Dispatchers.IO) {
+        try {
+            McpServerController.sync(applicationContext)
+            McpServerController.checkRecovery()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "MCP startup failed: ${e.javaClass.simpleName}")
         }
     }
 
@@ -667,6 +682,7 @@ class AgentService : AccessibilityService() {
             platformMode: PlatformMode,
             correlation: ShellyBackgroundRun.ResultCorrelation? = null,
             origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
+            runHandle: String = ai.closepaw.mcp.McpRunRegistry.randomHandle(),
             /**
              * MCP intake only (Shelly passes null): called once on the main thread with the run's
              * terminal state, from the same report-once paths that send the Shelly result.
@@ -687,10 +703,13 @@ class AgentService : AccessibilityService() {
             onTerminal?.invoke(ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, "ClosePaw is busy with another task"))
             return null
         }
+        var storedResult: ShellyPendingResult? = null
         try {
             // The start is accepted (the receiver will answer result_callback=1 when a correlation is
             // present): from here every exit must claim this guard exactly once.
-            val pending = ShellyPendingResult(correlation)
+            val store = RunRecoveryStore.get(applicationContext)
+            val pending = store.begin(runHandle, correlation)
+            storedResult = pending
             shellyPendingStart = pending
             onTerminal?.let { intakeObservers[pending] = it }
             fun prepareReplacement() {
@@ -804,6 +823,7 @@ class AgentService : AccessibilityService() {
                         add(packageName)
                         addAll(ai.closepaw.session.SystemSurfaces.resolve(this@AgentService))
                     }
+                    store.markRunning(runHandle)
                     val tracker = ShellyRunTracker(
                             sessionId = newSession.sessionId.value,
                             onMainDisplay = effectiveMode != PlatformMode.VIRTUAL_DISPLAY,
@@ -872,7 +892,17 @@ class AgentService : AccessibilityService() {
         } catch (failure: Throwable) {
             creation.release()
             shellyPendingStart = null
-            throw failure
+            val message = "ClosePaw failed to start the task"
+            val pending = storedResult
+            if (pending != null) {
+                reportShellyStartFailure(pending, message)
+            } else {
+                reportShellyStartFailure(correlation, message)
+                onTerminal?.invoke(ShellyRunState.Finished(ShellyRunState.Finished.Kind.FAILED, message))
+            }
+            if (failure is CancellationException || failure !is Exception) throw failure
+            Log.w(TAG, message, failure)
+            return null
         }
     }
 
