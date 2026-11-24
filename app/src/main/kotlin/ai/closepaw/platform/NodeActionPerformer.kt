@@ -8,6 +8,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import ai.closepaw.util.recycleCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /**
  * Shared node-action executor for both Accessibility and VirtualDisplay platforms.
@@ -460,17 +461,49 @@ class NodeActionPerformer(
             val foundPackage = node.packageName?.toString().orEmpty()
             val text = if (node.isPassword) "[password]" else foundText
             val description = if (node.isPassword) "" else foundDesc
-            val matches = boundsMatch && foundClass.substringAfterLast('.') == hint.className &&
-                    description == hint.description &&
-                    (hint.packageName.isEmpty() || foundPackage == hint.packageName) &&
-                    foundId == hint.resourceId &&
-                    matchesObservedTargetText(
-                        text,
-                        if (text.isBlank() && hint.text.isNotBlank()) descendantMergedTexts(node)
-                        else emptyList(),
-                        hint.text,
-                    )
-            return if (matches) null else ActionResult.Failure("element_changed")
+            val classMatch = foundClass.substringAfterLast('.') == hint.className
+            val packageMatch = hint.packageName.isEmpty() || foundPackage == hint.packageName
+            val descriptionMatch = description == hint.description
+            val resourceIdMatch = foundId == hint.resourceId
+            val useAggregatedText = text.isBlank() && hint.text.isNotBlank()
+            val descendantTexts = if (useAggregatedText) descendantMergedTexts(node) else emptyList()
+            val textMatch = matchesObservedTargetText(text, descendantTexts, hint.text)
+            if (boundsMatch && classMatch && packageMatch && textMatch &&
+                descriptionMatch && resourceIdMatch
+            ) return null
+
+            val textMode = when {
+                useAggregatedText -> "aggregated"
+                text.isBlank() -> "own-blank-hint-blank"
+                else -> "own"
+            }
+            fun quoteDiagnosticValue(value: String): String {
+                val limit = 120
+                if (value.length <= limit) return JSONObject.quote(value)
+
+                val suffix = "…(len=${value.length})"
+                val prefixLength = limit - suffix.length
+                val end = if (value[prefixLength - 1].isHighSurrogate()) prefixLength - 1 else prefixLength
+                return JSONObject.quote(value.take(end) + suffix)
+            }
+
+            Log.i(
+                "ClosePawMcpAudit",
+                "guard_mismatch_diag boundsMatch=$boundsMatch classMatch=$classMatch " +
+                        "packageMatch=$packageMatch textMatch=$textMatch " +
+                        "descriptionMatch=$descriptionMatch resourceIdMatch=$resourceIdMatch " +
+                        "hint=[className=${quoteDiagnosticValue(hint.className)} " +
+                        "packageName=${quoteDiagnosticValue(hint.packageName)} text=${quoteDiagnosticValue(hint.text)} " +
+                        "description=${quoteDiagnosticValue(hint.description)} " +
+                        "resourceId=${quoteDiagnosticValue(hint.resourceId)} bounds=${hint.bounds}] " +
+                        "found=[className=${quoteDiagnosticValue(foundClass)} " +
+                        "packageName=${quoteDiagnosticValue(foundPackage)} text=${quoteDiagnosticValue(text)} " +
+                        "description=${quoteDiagnosticValue(description)} resourceId=${quoteDiagnosticValue(foundId)} " +
+                        "bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}]] " +
+                        "textMode=$textMode descendantTexts=" +
+                        descendantTexts.joinToString(prefix = "[", postfix = "]", transform = ::quoteDiagnosticValue),
+            )
+            return ActionResult.Failure("element_changed")
         }
 
         val identityMatch = matchesIntended(foundId, foundText, foundDesc, foundClass, hint)
