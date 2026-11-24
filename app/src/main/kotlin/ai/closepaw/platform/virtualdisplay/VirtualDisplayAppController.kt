@@ -90,8 +90,10 @@ internal class VirtualDisplayAppController(
                                         intentArgs +
                                         arrayOf("-n", component, "--display", "$displayId")
                         val code = shizuku.executeQuietShellCommand(command)
-                        if (code == 0) ActionResult.Success("Opened Chrome on display $displayId")
-                        else ActionResult.Failure("am start failed with code $code")
+                        if (code != 0) return@withContext ActionResult.Failure("am start failed with code $code")
+
+                        verifyLaunchSurfaced(ChromeFlagDeepLink.CHROME_PACKAGE, displayId)
+                                ?: ActionResult.Success("Opened Chrome on display $displayId")
                 }
         }
 
