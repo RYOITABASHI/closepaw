@@ -3,11 +3,13 @@ package ai.closepaw.platform.virtualdisplay
 import android.view.Display
 import android.view.MotionEvent
 import com.google.common.truth.Truth.assertThat
+import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
-import io.mockk.verify
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
 
 class VirtualDisplayViewerTouchHandlerTest {
 
@@ -20,25 +22,26 @@ class VirtualDisplayViewerTouchHandlerTest {
 
     private fun handler(
             injector: VirtualDisplayInputInjector,
-            shizuku: ShizukuClient,
+            shell: suspend (Array<String>) -> Int,
             displayId: Int = 7
     ) = VirtualDisplayViewerTouchHandler(
             config = config,
             displayIdProvider = { displayId },
             inputInjector = injector,
-            shizuku = shizuku
+            executeShellInput = shell,
+            retireDisplay = { _, _ -> error("Unexpected display retirement") },
     )
 
     @Test
-    fun `viewer coordinates are scaled and clamped to display bounds`() {
+    fun `viewer coordinates are scaled and clamped to display bounds`() = runBlocking<Unit> {
         val injector = mockk<VirtualDisplayInputInjector>(relaxed = true)
-        every { injector.supportsDisplayIdInjection() } returns true
-        every { injector.injectMotionAction(any(), any(), any(), any(), any()) } returns true
-        val shizuku = mockk<ShizukuClient>(relaxed = true)
+        every { injector.supportsRawViewerInput() } returns true
+        coEvery { injector.injectMotionAction(any(), any(), any(), any(), any()) } returns ViewerMotionResult(InputOutcome.CONFIRMED)
+        val shell = mockk<suspend (Array<String>) -> Int>(relaxed = true)
 
         val xSlot = slot<Float>()
         val ySlot = slot<Float>()
-        every {
+        coEvery {
             injector.injectMotionAction(
                     action = any(),
                     x = capture(xSlot),
@@ -46,10 +49,10 @@ class VirtualDisplayViewerTouchHandlerTest {
                     downTime = any(),
                     eventTime = any()
             )
-        } returns true
+        } returns ViewerMotionResult(InputOutcome.CONFIRMED)
 
         // Viewer 500x1000; touch at (250, 500) maps to (500, 1000).
-        handler(injector, shizuku).onViewerTouch(
+        handler(injector, shell).onViewerTouch(
                 action = MotionEvent.ACTION_DOWN,
                 x = 250f, y = 500f,
                 downTime = 100L, eventTime = 100L,
@@ -59,7 +62,7 @@ class VirtualDisplayViewerTouchHandlerTest {
         assertThat(ySlot.captured).isEqualTo(1000f)
 
         // Out-of-bounds input clamped to (width-1, height-1).
-        handler(injector, shizuku).onViewerTouch(
+        handler(injector, shell).onViewerTouch(
                 action = MotionEvent.ACTION_DOWN,
                 x = 9999f, y = 9999f,
                 downTime = 100L, eventTime = 100L,
@@ -70,11 +73,11 @@ class VirtualDisplayViewerTouchHandlerTest {
     }
 
     @Test
-    fun `invalid display ID short-circuits without dispatching`() {
+    fun `invalid display ID short-circuits without dispatching`() = runBlocking<Unit> {
         val injector = mockk<VirtualDisplayInputInjector>(relaxed = true)
-        val shizuku = mockk<ShizukuClient>(relaxed = true)
+        val shell = mockk<suspend (Array<String>) -> Int>(relaxed = true)
 
-        val result = handler(injector, shizuku, displayId = Display.INVALID_DISPLAY)
+        val result = handler(injector, shell, displayId = Display.INVALID_DISPLAY)
                 .onViewerTouch(
                         action = MotionEvent.ACTION_DOWN,
                         x = 10f, y = 20f,
@@ -83,21 +86,44 @@ class VirtualDisplayViewerTouchHandlerTest {
                 )
 
         assertThat(result).isFalse()
-        verify(exactly = 0) {
+        coVerify(exactly = 0) {
             injector.injectMotionAction(any(), any(), any(), any(), any())
         }
-        verify(exactly = 0) { shizuku.executeShellCommand(any()) }
+        coVerify(exactly = 0) { shell(any()) }
     }
 
     @Test
-    fun `shell path DOWN-MOVE-UP without threshold breach issues tap`() {
-        val injector = mockk<VirtualDisplayInputInjector>(relaxed = true)
-        every { injector.supportsDisplayIdInjection() } returns false
-        val shizuku = mockk<ShizukuClient>(relaxed = true)
-        val cmdSlot = slot<Array<String>>()
-        every { shizuku.executeShellCommand(capture(cmdSlot)) } returns 0
+    fun `viewer cancels an accepted down when a later packet is unconfirmed`() = runBlocking<Unit> {
+        val injector = mockk<VirtualDisplayInputInjector>()
+        every { injector.supportsRawViewerInput() } returns true
+        coEvery {
+            injector.injectMotionAction(MotionEvent.ACTION_DOWN, any(), any(), any(), any())
+        } returns ViewerMotionResult(InputOutcome.CONFIRMED)
+        coEvery {
+            injector.injectMotionAction(MotionEvent.ACTION_MOVE, any(), any(), any(), any())
+        } returns ViewerMotionResult(InputOutcome.UNCONFIRMED)
+        coEvery { injector.cancelViewerMotion(7, 100L, any(), any()) } returns true
+        val viewer = handler(injector, { error("Unexpected shell input") })
 
-        val h = handler(injector, shizuku)
+        assertThat(viewer.onViewerTouch(MotionEvent.ACTION_DOWN, 100f, 200f, 100L, 100L, 500, 1000)).isTrue()
+        assertThat(viewer.onViewerTouch(MotionEvent.ACTION_MOVE, 150f, 250f, 100L, 120L, 500, 1000)).isFalse()
+        assertThat(viewer.onViewerTouch(MotionEvent.ACTION_UP, 150f, 250f, 100L, 140L, 500, 1000)).isFalse()
+        coVerify(exactly = 1) { injector.cancelViewerMotion(7, 100L, 300f, 500f) }
+        coVerify(exactly = 0) {
+            injector.injectMotionAction(MotionEvent.ACTION_UP, any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `shell path DOWN-MOVE-UP without threshold breach issues tap`() = runBlocking<Unit> {
+        val injector = mockk<VirtualDisplayInputInjector>(relaxed = true)
+        every { injector.supportsRawViewerInput() } returns false
+        coEvery { injector.channelConfirmed(any()) } returns true
+        val shell = mockk<suspend (Array<String>) -> Int>(relaxed = true)
+        val cmdSlot = slot<Array<String>>()
+        coEvery { shell(capture(cmdSlot)) } returns 0
+
+        val h = handler(injector, shell)
         val vw = 500; val vh = 1000
         assertThat(h.onViewerTouch(MotionEvent.ACTION_DOWN, 100f, 200f, 0L, 0L, vw, vh)).isTrue()
         assertThat(h.onViewerTouch(MotionEvent.ACTION_MOVE, 101f, 201f, 0L, 10L, vw, vh)).isTrue()
@@ -110,14 +136,15 @@ class VirtualDisplayViewerTouchHandlerTest {
     }
 
     @Test
-    fun `shell path DOWN-MOVE-UP past threshold issues swipe`() {
+    fun `shell path DOWN-MOVE-UP past threshold issues swipe`() = runBlocking<Unit> {
         val injector = mockk<VirtualDisplayInputInjector>(relaxed = true)
-        every { injector.supportsDisplayIdInjection() } returns false
-        val shizuku = mockk<ShizukuClient>(relaxed = true)
+        every { injector.supportsRawViewerInput() } returns false
+        coEvery { injector.channelConfirmed(any()) } returns true
+        val shell = mockk<suspend (Array<String>) -> Int>(relaxed = true)
         val cmdSlot = slot<Array<String>>()
-        every { shizuku.executeShellCommand(capture(cmdSlot)) } returns 0
+        coEvery { shell(capture(cmdSlot)) } returns 0
 
-        val h = handler(injector, shizuku)
+        val h = handler(injector, shell)
         val vw = 500; val vh = 1000
         // DOWN at viewer (100,200) → scaled (200,400)
         h.onViewerTouch(MotionEvent.ACTION_DOWN, 100f, 200f, 0L, 0L, vw, vh)
@@ -135,14 +162,15 @@ class VirtualDisplayViewerTouchHandlerTest {
     }
 
     @Test
-    fun `ACTION_CANCEL resets state so next UP issues tap`() {
+    fun `ACTION_CANCEL resets state so next UP issues tap`() = runBlocking<Unit> {
         val injector = mockk<VirtualDisplayInputInjector>(relaxed = true)
-        every { injector.supportsDisplayIdInjection() } returns false
-        val shizuku = mockk<ShizukuClient>(relaxed = true)
+        every { injector.supportsRawViewerInput() } returns false
+        coEvery { injector.channelConfirmed(any()) } returns true
+        val shell = mockk<suspend (Array<String>) -> Int>(relaxed = true)
         val cmdSlot = slot<Array<String>>()
-        every { shizuku.executeShellCommand(capture(cmdSlot)) } returns 0
+        coEvery { shell(capture(cmdSlot)) } returns 0
 
-        val h = handler(injector, shizuku)
+        val h = handler(injector, shell)
         val vw = 500; val vh = 1000
         h.onViewerTouch(MotionEvent.ACTION_DOWN, 100f, 200f, 0L, 0L, vw, vh)
         h.onViewerTouch(MotionEvent.ACTION_MOVE, 200f, 300f, 0L, 10L, vw, vh) // past threshold

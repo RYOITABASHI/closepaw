@@ -13,6 +13,8 @@ import ai.closepaw.platform.UIAction
 import ai.closepaw.platform.virtualdisplay.ShizukuClient
 import ai.closepaw.platform.virtualdisplay.ShizukuRuntimeGateway
 import ai.closepaw.platform.virtualdisplay.VirtualDisplayInputInjector
+import ai.closepaw.platform.virtualdisplay.VirtualDisplayShellInput
+import ai.closepaw.adb.AdbShellChannel
 import ai.closepaw.tool.action.UiChangeDetector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -58,7 +60,10 @@ class DebugActionExecutor(private val service: AgentService) {
             }
             // Must bypass hidden API restrictions before using IInputManager
             ShizukuRuntimeGateway().bypassHiddenApis()
-            VirtualDisplayInputInjector(client) { targetDisplayId }.also { shizukuInjector = it }
+            val target = { targetDisplayId }
+            val shell = VirtualDisplayShellInput(AdbShellChannel(service), target, { false })
+            VirtualDisplayInputInjector(client, target, shell::execute, shell::confirmChannel)
+                .also { shizukuInjector = it }
         } catch (e: Exception) {
             Log.w(TAG, "Shizuku not available for debug injection", e)
             null

@@ -1,6 +1,6 @@
 package ai.closepaw.platform.virtualdisplay
 
-import android.view.Display
+import ai.closepaw.taskhelper.TaskHelperInput
 import android.view.MotionEvent
 
 /**
@@ -9,11 +9,12 @@ import android.view.MotionEvent
  * Primary path uses raw MotionEvent injection with display targeting. Fallback path uses shell
  * input commands when hidden display-id injection is unavailable.
  */
-class VirtualDisplayViewerTouchHandler(
+internal class VirtualDisplayViewerTouchHandler(
         private val config: VirtualDisplayConfig,
         private val displayIdProvider: () -> Int,
         private val inputInjector: VirtualDisplayInputInjector,
-        private val shizuku: ShizukuClient
+        private val executeShellInput: suspend (Array<String>) -> Int,
+        private val retireDisplay: (Int, InputOutcome) -> Unit,
 ) {
         companion object {
                 private const val VIEWER_SWIPE_THRESHOLD_PX = 18f
@@ -23,8 +24,12 @@ class VirtualDisplayViewerTouchHandler(
         private var viewerDownY = 0f
         private var viewerDownTime = 0L
         private var viewerMoved = false
+        private var shellGesture = false
+        private var rawDownDispatched = false
+        private var gestureDisplayId = 0
+        private var gestureDownTime = 0L
 
-        fun onViewerTouch(
+        suspend fun onViewerTouch(
                 action: Int,
                 x: Float,
                 y: Float,
@@ -34,7 +39,18 @@ class VirtualDisplayViewerTouchHandler(
                 viewHeight: Int
         ): Boolean {
                 val displayId = displayIdProvider()
-                if (displayId == Display.INVALID_DISPLAY || viewWidth <= 0 || viewHeight <= 0) {
+                val actionMasked = action and MotionEvent.ACTION_MASK
+                val request = TaskHelperInputRequest(
+                        TaskHelperInput.MOTION, displayId, x, y,
+                        action = actionMasked, downTime = downTime, eventTime = eventTime
+                )
+                if (viewWidth <= 0 || viewHeight <= 0 || !request.valid) {
+                        val activeDisplayId = gestureDisplayId
+                        val hadRawDown = rawDownDispatched
+                        resetGesture()
+                        if (hadRawDown) {
+                                retireDisplay(activeDisplayId, InputOutcome.INVALID_TARGET_OR_REQUEST)
+                        }
                         return false
                 }
 
@@ -44,40 +60,87 @@ class VirtualDisplayViewerTouchHandler(
                         ((y / viewHeight) * config.height)
                                 .coerceIn(0f, (config.height - 1).toFloat())
 
-                val actionMasked = action and MotionEvent.ACTION_MASK
-                if (inputInjector.supportsDisplayIdInjection()) {
-                        return inputInjector.injectMotionAction(
-                                action = actionMasked,
-                                x = targetX,
-                                y = targetY,
-                                downTime = downTime,
-                                eventTime = eventTime
-                        )
+                if (actionMasked == MotionEvent.ACTION_DOWN) {
+                        gestureDisplayId = displayId
+                        gestureDownTime = downTime
+                        rawDownDispatched = false
+                        shellGesture = !inputInjector.supportsRawViewerInput()
+                } else if (gestureDisplayId != displayId || gestureDownTime != downTime) {
+                        return false
+                }
+                val endsGesture = actionMasked == MotionEvent.ACTION_UP || actionMasked == MotionEvent.ACTION_CANCEL
+
+                if (!shellGesture) {
+                        val result = inputInjector.injectMotionAction(actionMasked, targetX, targetY, downTime, eventTime)
+                        val outcome = result.outcome
+                        if (actionMasked == MotionEvent.ACTION_DOWN) {
+                                rawDownDispatched = result.mayHaveDispatched
+                        }
+                        if (outcome == InputOutcome.CONFIRMED) {
+                                if (endsGesture) resetGesture()
+                                return true
+                        }
+                        if (actionMasked != MotionEvent.ACTION_DOWN || outcome != InputOutcome.UNAVAILABLE) {
+                                val hadRawDown = rawDownDispatched
+                                resetGesture()
+                                if (outcome.blocksFallback()) {
+                                        if (hadRawDown || outcome != InputOutcome.INVALID_TARGET_OR_REQUEST) {
+                                                retireDisplay(displayId, outcome)
+                                        }
+                                } else if (hadRawDown &&
+                                        !inputInjector.cancelViewerMotion(displayId, downTime, targetX, targetY)
+                                ) {
+                                        retireDisplay(displayId, outcome)
+                                }
+                                return false
+                        }
+                        shellGesture = true
                 }
 
-                return injectViaShell(
+                if (!inputInjector.channelConfirmed()) {
+                        resetGesture()
+                        retireDisplay(displayId, InputOutcome.CHANNEL_UNAVAILABLE)
+                        return false
+                }
+                val hadRawDown = rawDownDispatched
+                if (endsGesture) resetGesture()
+                val outcome = injectViaShell(
                         action = actionMasked,
                         x = targetX,
                         y = targetY,
                         eventTime = eventTime,
                         displayId = displayId
                 )
+                // A helper may have received DOWN before we switched to the buffered shell route.
+                if (outcome == InputOutcome.CHANNEL_UNAVAILABLE) {
+                        resetGesture()
+                        retireDisplay(displayId, outcome)
+                } else if (hadRawDown && (outcome != InputOutcome.CONFIRMED || actionMasked == MotionEvent.ACTION_CANCEL)) {
+                        resetGesture()
+                        retireDisplay(displayId, InputOutcome.UNCONFIRMED)
+                }
+                return outcome == InputOutcome.CONFIRMED
         }
 
-        private fun injectViaShell(
+        private fun resetGesture() {
+                gestureDisplayId = 0
+                rawDownDispatched = false
+        }
+
+        private suspend fun injectViaShell(
                 action: Int,
                 x: Float,
                 y: Float,
                 eventTime: Long,
                 displayId: Int
-        ): Boolean {
+        ): InputOutcome {
                 when (action) {
                         MotionEvent.ACTION_DOWN -> {
                                 viewerDownX = x
                                 viewerDownY = y
                                 viewerDownTime = eventTime
                                 viewerMoved = false
-                                return true
+                                return InputOutcome.CONFIRMED
                         }
                         MotionEvent.ACTION_MOVE -> {
                                 if (!viewerMoved) {
@@ -90,12 +153,12 @@ class VirtualDisplayViewerTouchHandler(
                                                 viewerMoved = true
                                         }
                                 }
-                                return true
+                                return InputOutcome.CONFIRMED
                         }
                         MotionEvent.ACTION_CANCEL -> {
                                 viewerMoved = false
                                 viewerDownTime = 0L
-                                return true
+                                return InputOutcome.CONFIRMED
                         }
                         MotionEvent.ACTION_UP -> {
                                 val durationMs = (eventTime - viewerDownTime).coerceIn(16L, 1500L)
@@ -124,9 +187,14 @@ class VirtualDisplayViewerTouchHandler(
                                         }
                                 viewerMoved = false
                                 viewerDownTime = 0L
-                                return shizuku.executeShellCommand(command) == 0
+                                val exitCode = executeShellInput(command)
+                                return when {
+                                        !inputInjector.channelConfirmed(reconnect = false) -> InputOutcome.CHANNEL_UNAVAILABLE
+                                        exitCode == 0 -> InputOutcome.CONFIRMED
+                                        else -> InputOutcome.UNCONFIRMED
+                                }
                         }
-                        else -> return false
+                        else -> return InputOutcome.INVALID_TARGET_OR_REQUEST
                 }
         }
 }

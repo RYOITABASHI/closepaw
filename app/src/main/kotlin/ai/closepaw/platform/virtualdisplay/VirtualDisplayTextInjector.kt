@@ -24,7 +24,7 @@ import kotlinx.coroutines.withContext
  * VD-only replacement: focus the field through accessibility (or a Shizuku tap on the VD),
  * then try set-text on the focused editor before delivering keys or paste to the virtual display:
  *
- *  - printable ASCII → `input -d <vdDisplayId> text …` run as the shell user through Shizuku,
+ *  - printable ASCII → `input -d <vdDisplayId> text …` run as the shell user over the ADB shell,
  *    which maps every character through the virtual keyboard's KeyCharacterMap;
  *  - anything else (CJK, emoji, `%` which `input text` treats as an escape) → clipboard +
  *    `ACTION_PASTE` on the focused node, falling back to `KEYCODE_PASTE` on the VD.
@@ -35,7 +35,6 @@ import kotlinx.coroutines.withContext
  */
 class VirtualDisplayTextInjector(
         private val context: Context,
-        private val shizuku: ShizukuClient,
         private val displayIdProvider: () -> Int,
         private val nodeActionPerformer: NodeActionPerformer,
         private val inputInjector: VirtualDisplayInputInjector,
@@ -44,6 +43,7 @@ class VirtualDisplayTextInjector(
         },
         private val unattended: Boolean = false,
         private val isDispatchCancelled: (() -> Boolean)? = null,
+        private val executeShellInput: suspend (Array<String>) -> Int,
 ) {
     companion object {
         private const val TAG = "VDTextInjector"
@@ -410,7 +410,7 @@ class VirtualDisplayTextInjector(
         // Quiet: the command carries the typed text, which must not reach logcat.
         return withContext(Dispatchers.IO) {
             if (isDispatchCancelled?.invoke() == true) -1
-            else shizuku.executeQuietShellCommand(arrayOf(*command))
+            else executeShellInput(arrayOf(*command))
         }
     }
 }

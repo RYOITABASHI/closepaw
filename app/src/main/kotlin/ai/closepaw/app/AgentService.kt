@@ -39,6 +39,7 @@ import ai.closepaw.draft.SaveDraftRoutine
 import ai.closepaw.platform.virtualdisplay.MainDisplayTaskReader
 import ai.closepaw.platform.virtualdisplay.TaskObservationPolicy
 import ai.closepaw.platform.virtualdisplay.VirtualDisplaySurfaceSwitchFailure
+import ai.closepaw.platform.virtualdisplay.VdState
 import ai.closepaw.util.recycleCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -1692,7 +1693,10 @@ class AgentService : AccessibilityService() {
         viewerBridge.notifyViewerHidden()
     }
 
-    fun onViewerTouch(
+    internal fun viewerTouchTarget(): VdState.Running? = viewerBridge.viewerTouchTarget()
+
+    internal suspend fun onViewerTouch(
+            target: VdState.Running,
             action: Int,
             x: Float,
             y: Float,
@@ -1702,6 +1706,7 @@ class AgentService : AccessibilityService() {
             viewHeight: Int,
     ): Boolean {
         return viewerBridge.onViewerTouch(
+                target = target,
                 action = action,
                 x = x,
                 y = y,

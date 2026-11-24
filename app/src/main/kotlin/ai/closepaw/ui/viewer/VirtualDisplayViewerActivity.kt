@@ -1,6 +1,7 @@
 package ai.closepaw.ui.viewer
 
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -20,7 +21,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import ai.closepaw.app.AgentService
+import ai.closepaw.platform.virtualdisplay.VdState
 import ai.closepaw.platform.virtualdisplay.VirtualDisplaySurfaceSwitchFailure
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 
 /**
@@ -44,6 +47,47 @@ class VirtualDisplayViewerActivity : ComponentActivity() {
     }
 
     private var surfaceView: SurfaceView? = null
+    private data class ViewerTouch(
+        val target: VdState.Running,
+        val action: Int,
+        val x: Float,
+        val y: Float,
+        val downTime: Long,
+        val eventTime: Long,
+        val width: Int,
+        val height: Int,
+    )
+
+    private val touches = Channel<ViewerTouch>(Channel.UNLIMITED)
+    private var queuedMoves = 0
+    private var lastTouch: ViewerTouch? = null
+
+    private fun enqueueTouch(view: SurfaceView, event: MotionEvent): Boolean {
+        val service = AgentService.instance ?: return false
+        val action = event.actionMasked
+        if (action == MotionEvent.ACTION_MOVE && queuedMoves >= 32) return true
+        if (action != MotionEvent.ACTION_DOWN && action != MotionEvent.ACTION_MOVE &&
+            action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL
+        ) return true
+        val target = if (action == MotionEvent.ACTION_DOWN) {
+            service.viewerTouchTarget()
+        } else {
+            lastTouch?.target
+        } ?: return true
+        val touch = ViewerTouch(target, action, event.x, event.y, event.downTime, event.eventTime,
+            view.width, view.height)
+        if (touches.trySend(touch).isFailure) return false
+        if (action == MotionEvent.ACTION_MOVE) queuedMoves++
+        lastTouch = touch.takeIf { action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE }
+        return true
+    }
+
+    private fun cancelTouch() {
+        val touch = lastTouch ?: return
+        lastTouch = null
+        touches.trySend(touch.copy(action = MotionEvent.ACTION_CANCEL, eventTime = SystemClock.uptimeMillis()))
+    }
+
     internal var lastSurfaceSwitchFailure: VirtualDisplaySurfaceSwitchFailure? = null
         private set
 
@@ -61,6 +105,16 @@ class VirtualDisplayViewerActivity : ComponentActivity() {
         enableEdgeToEdge()
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
+        lifecycleScope.launch {
+            for (touch in touches) {
+                if (touch.action == MotionEvent.ACTION_MOVE) queuedMoves--
+                AgentService.instance?.onViewerTouch(
+                    touch.target, touch.action, touch.x, touch.y, touch.downTime, touch.eventTime,
+                    touch.width, touch.height,
+                )
+            }
+        }
+
         setContent {
             VirtualDisplayViewerScreen(
                 onSurfaceReady = { sv ->
@@ -68,20 +122,11 @@ class VirtualDisplayViewerActivity : ComponentActivity() {
                     switchViewerSurface { AgentService.instance?.notifyViewerVisible(sv) }
                 },
                 onSurfaceDestroyed = {
+                    cancelTouch()
                     surfaceView = null
                     switchViewerSurface { AgentService.instance?.notifyViewerHidden() }
                 },
-                onSurfaceTouch = { view, event ->
-                    AgentService.instance?.onViewerTouch(
-                        action = event.actionMasked,
-                        x = event.x,
-                        y = event.y,
-                        downTime = event.downTime,
-                        eventTime = event.eventTime,
-                        viewWidth = view.width,
-                        viewHeight = view.height,
-                    ) == true
-                }
+                onSurfaceTouch = ::enqueueTouch,
             )
         }
 
@@ -117,6 +162,7 @@ class VirtualDisplayViewerActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        cancelTouch()
         super.onStop()
         Log.d(TAG, "onStop")
         switchViewerSurface { AgentService.instance?.notifyViewerHidden() }
