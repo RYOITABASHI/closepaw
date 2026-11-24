@@ -461,9 +461,15 @@ class NodeActionPerformer(
             val text = if (node.isPassword) "[password]" else foundText
             val description = if (node.isPassword) "" else foundDesc
             val matches = boundsMatch && foundClass.substringAfterLast('.') == hint.className &&
-                    text == hint.text && description == hint.description &&
+                    description == hint.description &&
                     (hint.packageName.isEmpty() || foundPackage == hint.packageName) &&
-                    foundId == hint.resourceId
+                    foundId == hint.resourceId &&
+                    matchesObservedTargetText(
+                        text,
+                        if (text.isBlank() && hint.text.isNotBlank()) descendantMergedTexts(node)
+                        else emptyList(),
+                        hint.text,
+                    )
             return if (matches) null else ActionResult.Failure("element_changed")
         }
 
@@ -495,6 +501,31 @@ class NodeActionPerformer(
                     "found=[$foundText]"
             )
         }
+    }
+
+    private fun descendantMergedTexts(node: AccessibilityNodeInfo): List<String> {
+        val texts = mutableListOf<String>()
+
+        fun collectChildren(parent: AccessibilityNodeInfo) {
+            for (i in 0 until parent.childCount) {
+                if (texts.size == OBSERVED_TARGET_DESCENDANT_TEXT_LIMIT) return
+                val child = parent.getChild(i) ?: continue
+                try {
+                    val mergedText = if (child.isPassword) "[password]" else {
+                        child.text?.toString().orEmpty()
+                            .ifBlank { child.contentDescription?.toString().orEmpty() }
+                            .ifBlank { child.hintText?.toString().orEmpty() }
+                    }
+                    if (mergedText.isNotBlank()) texts.add(mergedText)
+                    if (texts.size < OBSERVED_TARGET_DESCENDANT_TEXT_LIMIT) collectChildren(child)
+                } finally {
+                    child.recycleCompat()
+                }
+            }
+        }
+
+        collectChildren(node)
+        return texts
     }
 
     companion object {
