@@ -166,7 +166,7 @@ dependencies {
     implementation(project(":taskhelper"))
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     
     // Compose BOM - manages all Compose library versions
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
@@ -235,7 +235,7 @@ dependencies {
 
     // Testing
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("io.mockk:mockk:1.13.9")
     testImplementation("com.google.truth:truth:1.4.2")
     // Pure Java JSON library for unit tests (Android's JSONObject is not available in unit tests)
