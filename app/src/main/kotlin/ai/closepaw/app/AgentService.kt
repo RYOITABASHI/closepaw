@@ -18,6 +18,7 @@ import ai.closepaw.protocol.LLMBackendType
 import ai.closepaw.llm.LFMLLMClient
 import ai.closepaw.llm.LLMProvider
 import ai.closepaw.llm.LocalLLMConfig
+import ai.closepaw.llm.ModelCatalog
 import ai.closepaw.protocol.Op
 import ai.closepaw.perception.PerceptionConfig
 import ai.closepaw.protocol.SessionLlmConfig
@@ -686,6 +687,8 @@ class AgentService : AccessibilityService() {
             correlation: ShellyBackgroundRun.ResultCorrelation? = null,
             origin: ShellyRunOrigin = ShellyRunOrigin.SHELLY,
             runHandle: String = ai.closepaw.mcp.McpRunRegistry.randomHandle(),
+            admittedSettings: AppSettingsState? = null,
+            admittedCatalog: ModelCatalog? = null,
             /**
              * MCP intake only (Shelly passes null): called once on the main thread with the run's
              * terminal state, from the same report-once paths that send the Shelly result.
@@ -750,7 +753,8 @@ class AgentService : AccessibilityService() {
             val startJob = serviceScope.launch {
                 try {
                     awaitReplacedShutdowns(creation.token) { if (queued) prepareReplacement() }
-                    val settings = AppSettingsState.create(applicationContext).also { it.load() }
+                    val settings = admittedSettings
+                            ?: AppSettingsState.create(applicationContext).also { it.load() }
                     val authStore = AuthStoreHolder.get(applicationContext)
                     val baseUrlOverrides: Map<LLMProvider, String> =
                             if (settings.openaiBaseUrl.isNotBlank()) {
@@ -792,6 +796,7 @@ class AgentService : AccessibilityService() {
                                         baseUrlOverrides = baseUrlOverrides,
                                         visualizer = actionVisualizer,
                                         overlayTouchGate = overlayController?.overlayTouchGate,
+                                        catalogSnapshot = admittedCatalog,
                                 )
                             }
                     val effectiveMode = newSession.getServices().platform.mode

@@ -30,11 +30,12 @@ internal object SessionLlmBootstrapper {
             catalogRepository: ModelCatalogRepository,
             context: Context,
             authStore: AuthStore?,
-            baseUrlOverrides: Map<LLMProvider, String> = emptyMap()
+            baseUrlOverrides: Map<LLMProvider, String> = emptyMap(),
+            catalogSnapshot: ModelCatalog? = null,
     ): SessionLlmBootstrap {
         requireOffMainThread()
         val backend = config.llm.backendType
-        val baseCatalog = catalogRepository.catalog.value
+        val baseCatalog = catalogSnapshot ?: catalogRepository.catalog.value
 
         val modelCatalog = baseCatalog.withBaseUrlOverrides(baseUrlOverrides)
         if (baseUrlOverrides.isNotEmpty()) {

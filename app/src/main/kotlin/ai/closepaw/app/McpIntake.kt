@@ -2,6 +2,7 @@ package ai.closepaw.app
 
 import ai.closepaw.BuildConfig
 import ai.closepaw.adb.AdbShellChannel
+import ai.closepaw.llm.ModelCatalog
 import ai.closepaw.llm.ModelCatalogRepositoryHolder
 import ai.closepaw.mcp.McpBackend
 import ai.closepaw.mcp.McpHandler
@@ -124,7 +125,16 @@ internal class AgentServiceMcpBackend(
 
     override fun startRun(goal: String): McpBackend.StartResult {
         val probes = try {
-            probe()
+            // Keep the admitted model and catalog together through deferred session creation.
+            val settings = AppSettingsState.create(app).also { it.load() }
+            val catalog = ModelCatalogRepositoryHolder.get(app).catalog.value
+            val admission = admitRunGoalBrain(settings.llmBackend, settings.selectedModel, catalog) {
+                AuthStoreHolder.get(app)
+            }
+            when (admission) {
+                is RunGoalBrainAdmission.Refused -> return admission.result
+                is RunGoalBrainAdmission.Admitted -> probe(settings, admission.catalog)
+            }
         } catch (e: Throwable) {
             Log.e(TAG, "probe failed: ${e.javaClass.simpleName}")
             return McpBackend.StartResult.Refused("PROBE_FAILED", "ClosePaw could not check its readiness")
@@ -154,6 +164,7 @@ internal class AgentServiceMcpBackend(
                     val handle = registry.issue()
                     val guard = service!!.startShellyRun(
                         goal, decision.platformMode, origin = ShellyRunOrigin.MCP, runHandle = handle,
+                        admittedSettings = probes.settings, admittedCatalog = probes.catalog,
                     ) { finished ->
                         McpRunStatus.complete(registry, handle, finished)
                         guards.remove(handle)
@@ -190,6 +201,8 @@ internal class AgentServiceMcpBackend(
     }
 
     private class Probes(
+        val settings: AppSettingsState,
+        val catalog: ModelCatalog,
         val onboardingCompleted: Boolean,
         val canDrawOverlays: Boolean,
         val credentialsMissing: Boolean,
@@ -197,12 +210,11 @@ internal class AgentServiceMcpBackend(
     )
 
     /** Same probes as [ShellyGoalReceiver] (minus Shelly bookkeeping). Off the main thread. */
-    private fun probe(): Probes {
-        val settings = AppSettingsState.create(app).also { it.load() }
+    private fun probe(settings: AppSettingsState, catalog: ModelCatalog): Probes {
         val credentialsMissing = try {
             findMissingCloudKeys(
                 settings,
-                ModelCatalogRepositoryHolder.get(app).catalog.value,
+                catalog,
                 AuthStoreHolder.get(app),
             ).isNotEmpty()
         } catch (e: Exception) {
@@ -210,6 +222,8 @@ internal class AgentServiceMcpBackend(
             true
         }
         return Probes(
+            settings = settings,
+            catalog = catalog,
             onboardingCompleted = OnboardingStore(app).isCompleted,
             canDrawOverlays = Settings.canDrawOverlays(app),
             credentialsMissing = credentialsMissing,

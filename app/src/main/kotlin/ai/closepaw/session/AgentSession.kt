@@ -78,6 +78,7 @@ private constructor(
                 externalDriver: Boolean = false,
                 onTraceRecorderCreated: ((TraceRecorder) -> Unit)? = null,
                 isDispatchCancelled: (() -> Boolean)? = null,
+                catalogSnapshot: ai.closepaw.llm.ModelCatalog? = null,
         ): AgentSession {
             val sessionId = SessionId.generate()
             val traceRecorder = TraceRecorderFactory.create(service, config, sessionId, boundedCleanup = externalDriver)
@@ -111,6 +112,7 @@ private constructor(
                             traceRecorder = traceRecorder,
                             appClassifier = appClassifier,
                             externalDriver = externalDriver,
+                            catalogSnapshot = catalogSnapshot,
                     )
 
             return AgentSession(
