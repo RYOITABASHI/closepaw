@@ -131,8 +131,6 @@ jobs:
             echo
             echo "Trusted-caller bypass of the External Goal dialog for requests proven to come from dev.shelly.terminal."
             echo
-            echo "Background entry point: explicit broadcast to ai.closepaw/.app.ShellyGoalReceiver (action ai.closepaw.action.SHELLY_RUN_GOAL) runs the goal on the Shizuku virtual display without opening ClosePaw's UI. Status, approvals and 'do not open <app>' warnings appear in the Smart Capsule and an ongoing notification."
-            echo
             echo '```'
             cat certs.txt
             echo '```'
