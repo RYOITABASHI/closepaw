@@ -295,7 +295,7 @@ object OAuthTokenExchange {
             }
             tokenResult
         } catch (e: Exception) {
-            Log.e(TAG, "Token refresh failed", e)
+            Log.e(TAG, "Token refresh failed: ${e.javaClass.simpleName}")
             Result.Error("Token refresh failed: ${e.message}")
         }
     }
