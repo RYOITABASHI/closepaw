@@ -196,6 +196,7 @@ dependencies {
 
     // OkHttp — used by CodexResponseClient for raw SSE streaming to chatgpt.com
     implementation("com.squareup.okhttp3:okhttp:5.2.1")
+    implementation("com.google.errorprone:error_prone_annotations:2.36.0")
     
     
     // Kotlin Serialization for session persistence

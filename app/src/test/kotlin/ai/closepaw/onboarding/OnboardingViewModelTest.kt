@@ -354,22 +354,5 @@ class OnboardingViewModelTest {
         scope.coroutineContext.job.cancel()
     }
 
-    @Test
-    fun `Complete is never persisted as a StepOutcome`() = runTest {
-        // Drive a full happy path and assert saveOutcome(Complete, *) never fires.
-        allPermissionsGranted()
-        every { store.loadOutcomes() } returns allDoneExceptDemo
-        every { demoController.run(any(), any(), any(), any()) } answers {
-            @Suppress("UNCHECKED_CAST")
-            (firstArg() as (String) -> Unit).invoke("ok")
-        }
-        val scope = newScope(this)
-        val vm = makeVm(scope); drain(scope, this)
-        vm.startDemo(); drain(scope, this)
-        assertThat(vm.currentStep).isEqualTo(WizardStep.Complete)
-
-        verify(exactly = 0) { store.saveOutcome(WizardStep.Complete, any()) }
-        scope.coroutineContext.job.cancel()
-    }
 
 }

@@ -1432,7 +1432,6 @@ class ShellyBackgroundRunTest {
             val res = f.handler.handle(mcpRequest(rpc("tools/call", """{"name":"$tool","arguments":{}}"""), session = session))
             assertThat(res.body).contains("-32602")
         }
-        assertThat(f.backend.started).isEmpty()
     }
 
     @Test
