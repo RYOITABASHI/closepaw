@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.annotation.StringRes
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SegmentedButton
@@ -23,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -38,6 +40,7 @@ import ai.closepaw.auth.AuthCredential
 import ai.closepaw.auth.AuthStore
 import ai.closepaw.llm.ApiType
 import ai.closepaw.llm.AuthMode
+import ai.closepaw.llm.CodexModelProbe
 import ai.closepaw.llm.LLMProvider
 import ai.closepaw.llm.ModelCatalog
 import ai.closepaw.llm.ModelCatalogRepository
@@ -211,6 +214,7 @@ internal fun LlmAuthSettingsPage(
                     selectedModel = selectedModel,
                     onModelChange = { commitSignIn { onModelChange(it) } },
                     modelCatalog = modelCatalog,
+                    authStore = authStore,
                     openAiAuthUiState = openAiAuthUiState,
                     onStartOAuth = { commitSignIn { onStartOAuth() } },
                     onCancelOAuth = onCancelOAuth,
@@ -332,6 +336,7 @@ private fun SignInTabContent(
     selectedModel: String,
     onModelChange: (String) -> Unit,
     modelCatalog: ModelCatalog,
+    authStore: AuthStore,
     openAiAuthUiState: OpenAiAuthUiState,
     onStartOAuth: () -> Unit,
     onCancelOAuth: () -> Unit,
@@ -356,6 +361,45 @@ private fun SignInTabContent(
             onCancelOAuth = onCancelOAuth,
             onSignOut = onSignOut
         )
+        key(openAiAuthUiState) {
+            CodexModelProbeAction(authStore)
+        }
+    }
+}
+
+@Composable
+private fun CodexModelProbeAction(authStore: AuthStore) {
+    val scope = rememberCoroutineScope()
+    val probe = remember(authStore) { CodexModelProbe(authStore, BuildConfig.VERSION_NAME) }
+    var checking by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<CodexModelProbe.Result?>(null) }
+
+    OutlinedButton(
+        enabled = authStore.has(LLMProvider.OPENAI_CODEX) && !checking,
+        onClick = {
+            checking = true
+            result = null
+            scope.launch {
+                try {
+                    result = probe.check()
+                } finally {
+                    checking = false
+                }
+            }
+        },
+    ) {
+        Text(stringResource(if (checking) R.string.codex_probe_checking else R.string.codex_probe_check))
+    }
+    when (val outcome = result) {
+        is CodexModelProbe.Result.Success -> Text(
+            if (outcome.models.isEmpty()) stringResource(R.string.codex_probe_empty)
+            else outcome.models.joinToString("\n") { it.slug },
+        )
+        is CodexModelProbe.Result.Failure -> Text(
+            outcome.diagnostic(),
+            color = MaterialTheme.colorScheme.error,
+        )
+        null -> Unit
     }
 }
 

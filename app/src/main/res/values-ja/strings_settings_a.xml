@@ -101,6 +101,9 @@
 
     <!-- LlmAuthSettingsPage -->
     <string name="llm_auth_settings_page_title">LLM と認証</string>
+    <string name="codex_probe_check">利用可能な Codex モデルを確認</string>
+    <string name="codex_probe_checking">Codex モデルを確認中…</string>
+    <string name="codex_probe_empty">利用可能な Codex モデルはありません</string>
     <string name="llm_auth_settings_page_tab_sign_in">サインイン</string>
     <string name="llm_auth_settings_page_tab_api_key">API キー</string>
     <string name="llm_auth_settings_page_tab_local">ローカル</string>

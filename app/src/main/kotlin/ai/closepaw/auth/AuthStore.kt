@@ -158,7 +158,7 @@ class AuthStore(
         return try {
             json.decodeFromString<StoredCredential>(raw).toDomain()
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to parse $key: ${e.message}")
+            Log.w(TAG, "Failed to parse $key: ${e.javaClass.simpleName}")
             null
         }
     }
@@ -210,7 +210,7 @@ class AuthStore(
  * Best-effort extraction of the `chatgpt_account_id` claim from a JWT payload.
  * Returns null if the token is malformed or the claim is absent.
  */
-private fun parseChatgptAccountId(idToken: String): String? {
+internal fun parseChatgptAccountId(idToken: String): String? {
     val parts = idToken.split('.')
     if (parts.size < 2) return null
     return try {

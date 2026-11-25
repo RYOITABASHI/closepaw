@@ -101,6 +101,9 @@
 
     <!-- LlmAuthSettingsPage -->
     <string name="llm_auth_settings_page_title">LLM &amp; Authentication</string>
+    <string name="codex_probe_check">Check entitled Codex models</string>
+    <string name="codex_probe_checking">Checking Codex models…</string>
+    <string name="codex_probe_empty">No entitled Codex models</string>
     <string name="llm_auth_settings_page_tab_sign_in">Sign In</string>
     <string name="llm_auth_settings_page_tab_api_key">API Key</string>
     <string name="llm_auth_settings_page_tab_local">Local</string>
