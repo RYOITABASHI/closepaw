@@ -75,7 +75,6 @@ import ai.closepaw.ui.theme.closePaw
 @Composable
 fun NavigationDrawerContent(
     sessions: List<SessionInfo>,
-    currentModel: String,
     onSessionSelect: (SessionInfo) -> Unit,
     onNewSession: () -> Unit,
     onDeleteSession: (SessionInfo) -> Unit,
@@ -150,7 +149,6 @@ fun NavigationDrawerContent(
             
             // Settings entry at bottom - no divider, uses surface background to distinguish
             SettingsEntry(
-                currentModel = currentModel,
                 onClick = onSettingsClick,
                 modifier = Modifier
                     .padding(bottom = spacing.sm)  // Consistent bottom spacing
@@ -201,7 +199,7 @@ private fun NewSessionButton(
             tint = MaterialTheme.colorScheme.primary
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Text(stringResource(R.string.navigation_drawer_new_conversation))
+        Text(stringResource(R.string.session_home_status))
     }
 }
 
@@ -402,7 +400,6 @@ private fun EmptySessionsMessage(
  */
 @Composable
 private fun SettingsEntry(
-    currentModel: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -430,12 +427,6 @@ private fun SettingsEntry(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            // D1 §6.6: machine-text ledger — current model in mono.
-            Text(
-                text = currentModel,
-                style = MaterialTheme.closePaw.monoSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }

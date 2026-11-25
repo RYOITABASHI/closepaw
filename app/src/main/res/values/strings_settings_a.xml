@@ -20,8 +20,6 @@
     <string name="agent_skill_toggle_rows_close">Close</string>
 
     <!-- ApiKeyFields -->
-    <string name="api_key_fields_hide">Hide</string>
-    <string name="api_key_fields_show">Show</string>
 
     <!-- AppAccessSettingsPage -->
     <string name="app_access_settings_page_title">App Access</string>
@@ -88,35 +86,11 @@
     <string name="display_section_grant_shizuku">Grant Shizuku permission</string>
 
     <!-- LlmAuthDiscoveryUi -->
-    <string name="llm_auth_discovery_ui_search_models">Search models</string>
-    <string name="llm_auth_discovery_ui_no_match">No models match \"%1$s\"</string>
-    <string name="llm_auth_discovery_ui_no_models">No models available</string>
-    <string name="llm_auth_discovery_ui_group_search">(search)</string>
-    <string name="llm_auth_discovery_ui_group_other">(other)</string>
-    <string name="llm_auth_discovery_ui_selected">Selected</string>
-    <string name="llm_auth_discovery_ui_refreshing">Refreshing…</string>
-    <string name="llm_auth_discovery_ui_refresh_models">Refresh models</string>
-    <string name="llm_auth_discovery_ui_last_refreshed">Last refreshed: %1$s</string>
-    <string name="llm_auth_discovery_ui_refresh_disabled">Refresh disabled: %1$s</string>
 
     <!-- LlmAuthSettingsPage -->
-    <string name="llm_auth_settings_page_title">LLM &amp; Authentication</string>
     <string name="codex_probe_check">Check entitled Codex models</string>
     <string name="codex_probe_checking">Checking Codex models…</string>
     <string name="codex_probe_empty">No entitled Codex models</string>
-    <string name="llm_auth_settings_page_tab_sign_in">Sign In</string>
-    <string name="llm_auth_settings_page_tab_api_key">API Key</string>
-    <string name="llm_auth_settings_page_tab_local">Local</string>
-    <string name="llm_auth_settings_page_section_cloud_model">Cloud Model</string>
-    <string name="llm_auth_settings_page_section_authentication">Authentication</string>
-    <string name="llm_auth_settings_page_section_provider">Provider</string>
-    <string name="llm_auth_settings_page_base_url">Base URL</string>
-    <string name="llm_auth_settings_page_custom_model_id">Custom Model Id</string>
-    <string name="llm_auth_settings_page_api_key">API Key</string>
-    <string name="llm_auth_settings_page_openai_key">OpenAI Key</string>
-    <string name="llm_auth_settings_page_openrouter_key">OpenRouter Key</string>
-    <string name="llm_auth_settings_page_local_warning">Experimental: local models are slow and underpowered, and will not reliably drive the agent. Use a cloud model for real work.</string>
-    <string name="llm_auth_settings_page_section_local_model">Local Model</string>
 
     <!-- MemoryFileEditor -->
     <string name="memory_file_editor_locked_banner">Session is open. Stop the session to edit memory.</string>
@@ -148,14 +122,6 @@
     <string name="memory_settings_page_app_memory">App Memory</string>
 
     <!-- OpenAiAuthCard -->
-    <string name="open_ai_auth_card_not_signed_in">Not signed in</string>
-    <string name="open_ai_auth_card_sign_in">Sign in with OpenAI</string>
-    <string name="open_ai_auth_card_signing_in">Signing in…</string>
-    <string name="open_ai_auth_card_cancel">Cancel</string>
-    <string name="open_ai_auth_card_finishing">Finishing up with OpenAI…</string>
-    <string name="open_ai_auth_card_signed_in">Signed in with OpenAI</string>
-    <string name="open_ai_auth_card_sign_out">Sign Out</string>
-    <string name="open_ai_auth_card_try_again">Try Again</string>
 
     <!-- OpenSourceLicensesPage -->
     <string name="open_source_licenses_page_title">Open Source Licenses</string>

@@ -5,7 +5,6 @@ import ai.closepaw.memory.MemoryScope
 import ai.closepaw.memory.MemoryStore
 import ai.closepaw.protocol.SessionState
 import ai.closepaw.session.AgentSession
-import ai.closepaw.session.SessionCoordinator
 import ai.closepaw.ui.theme.ClosePawTheme
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -53,7 +52,7 @@ class MemoryFileEditorTest {
 
     private lateinit var memoryDir: File
     private lateinit var memoryStore: MemoryStore
-    private lateinit var coordinator: SessionCoordinator
+    private lateinit var sessionState: MutableStateFlow<SessionState?>
     private lateinit var gateScope: CoroutineScope
     private lateinit var gate: MemoryEditGate
 
@@ -61,8 +60,8 @@ class MemoryFileEditorTest {
         memoryDir = tempFolder.newFolder("memory")
         memoryStore = MemoryStore(memoryDir)
         gateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        coordinator = SessionCoordinator(gateScope)
-        gate = MemoryEditGate(coordinator, gateScope)
+        sessionState = MutableStateFlow(null)
+        gate = MemoryEditGate(sessionState, gateScope)
     }
 
     @After fun teardown() {
@@ -155,7 +154,7 @@ class MemoryFileEditorTest {
 
         // Session start → gate locks.
         val state = MutableStateFlow<SessionState>(SessionState.Running)
-        coordinator.attachSession(fakeSession(state))
+        sessionState.value = state.value
         compose.waitUntil(5_000) { gate.memoryEditLocked.value }
 
         compose.onNodeWithTag(MEMORY_EDITOR_BANNER_TAG).assertIsDisplayed()
@@ -219,7 +218,7 @@ class MemoryFileEditorTest {
 
         // Flip the gate to locked BEFORE releasing the parked IO task.
         val state = MutableStateFlow<SessionState>(SessionState.Running)
-        coordinator.attachSession(fakeSession(state))
+        sessionState.value = state.value
         compose.waitUntil(2_000) { gate.memoryEditLocked.value }
 
         // Resume the parked IO; the action-time re-check inside withContext
@@ -303,7 +302,7 @@ class MemoryFileEditorTest {
         // Session starts → gate locks. Text field becomes readOnly, buffer
         // is held but cannot drift further.
         val state = MutableStateFlow<SessionState>(SessionState.Running)
-        coordinator.attachSession(fakeSession(state))
+        sessionState.value = state.value
         compose.waitUntil(5_000) { gate.memoryEditLocked.value }
 
         // Agent appends to disk while we're locked (simulate via direct write).
@@ -311,7 +310,7 @@ class MemoryFileEditorTest {
 
         // Session ends → gate unlocks. The editor must reload from disk and
         // discard the user's stale "user typed text" buffer.
-        state.value = SessionState.Shutdown
+        sessionState.value = SessionState.Shutdown
         compose.waitUntil(5_000) { !gate.memoryEditLocked.value }
 
         // Buffer reflects disk content (with agent's append), NOT the user's
@@ -370,7 +369,7 @@ class MemoryFileEditorTest {
         compose.waitUntil(2_000) { parking.pendingCount() >= 1 }
 
         val state = MutableStateFlow<SessionState>(SessionState.Running)
-        coordinator.attachSession(fakeSession(state))
+        sessionState.value = state.value
         compose.waitUntil(2_000) { gate.memoryEditLocked.value }
 
         parking.releaseAll()
@@ -418,7 +417,7 @@ class MemoryFileEditorTest {
 
         // Session starts → lock.
         val state = MutableStateFlow<SessionState>(SessionState.Running)
-        coordinator.attachSession(fakeSession(state))
+        sessionState.value = state.value
         compose.waitUntil(5_000) { gate.memoryEditLocked.value }
 
         // Agent appends to disk while locked.
@@ -428,7 +427,7 @@ class MemoryFileEditorTest {
         parking.arm()
 
         // Session ends → unlock → reload starts → parked on `parking`.
-        state.value = SessionState.Shutdown
+        sessionState.value = SessionState.Shutdown
         compose.waitUntil(5_000) { !gate.memoryEditLocked.value }
         compose.waitUntil(2_000) { parking.pendingCount() >= 1 }
 

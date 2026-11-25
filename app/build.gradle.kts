@@ -13,11 +13,10 @@ plugins {
 
 android {
     namespace = "ai.closepaw"
-    compileSdk = 36  // Required by Leap SDK 0.9.2 (depends on androidx.core:core-ktx:1.17.0)
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "ai.closepaw"
-        // Required by LiquidAI Leap SDK for local inference.
         // If we need to support Android < 12, consider a cloud-only flavor.
         minSdk = 31
         targetSdk = 36
@@ -45,10 +44,6 @@ android {
     }
 
     buildTypes {
-        debug {
-            val evalSsl = project.findProperty("insecureSslForEval")?.toString()?.toBoolean() ?: false
-            buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", evalSsl.toString())
-        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -56,7 +51,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            buildConfigField("boolean", "INSECURE_SSL_FOR_EVAL", "false")
             val releaseSigning = signingConfigs.getByName("release")
             if (releaseSigning.storeFile != null) {
                 signingConfig = releaseSigning
@@ -199,14 +193,10 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     
     // OpenAI SDK
-    implementation("com.openai:openai-java:4.14.0")
 
     // OkHttp — used by CodexResponseClient for raw SSE streaming to chatgpt.com
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     
-    // LiquidAI Leap SDK for local LLM inference
-    // Version 0.9.2 includes manifest.LeapDownloader with loadModel(modelSlug, quantizationSlug) API
-    implementation("ai.liquid.leap:leap-sdk:0.9.2")
     
     // Kotlin Serialization for session persistence
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")

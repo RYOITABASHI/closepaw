@@ -21,12 +21,9 @@ import ai.closepaw.R
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ai.closepaw.BuildConfig
-import ai.closepaw.llm.AuthMode
-import ai.closepaw.llm.ModelCatalog
 import ai.closepaw.platform.AppManager
 import ai.closepaw.protocol.AppTier
 import ai.closepaw.protocol.ApprovalMode
-import ai.closepaw.protocol.LLMBackendType
 import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.tool.AppClassifier
 import ai.closepaw.ui.theme.Fleuron
@@ -38,11 +35,6 @@ import kotlinx.coroutines.withContext
 
 @Composable
 internal fun SettingsHomePage(
-    llmBackend: LLMBackendType,
-    selectedModel: String,
-    modelOptions: List<Pair<String, String>>,
-    selectedLocalModel: String,
-    modelCatalog: ModelCatalog,
     perceptionMode: String,
     isAccessibilityEnabled: Boolean,
     isOverlayEnabled: Boolean,
@@ -65,11 +57,6 @@ internal fun SettingsHomePage(
             verticalArrangement = Arrangement.spacedBy(MaterialTheme.closePaw.spacing.sm)
         ) {
             SectionHeader(stringResource(R.string.settings_home_page_section_behavior))
-            SettingsNavigationRow(
-                title = stringResource(R.string.settings_home_page_llm_auth),
-                subtitle = llmSubtitle(llmBackend, selectedModel, modelOptions, selectedLocalModel, modelCatalog),
-                onClick = { onNavigate(SettingsPage.LLM_AUTH) }
-            )
             SettingsNavigationRow(
                 title = stringResource(R.string.settings_home_page_agent_behavior),
                 subtitle = agentBehaviorSubtitle(perceptionMode, platformMode, effectivePlatformMode, approvalMode),
@@ -113,26 +100,6 @@ internal fun SettingsHomePage(
             Spacer(modifier = Modifier.height(16.dp))
         }
     }
-}
-
-@Composable
-private fun llmSubtitle(
-    llmBackend: LLMBackendType,
-    selectedModel: String,
-    modelOptions: List<Pair<String, String>>,
-    selectedLocalModel: String,
-    modelCatalog: ModelCatalog,
-): String = if (llmBackend == LLMBackendType.LOCAL) {
-    AVAILABLE_LOCAL_MODELS.find { it.id == selectedLocalModel }?.localizedDisplayName() ?: selectedLocalModel
-} else {
-    val modelName = modelOptions.find { it.first == selectedModel }?.second ?: selectedModel
-    val mode = modelCatalog.resolveOrNull(selectedModel)?.provider?.mode
-    val authLabel = when (mode) {
-        AuthMode.OAuth -> "OAuth"
-        AuthMode.ApiKey -> stringResource(R.string.settings_home_page_auth_api_key)
-        AuthMode.Local, null -> stringResource(R.string.settings_home_page_auth_api_key)
-    }
-    "$modelName · $authLabel"
 }
 
 @Composable

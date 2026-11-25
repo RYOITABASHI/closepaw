@@ -7,8 +7,7 @@ import androidx.security.crypto.MasterKey
 
 /**
  * MCP server settings. The on/off toggle (not a secret) lives in plain prefs; the bearer token
- * lives in its own [EncryptedSharedPreferences] file, the same secure-storage pattern as
- * [ai.closepaw.auth.AuthStore] (Keystore-backed AES256 master key). Never logged.
+ * lives in its own [EncryptedSharedPreferences] file backed by an AES256 Android Keystore master key. The token is never logged.
  *
  * Disk + Keystore access: call off the main thread.
  */

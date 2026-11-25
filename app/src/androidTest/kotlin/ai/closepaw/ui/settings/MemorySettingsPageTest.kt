@@ -2,11 +2,9 @@ package ai.closepaw.ui.settings
 
 import ai.closepaw.app.MemoryEditGate
 import ai.closepaw.memory.MemoryStore
-import ai.closepaw.protocol.LLMBackendType
 import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.protocol.SessionState
 import ai.closepaw.session.AgentSession
-import ai.closepaw.session.SessionCoordinator
 import ai.closepaw.tool.AppClassifier
 import ai.closepaw.ui.theme.ClosePawTheme
 import androidx.activity.ComponentActivity
@@ -49,7 +47,7 @@ class MemorySettingsPageTest {
 
     private lateinit var memoryDir: File
     private lateinit var memoryStore: MemoryStore
-    private lateinit var coordinator: SessionCoordinator
+    private lateinit var sessionState: MutableStateFlow<SessionState?>
     private lateinit var gateScope: CoroutineScope
     private lateinit var gate: MemoryEditGate
 
@@ -57,8 +55,8 @@ class MemorySettingsPageTest {
         memoryDir = tempFolder.newFolder("memory")
         memoryStore = MemoryStore(memoryDir)
         gateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        coordinator = SessionCoordinator(gateScope)
-        gate = MemoryEditGate(coordinator, gateScope)
+        sessionState = MutableStateFlow(null)
+        gate = MemoryEditGate(sessionState, gateScope)
     }
 
     @After fun teardown() {
@@ -116,7 +114,7 @@ class MemorySettingsPageTest {
 
         // Start a session → gate locks → banner visible.
         val state = MutableStateFlow<SessionState>(SessionState.Running)
-        coordinator.attachSession(fakeSession(state))
+        sessionState.value = state.value
         compose.waitUntil(5_000) { gate.memoryEditLocked.value }
 
         compose.onNodeWithTag(MEMORY_SETTINGS_BANNER_TAG).assertIsDisplayed()
@@ -193,15 +191,6 @@ class MemorySettingsPageTest {
         compose.setContent {
             ClosePawTheme {
                 SettingsHomePage(
-                    llmBackend = LLMBackendType.OPENAI,
-                    selectedModel = "gpt-5.2",
-                    modelOptions = listOf("gpt-5.2" to "GPT-5.2"),
-                    selectedLocalModel = "LFM2.5-1.2B-Instruct",
-                    modelCatalog = ai.closepaw.llm.ModelCatalog.fromJson(
-                        """
-                        {"gpt-5.2": {"display_name":"GPT-5.2","provider":"OPENAI_API","api":"response","model_id":"gpt-5.2"}}
-                        """.trimIndent()
-                    ),
                     perceptionMode = "accessibility_only",
                     isAccessibilityEnabled = true,
                     isOverlayEnabled = true,
@@ -221,7 +210,7 @@ class MemorySettingsPageTest {
         // Behavior section header is present.
         compose.onNodeWithText("Behavior").assertIsDisplayed()
         // All three Behavior rows render.
-        compose.onNodeWithText("LLM & Authentication").assertIsDisplayed()
+        compose.onAllNodesWithText("LLM & Authentication").assertCountEquals(0)
         compose.onNodeWithText("Agent Behavior").assertIsDisplayed()
         compose.onNodeWithText("Memory").assertIsDisplayed()
     }

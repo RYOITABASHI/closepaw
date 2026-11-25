@@ -4,8 +4,6 @@
     <string name="onboarding_screen_title_accessibility">ClosePawにスマートフォンの操作を許可</string>
     <string name="onboarding_screen_title_overlay">作業中も操作パネルを表示</string>
     <string name="onboarding_screen_title_battery">長時間のタスクを止めない</string>
-    <string name="onboarding_screen_title_api_key">モデルを接続</string>
-    <string name="onboarding_screen_title_demo">安全なデモを試す</string>
     <string name="onboarding_screen_title_complete">準備が整いました！</string>
 
     <!-- OnboardingShell -->
@@ -28,40 +26,10 @@
     <string name="onboarding_steps_checking">確認中…</string>
     <string name="onboarding_steps_continue">続行</string>
     <string name="onboarding_steps_continue_without">設定せずに続行</string>
-    <string name="onboarding_steps_choose_provider">接続するプロバイダを選択してください。</string>
-    <string name="onboarding_steps_oauth_intro">OpenAIアカウントでログインします。お使いのChatGPTサブスクリプションを利用するため、APIキーは不要です。</string>
-    <string name="onboarding_steps_sign_in_openai">OpenAIでログイン</string>
-    <string name="onboarding_steps_enter_key_manually">またはAPIキーを手動で入力</string>
-    <string name="onboarding_steps_oauth_in_progress">ブラウザでログインを完了してください。\n完了すると自動的にこの画面に戻ります。</string>
-    <string name="onboarding_steps_cancel">キャンセル</string>
-    <string name="onboarding_steps_oauth_finishing">ブラウザでのログインが完了しました。\nOpenAIとの接続を完了しています（20秒ほどかかる場合があります）。</string>
-    <string name="onboarding_steps_signed_in_as">%1$sでログイン中</string>
-    <string name="onboarding_steps_signed_in">ログインしました</string>
-    <string name="onboarding_steps_try_again">再試行</string>
-    <string name="onboarding_steps_api_key_label">APIキー</string>
     <string name="onboarding_steps_hide">非表示</string>
-    <string name="onboarding_steps_show">表示</string>
-    <string name="onboarding_steps_key_security_note">キーは端末内で暗号化され、LLMプロバイダ以外に送信されることはありません。</string>
-    <string name="onboarding_steps_validating">検証中…</string>
-    <string name="onboarding_steps_key_verified">キーを確認しました</string>
-    <string name="onboarding_steps_retry">再試行</string>
-    <string name="onboarding_steps_validate_continue">検証して続行</string>
-    <string name="onboarding_steps_sign_in_openai_alt">またはOpenAIでログイン</string>
-    <string name="onboarding_steps_demo_intro">動作確認のため「設定」アプリを開きます。端末の設定は一切変更しません。</string>
-    <string name="onboarding_steps_demo_opening">「設定」を開いています…</string>
-    <string name="onboarding_steps_credential_problem">認証情報に問題があります</string>
-    <string name="onboarding_steps_run_demo">デモを実行</string>
-    <string name="onboarding_steps_skip_for_now">今はスキップ</string>
-    <string name="onboarding_steps_running">実行中…</string>
-    <string name="onboarding_steps_sign_in_again">再ログイン</string>
-    <string name="onboarding_steps_reenter_key">APIキーを再入力</string>
-    <string name="onboarding_steps_demo_complete">デモ完了</string>
     <string name="onboarding_steps_row_accessibility">ユーザー補助サービス</string>
     <string name="onboarding_steps_row_overlay">オーバーレイ表示</string>
     <string name="onboarding_steps_row_battery">電池の最適化</string>
-    <string name="onboarding_steps_row_signed_in_openai">OpenAIでログイン済み</string>
-    <string name="onboarding_steps_row_api_key_verified">APIキー確認済み</string>
-    <string name="onboarding_steps_row_demo">デモタスク</string>
     <string name="onboarding_steps_outcome_skipped">%1$s（スキップ）</string>
     <string name="onboarding_steps_start_using">ClosePawを使い始める</string>
     <string name="onboarding_steps_status_label">ステータス: %1$s</string>
@@ -72,7 +40,7 @@
     <string name="onboarding_steps_accessibility_description">Androidで信頼できる自動操作を行うには、ユーザー補助機能が必要です。ClosePawはこの機能で画面を読み取り、タップを実行して、依頼されたタスクを完了します。</string>
     <string name="onboarding_steps_accessibility_consequence">ユーザー補助がオフの場合、ClosePawはタスクを自動化できません。</string>
     <string name="onboarding_steps_accessibility_cta">ユーザー補助の設定を開く</string>
-    <string name="onboarding_steps_accessibility_extended">動作するのはタスクを開始したときだけです。ClosePawがバックグラウンドで動作したり、他のアプリを監視したりすることはありません。タスク中に読み取った画面の内容は、エージェントが次の操作を判断できるよう、選択したLLMプロバイダ（OpenAI、Anthropicなど）に送信されます。プライバシーポリシー: https://imoonkey.github.io/closepaw/privacy/</string>
+    <string name="onboarding_steps_accessibility_extended">ClosePaw は、接続された操作元からの要求に応じて画面を読み取り、操作を実行します。セッション中、操作元は画面の内容を受け取ることができます。プライバシーポリシー: https://imoonkey.github.io/closepaw/privacy/</string>
     <string name="onboarding_steps_overlay_description">フローティングカプセルに進行状況が表示され、停止、操作の引き継ぎ、ClosePawへの復帰ができます。</string>
     <string name="onboarding_steps_overlay_consequence">オーバーレイ権限がない場合、エージェントが他のアプリで作業している間は操作パネルが表示されません。</string>
     <string name="onboarding_steps_overlay_cta">オーバーレイ権限を許可</string>
@@ -81,7 +49,6 @@
     <string name="onboarding_steps_battery_cta">バックグラウンド実行を許可</string>
 
     <!-- OnboardingViewModel -->
-    <string name="onboarding_view_model_no_model_found">%1$sのモデルが見つかりません</string>
 
     <!-- HttpLlmCredentialValidator -->
     <string name="http_llm_credential_validator_key_rejected">このキーは拒否されました。値を確認して、もう一度お試しください。</string>
@@ -112,11 +79,6 @@
     <string name="onboarding_demo_controller_failed">デモに失敗しました: %1$s</string>
 
     <!-- MainActivity -->
-    <string name="main_activity_started_by_shelly">Shellyから開始</string>
-    <string name="main_activity_external_goal_title">外部からの依頼</string>
-    <string name="main_activity_external_goal_message">外部アプリが次のタスクの実行を求めています:\n「%1$s」</string>
-    <string name="main_activity_external_goal_run">実行</string>
-    <string name="main_activity_external_goal_cancel">キャンセル</string>
     <string name="main_activity_grant_overlay">オーバーレイ権限を許可してください</string>
     <string name="main_activity_enable_accessibility">ユーザー補助サービスを有効にしてください</string>
     <string name="main_activity_unknown_error">不明なエラー</string>
@@ -125,7 +87,6 @@
     <string name="main_activity_local_llm_unavailable">ローカルLLMクライアントを利用できません</string>
     <string name="main_activity_missing_credentials">認証情報が不足しています: %1$s</string>
     <string name="main_activity_battery_settings_unavailable">電池の設定を開けませんでした</string>
-    <string name="main_activity_browser_sign_in_unavailable">ログイン用のブラウザを開けませんでした</string>
     <string name="main_activity_busy_with_another_task">ClosePawは別のタスクを実行中です</string>
 
     <!-- MainActivityModelValidation -->
@@ -147,4 +108,7 @@
     <!-- ChromeFlagDeepLink -->
     <string name="chrome_flag_deep_link_launch_hint">Chromeでchrome://flagsが開かない場合は、クリップボードのURLをアドレスバーに貼り付けてください。</string>
     <string name="chrome_flag_deep_link_fallback">URLをコピーしました。Chromeのアドレスバーに貼り付けてフラグのページを開いてください</string>
+    <string name="session_home_mcp_off">MCP サーバーは停止中です</string>
+    <string name="session_home_open_viewer">セッションビューアを開く</string>
+    <string name="session_home_status">ステータス</string>
 </resources>

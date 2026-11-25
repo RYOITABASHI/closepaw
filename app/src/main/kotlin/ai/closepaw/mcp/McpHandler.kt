@@ -32,17 +32,8 @@ data class McpHttpResponse(
     val headers: Map<String, String> = emptyMap(),
 )
 
-/**
- * What the MCP surface may ask of ClosePaw. Deliberately tiny and typed: there is NO raw
- * tap / swipe / text / shell entry; [startRun] (a natural-language goal) is the only way to make
- * ClosePaw act, and it goes through the same background-run machinery as Shelly hand-offs.
- */
+/** Service operations used by the MCP handler. */
 interface McpBackend {
-    sealed interface StartResult {
-        data class Started(val runHandle: String) : StartResult
-        data class Refused(val code: String, val message: String) : StartResult
-    }
-
     data class Status(
         val version: String,
         val virtualDisplayReady: Boolean,
@@ -51,7 +42,6 @@ interface McpBackend {
     )
 
     /** Blocking; called on an HTTP worker thread. */
-    fun startRun(goal: String): StartResult
 
     /** Asks the run behind [runHandle] to stop. False if it is not (or no longer) stoppable. */
     fun stopRun(runHandle: String): Boolean
@@ -230,7 +220,7 @@ class McpHandler(
 
     private fun callTool(name: String, args: JsonObject): JsonObject {
         val out = when (name) {
-            TOOL_RUN_GOAL -> runGoal(args)
+            TOOL_RUN_GOAL -> toolError(null, "refused:$RUN_GOAL_RETIRED", RUN_GOAL_RETIREMENT_MESSAGE, RUN_GOAL_RETIRED)
             TOOL_GET_RUN_RESULT -> getRunResult(args)
             TOOL_STOP_RUN -> stopRun(args)
             TOOL_STATUS -> status()
@@ -278,19 +268,6 @@ class McpHandler(
             toolError(handle, e.code, e.message, e.code)
         } catch (e: Exception) {
             toolError(handle, "operation_failed", "$name failed (${e.javaClass.simpleName})", "operation_failed")
-        }
-    }
-
-    private fun runGoal(args: JsonObject): ToolOutcome {
-        val goal = (args["goal"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()
-        if (goal.isNullOrEmpty()) return toolError(null, "invalid_params", "goal must be a non-empty string")
-        if (goal.length > MAX_GOAL_CHARS) {
-            return toolError(null, "invalid_params", "goal is longer than $MAX_GOAL_CHARS characters")
-        }
-        return when (val r = backend.startRun(goal)) {
-            is McpBackend.StartResult.Started ->
-                ToolOutcome(r.runHandle, "started", toolOk(buildJsonObject { put("runHandle", r.runHandle) }))
-            is McpBackend.StartResult.Refused -> toolError(null, "refused:${r.code}", r.message, r.code)
         }
     }
 
@@ -444,7 +421,6 @@ class McpHandler(
         const val SESSION_HEADER = "Mcp-Session-Id"
         const val SERVER_NAME = "closepaw"
         const val MAX_SESSIONS = 64
-        const val MAX_GOAL_CHARS = 4_000
 
         const val PARSE_ERROR = -32700
         const val INVALID_REQUEST = -32600
@@ -453,7 +429,10 @@ class McpHandler(
         const val INTERNAL_ERROR = -32603
         const val SESSION_ERROR = -32000
 
+        const val MAX_GOAL_CHARS = 4_000
         const val TOOL_RUN_GOAL = "run_goal"
+        internal const val RUN_GOAL_RETIRED = "run_goal_retired"
+        internal const val RUN_GOAL_RETIREMENT_MESSAGE = "run_goal is retired. Use start_session to drive ClosePaw."
         const val TOOL_GET_RUN_RESULT = "get_run_result"
         const val TOOL_STOP_RUN = "stop_run"
         const val TOOL_STATUS = "closepaw_status"
@@ -478,12 +457,9 @@ class McpHandler(
         private val JSON = Json { ignoreUnknownKeys = true }
 
         private const val INSTRUCTIONS =
-            "ClosePaw operates apps on the user's Android phone. run_goal starts one task described " +
-                "in natural language and returns a runHandle at once; poll get_run_result (waitMs up to " +
-                "20000) until status is completed, failed or cancelled. stop_run stops it. Runs execute " +
-                "on a background virtual display; one run at a time. " +
-                "As an alternative to run_goal, start_session, observe, and the action tools let an external " +
-                "driver operate a session step by step."
+            "ClosePaw operates apps on the user's Android phone. Use start_session, observe, and " +
+                "the action tools to drive a session on a background virtual display. " +
+                "Use get_run_result to poll and stop_run to stop a session. run_goal is retired."
 
         private fun stringProp(description: String) = buildJsonObject {
             put("type", "string")
@@ -495,8 +471,7 @@ class McpHandler(
                 put("name", TOOL_RUN_GOAL)
                 put(
                     "description",
-                    "Starts one ClosePaw phone-operation run for a natural-language goal (e.g. 'open " +
-                        "Settings and turn on Wi-Fi'). Returns {runHandle} at once; poll get_run_result.",
+                    RUN_GOAL_RETIREMENT_MESSAGE,
                 )
                 putJsonObject("inputSchema") {
                     put("type", "object")
@@ -515,7 +490,7 @@ class McpHandler(
                 putJsonObject("inputSchema") {
                     put("type", "object")
                     putJsonObject("properties") {
-                        put("runHandle", stringProp("Handle returned by run_goal."))
+                        put("runHandle", stringProp("Handle returned by start_session."))
                         putJsonObject("waitMs") {
                             put("type", "number")
                             put("description", "Long-poll up to this many ms (0-20000).")
@@ -530,7 +505,7 @@ class McpHandler(
                 put("description", "Stops the run behind a runHandle.")
                 putJsonObject("inputSchema") {
                     put("type", "object")
-                    putJsonObject("properties") { put("runHandle", stringProp("Handle returned by run_goal.")) }
+                    putJsonObject("properties") { put("runHandle", stringProp("Handle returned by start_session.")) }
                     putJsonArray("required") { add(JsonPrimitive("runHandle")) }
                     put("additionalProperties", false)
                 }

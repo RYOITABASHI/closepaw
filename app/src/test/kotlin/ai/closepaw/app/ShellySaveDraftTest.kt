@@ -40,7 +40,7 @@ class ShellySaveDraftTest {
     @Test
     fun `everything else is ignored`() {
         assertThat(target(verified = false)).isNull()
-        assertThat(target(action = ShellyBackgroundRun.ACTION_RUN_GOAL)).isNull()
+        assertThat(target(action = "android.intent.action.VIEW")).isNull()
         assertThat(target(platform = "other")).isNull()
         assertThat(target(platform = null)).isNull()
         assertThat(target(platform = "substack")).isNull()

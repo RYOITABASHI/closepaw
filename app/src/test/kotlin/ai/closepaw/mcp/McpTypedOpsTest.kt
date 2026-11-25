@@ -109,7 +109,6 @@ class McpTypedOpsTest {
         expectedToken = { TOKEN },
         registry = McpRunRegistry(),
         backend = object : McpBackend {
-            override fun startRun(goal: String) = error("Unexpected start")
             override fun stopRun(runHandle: String) = error("Unexpected stop")
             override fun status() = error("Unexpected status")
         },

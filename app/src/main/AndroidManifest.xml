@@ -41,6 +41,7 @@
     </queries>
 
     <application
+        android:name=".app.ClosePawApplication"
         android:networkSecurityConfig="@xml/network_security_config"
         android:allowBackup="false"
         android:localeConfig="@xml/locales_config"
@@ -59,13 +60,6 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-            <!-- OAuth callback: success page redirects here to bring app to front. -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="closepaw" android:host="oauth-complete" />
             </intent-filter>
         </activity>
 
@@ -105,18 +99,8 @@
         </receiver>
 
         <!--
-            Shelly background hand-off. Exported so dev.shelly.terminal can send an explicit
-            broadcast, but it acts only on a verified caller token (creator package + pinned
-            signing cert, see ShellyTrustedCaller); everything else is ignored. No intent-filter:
-            reachable by explicit component only.
-        -->
-        <receiver
-            android:name=".app.ShellyGoalReceiver"
-            android:exported="true" />
-
-        <!--
-            Fixed draft routine for a verified Shelly caller: same token and sender checks as
-            ShellyGoalReceiver, explicit component only. It runs no LLM and takes no goal.
+            Fixed draft routine for a verified Shelly caller. It uses token and sender checks
+            and is reachable by explicit component only.
         -->
         <receiver
             android:name=".app.ShellySaveDraftReceiver"

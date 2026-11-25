@@ -78,7 +78,7 @@ import kotlinx.coroutines.withContext
  * [MemoryStore.write] / [MemoryStore.delete]. If a session began between
  * the click and the IO, the write aborts and a toast is shown — the file
  * on disk is never touched. `isLockedNow()` reads
- * `SessionCoordinator.currentSessionState.value` directly, bypassing the
+ * the current session state directly, bypassing the
  * map-collector tick that `memoryEditLocked` rides on.
  */
 
@@ -213,7 +213,7 @@ internal fun MemoryFileEditor(
                 // Action-time TOCTOU re-check: a session may have started or a
                 // post-unlock reload may still be in flight between the click
                 // and our IO dispatch. `gate.isLockedNow()` uses the
-                // synchronous SessionCoordinator snapshot; `reloadingState`
+                // synchronous session state snapshot; `reloadingState`
                 // is read fresh so a reload that armed after the click also
                 // aborts.
                 if (gate.isLockedNow() || reloadingState.value) null

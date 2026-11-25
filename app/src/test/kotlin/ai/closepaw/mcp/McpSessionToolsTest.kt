@@ -19,6 +19,27 @@ import org.junit.Test
 
 class McpSessionToolsTest {
     @Test
+    fun retiredRunGoalRefusesBeforeAnyDispatch() {
+        val audits = mutableListOf<String>()
+        val registry = McpRunRegistry()
+        val handler = handler(
+            registry = registry,
+            audits = audits,
+            sessionOps = { _, _ -> error("Retired goal must not reach session dispatch") },
+        )
+        val headers = session(handler)
+        for (arguments in listOf("{}", """{"goal":"legacy task"}""")) {
+            val refusal = call(handler, headers, "run_goal", arguments)
+            assertError("run_goal_retired", refusal)
+            assertTrue(content(refusal).contains("start_session"))
+        }
+        assertEquals(0, registry.activeCount())
+        assertTrue(audits.count { it.contains("tool=run_goal handle=- outcome=refused:run_goal_retired") } == 2)
+        val tool = McpHandler.TOOLS.map { it.jsonObject }.single { it["name"]?.jsonPrimitive?.content == "run_goal" }
+        assertTrue(tool["description"]!!.jsonPrimitive.content.contains("retired"))
+    }
+
+    @Test
     fun advertisesSessionToolsOnlyWithAnInjectedOperation() {
         val baseTools = setOf("run_goal", "get_run_result", "stop_run", "closepaw_status")
         val sessionTools = setOf("start_session", "observe", "tap", "type_text", "system_button",
@@ -431,7 +452,6 @@ class McpSessionToolsTest {
         expectedToken = { TOKEN },
         registry = registry,
         backend = object : McpBackend {
-            override fun startRun(goal: String) = error("Unexpected start")
             override fun stopRun(runHandle: String) = stopRun.invoke(runHandle)
             override fun status() = error("Unexpected status")
         },

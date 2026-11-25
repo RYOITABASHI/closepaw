@@ -16,32 +16,9 @@ import ai.closepaw.protocol.TaskOutcome
 import ai.closepaw.protocol.TurnPhaseChanged
 import kotlinx.coroutines.launch
 
-/**
- * Background ("headless") runs requested by a verified Shelly caller.
- *
- * Entry point: [ShellyGoalReceiver] (explicit broadcast). Unlike the MainActivity hand-off, this
- * path never opens ClosePaw's UI: the goal runs on the Shizuku virtual display and the only
- * visible indicators are the Smart Capsule overlay and an ongoing notification
- * ([ShellyRunNotifier]). Everything in this file is pure logic so it can be unit tested.
- */
+/** Shared admission, broadcast result codes, and callback correlation for background work. */
 object ShellyBackgroundRun {
-    const val ACTION_RUN_GOAL = "ai.closepaw.action.SHELLY_RUN_GOAL"
-    const val EXTRA_GOAL = "goal"
-
-    /**
-     * Opt-in: when the virtual display is unavailable, run on the main display instead of
-     * refusing. Default false — the run would take over the user's screen.
-     */
-    const val EXTRA_ALLOW_MAIN_DISPLAY = "allow_main_display"
-
-    const val MAX_GOAL_CHARS = 4_000
-
-    /**
-     * Result callback correlation (Shelly >= shim v14, see [ShellyResultCallback]). Shelly sends
-     * its request id and a per-run random nonce with the goal; ClosePaw echoes both back when the
-     * run finishes. Both are optional: without them (older Shelly, agent-run hand-offs) no result
-     * is sent back. Malformed values are dropped, never fail the request.
-     */
+    /** Request ID and nonce echoed by [ShellyResultCallback] when work finishes. */
     const val EXTRA_SHELLY_REQ_ID = "shelly_req_id"
     const val EXTRA_SHELLY_RESULT_NONCE = "shelly_result_nonce"
     private val SHELLY_REQ_ID_RE = Regex("^[0-9]{10,16}-[0-9a-f]{8}$")
@@ -59,7 +36,6 @@ object ShellyBackgroundRun {
     // Ordered-broadcast result codes (Shelly should send with initialCode = 0, so 0 means
     // "no receiver answered": ClosePaw missing, too old, or stopped).
     const val RESULT_STARTED_VIRTUAL_DISPLAY = 1
-    const val RESULT_STARTED_MAIN_DISPLAY = 2
     const val RESULT_REJECTED = 10
 
     /**
@@ -67,7 +43,6 @@ object ShellyBackgroundRun {
      * started run without it as "no result will come" instead of waiting forever.
      */
     const val RESULT_EXTRA_RESULT_CALLBACK = "result_callback"
-    const val RESULT_EXTRA_RUN_HANDLE = "runHandle"
 
     /**
      * Replacing a session: must the new session wait until the replaced session's shutdown has
@@ -86,11 +61,6 @@ object ShellyBackgroundRun {
         deferredWork: Boolean,
     ): Boolean = returnsMainDisplayTasks || runEndRestoreInFlight || deferredWork
 
-    /** True when a started run carries a result correlation (so the callback will be sent). */
-    fun reportsResult(resultCode: Int, correlation: ResultCorrelation?): Boolean =
-        correlation != null &&
-            (resultCode == RESULT_STARTED_VIRTUAL_DISPLAY || resultCode == RESULT_STARTED_MAIN_DISPLAY)
-
     enum class Block(val resultCode: Int) {
         ACCESSIBILITY_OFF(11),
         ONBOARDING_REQUIRED(12),
@@ -103,30 +73,6 @@ object ShellyBackgroundRun {
     sealed interface Decision {
         data class Start(val platformMode: PlatformMode) : Decision
         data class Blocked(val block: Block) : Decision
-    }
-
-    data class Request(
-        val goal: String,
-        val allowMainDisplay: Boolean,
-        val correlation: ResultCorrelation? = null,
-    )
-
-    /**
-     * Trust gate for the exported receiver. Returns null (= ignore the broadcast, do nothing
-     * visible) unless the action matches AND the caller token verified AND a goal is present.
-     */
-    fun parseRequest(
-        action: String?,
-        goalExtra: String?,
-        callerVerified: Boolean,
-        allowMainDisplay: Boolean,
-        reqIdExtra: String? = null,
-        nonceExtra: String? = null,
-    ): Request? {
-        if (action != ACTION_RUN_GOAL) return null
-        if (!callerVerified) return null
-        val goal = goalExtra?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        return Request(goal.take(MAX_GOAL_CHARS), allowMainDisplay, parseResultCorrelation(reqIdExtra, nonceExtra))
     }
 
     /** Preconditions, checked synchronously before anything becomes visible. */

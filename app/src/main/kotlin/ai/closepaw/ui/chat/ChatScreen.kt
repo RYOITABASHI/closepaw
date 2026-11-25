@@ -40,7 +40,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -51,30 +50,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.closepaw.app.AgentService
+import ai.closepaw.app.McpServerController
+import ai.closepaw.protocol.PlatformMode
+import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
 import ai.closepaw.history.model.SessionInfo
-import ai.closepaw.ui.capsule.CapsuleBinding
-import ai.closepaw.ui.capsule.NavAction
-import ai.closepaw.ui.capsule.surface.LocalVoiceFeedback
-import ai.closepaw.ui.capsule.surface.SmartCapsuleSurface
-import ai.closepaw.ui.capsule.surface.VoiceMicDeps
 import ai.closepaw.ui.capsule.surface.smartCapsuleHostPadding
-import ai.closepaw.ui.capsule.voice.AndroidRecognizerFactory
 import ai.closepaw.onboarding.PermissionStateMonitor.PermissionRepairModel
 import ai.closepaw.ui.chat.components.ChatHeader
-import ai.closepaw.ui.chat.components.EmptyState
 import ai.closepaw.ui.chat.components.MessageBubble
 import ai.closepaw.ui.chat.model.ChatMessage
 import ai.closepaw.ui.chat.model.ContentBlock
 import ai.closepaw.ui.navigation.NavigationDrawerContent
 import ai.closepaw.ui.onboarding.PermissionRepairCard
-import ai.closepaw.ui.overlay.model.CapsuleContext
-import ai.closepaw.ui.settings.AlertTone
-import ai.closepaw.ui.settings.SettingsAlertCard
 import ai.closepaw.ui.theme.ClosePawMotion
 import ai.closepaw.ui.theme.closePaw
 import ai.closepaw.ui.theme.paperGrain
@@ -96,10 +88,9 @@ private data class VoiceFeedbackAlert(
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel,
-    capsuleBinding: CapsuleBinding,
     sessions: List<SessionInfo>,
-    currentModel: String,
-    onOpenSettings: (SettingsDeepLink?) -> Unit,
+    effectivePlatformMode: PlatformMode?,
+    onOpenSettings: () -> Unit,
     onSessionSelect: (SessionInfo) -> Unit,
     onNewSession: () -> Unit,
     onDeleteSession: (SessionInfo) -> Unit,
@@ -114,48 +105,12 @@ fun ChatScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val messages = viewModel.messages
-    val pendingInput by viewModel.pendingInput.collectAsStateWithLifecycle()
-    val startupError by viewModel.startupError.collectAsStateWithLifecycle()
-
-    val capsuleMode by capsuleBinding.mode.collectAsStateWithLifecycle()
-    val capsulePlatformMode by capsuleBinding.platformMode.collectAsStateWithLifecycle()
-    val isStopPending by capsuleBinding.isStopPending.collectAsStateWithLifecycle()
-
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    val ctx = LocalContext.current
-    val voiceDeps = remember(ctx) {
-        val activity = ctx as? android.app.Activity
-        object : VoiceMicDeps {
-            override val factory = AndroidRecognizerFactory(ctx.applicationContext)
-            override val activity: android.app.Activity? = activity
-            override fun isPermissionGranted(): Boolean =
-                androidx.core.content.ContextCompat.checkSelfPermission(
-                    ctx,
-                    android.Manifest.permission.RECORD_AUDIO,
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-            override fun requestOverlayPermission() {
-                // MAIN_APP path uses the in-process activity launcher; the overlay route is unused
-                // here. Fallback safely to the AgentService bridge so misuse is non-fatal.
-                AgentService.instance?.requestVoicePermissionViaMainActivity()
-            }
-        }
-    }
-    var nextVoiceFeedbackId by remember { mutableStateOf(0L) }
-    var voiceFeedback by remember { mutableStateOf<VoiceFeedbackAlert?>(null) }
-    val reportVoiceFeedback: (String) -> Unit = { message ->
-        nextVoiceFeedbackId += 1
-        voiceFeedback = VoiceFeedbackAlert(nextVoiceFeedbackId, message)
-    }
-    LaunchedEffect(voiceFeedback?.id) {
-        val current = voiceFeedback ?: return@LaunchedEffect
-        delay(7_000)
-        if (voiceFeedback?.id == current.id) {
-            voiceFeedback = null
-        }
-    }
-    
+    val mcpState by McpServerController.state.collectAsStateWithLifecycle()
+    val status by AgentService.statusFlow.collectAsStateWithLifecycle()
+
     // Load sessions when drawer opens
     LaunchedEffect(drawerState.isOpen) {
         if (drawerState.isOpen) {
@@ -169,7 +124,6 @@ fun ChatScreen(
         drawerContent = {
             NavigationDrawerContent(
                 sessions = sessions,
-                currentModel = currentModel,
                 onSessionSelect = { session ->
                     scope.launch { drawerState.close() }
                     onSessionSelect(session)
@@ -181,7 +135,7 @@ fun ChatScreen(
                 onDeleteSession = onDeleteSession,
                 onSettingsClick = {
                     scope.launch { drawerState.close() }
-                    onOpenSettings(null)
+                    onOpenSettings()
                 },
                 onClose = {
                     scope.launch { drawerState.close() }
@@ -226,8 +180,7 @@ fun ChatScreen(
                         onMenuClick = {
                             scope.launch { drawerState.open() }
                         },
-                        onNewChatClick = onNewSession,
-                        showNewChatButton = messages.isNotEmpty()
+                        showNewChatButton = false,
                     )
                 },
                 bottomBar = {
@@ -246,55 +199,6 @@ fun ChatScreen(
                                 onFixBattery = onFixBattery,
                             )
                         }
-                        voiceFeedback?.let { alert ->
-                            SettingsAlertCard(
-                                message = alert.message,
-                                tone = AlertTone.Error,
-                                modifier = Modifier.padding(bottom = MaterialTheme.closePaw.spacing.sm),
-                            )
-                        }
-                        CompositionLocalProvider(LocalVoiceFeedback provides reportVoiceFeedback) {
-                            SmartCapsuleSurface(
-                                mode = capsuleMode,
-                                isStopPending = isStopPending,
-                                platformMode = capsulePlatformMode,
-                                context = CapsuleContext.MAIN_APP,
-                                onSend = viewModel::sendMessage,
-                                onSupplement = viewModel::sendSupplement,
-                                onTakeover = viewModel::requestTakeover,
-                                onResume = viewModel::requestResume,
-                                onSupplementAndResume = viewModel::sendSupplementAndResume,
-                                onStop = {
-                                    if (capsuleBinding.onStopRequested()) {
-                                        viewModel.stopTask()
-                                    }
-                                },
-                                onUserResponse = { callId, response ->
-                                    forwardUserResponse(capsuleBinding, viewModel::sendUserResponse, callId, response)
-                                },
-                                onApprovalResponse = { callId, decision, approvalScope, packageName ->
-                                    if (capsuleBinding.onApprovalResolved(callId)) {
-                                        viewModel.sendApprovalResponse(callId, decision, approvalScope, packageName)
-                                    }
-                                },
-                                onDismissError = { viewModel.dismissError() },
-                                onNavigate = { action ->
-                                    if (action == NavAction.OPEN_VIEWER) {
-                                        onOpenViewer()
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                previousMode = capsuleBinding.previousMode(),
-                                pendingInputText = pendingInput,
-                                onPendingInputConsumed = { viewModel.consumePendingInput() },
-                                startupError = startupError,
-                                onDismissStartupError = { viewModel.dismissStartupError() },
-                                onStartupErrorClick = {
-                                    onOpenSettings(viewModel.startupErrorDeepLink.value)
-                                },
-                                voice = voiceDeps,
-                            )
-                        }
                     }
                 }
             ) { paddingValues ->
@@ -304,11 +208,29 @@ fun ChatScreen(
                         .padding(paddingValues)
                 ) {
                     if (messages.isEmpty() && uiState.showEmptyState) {
-                        // Empty state
-                        EmptyState(
-                            onSuggestionClick = viewModel::sendMessage,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        Column(
+                            modifier = Modifier.align(Alignment.BottomStart).padding(24.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            val mcpStatus = when (val current = mcpState) {
+                                McpServerController.State.Off ->
+                                    stringResource(R.string.session_home_mcp_off)
+                                is McpServerController.State.Running ->
+                                    stringResource(R.string.mcp_server_status_running, current.port)
+                                is McpServerController.State.Failed ->
+                                    stringResource(R.string.mcp_server_status_failed, current.reason)
+                            }
+                            Text(mcpStatus, style = MaterialTheme.typography.titleMedium)
+                            if (status.isNotBlank()) Text(status)
+                            Button(onClick = onOpenSettings) {
+                                Text(stringResource(R.string.navigation_drawer_settings))
+                            }
+                            if (effectivePlatformMode == PlatformMode.VIRTUAL_DISPLAY) {
+                                TextButton(onClick = onOpenViewer) {
+                                    Text(stringResource(R.string.session_home_open_viewer))
+                                }
+                            }
+                        }
                     } else if (messages.isNotEmpty()) {
                         // Message list
                         MessageList(

@@ -4,11 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.res.stringResource
 import ai.closepaw.R
-import ai.closepaw.onboarding.ApiKeyAuthMethod
-import ai.closepaw.onboarding.ApiKeyStepState
-import ai.closepaw.onboarding.DemoStepState
 import ai.closepaw.onboarding.OnboardingEffect
-import ai.closepaw.onboarding.OnboardingProvider
 import ai.closepaw.onboarding.OnboardingStepState
 import ai.closepaw.onboarding.PermissionStepState
 import ai.closepaw.onboarding.StepOutcomes
@@ -26,8 +22,6 @@ fun OnboardingScreen(
     currentStep: WizardStep,
     stepState: OnboardingStepState?,
     outcomes: StepOutcomes,
-    selectedProvider: OnboardingProvider,
-    authMethod: ApiKeyAuthMethod,
     accessibilityGranted: Boolean,
     overlayGranted: Boolean,
     batteryGranted: Boolean,
@@ -36,16 +30,7 @@ fun OnboardingScreen(
     onContinue: () -> Unit,
     onOpenSettings: () -> Unit,
     onSkipStep: () -> Unit,
-    onProviderSelected: (OnboardingProvider) -> Unit,
-    onAuthMethodSelected: (ApiKeyAuthMethod) -> Unit,
-    onStartOAuth: () -> Unit,
-    onCancelOAuth: () -> Unit,
-    onApiKeyChanged: (String) -> Unit,
-    onValidateApiKey: () -> Unit,
-    onRetryValidation: () -> Unit,
-    onStartDemo: () -> Unit,
     onFinish: () -> Unit,
-    onGoToAuthStep: () -> Unit,
     onEffect: (OnboardingEffect) -> Unit
 ) {
     // Consume one-shot effects
@@ -53,7 +38,7 @@ fun OnboardingScreen(
         effects.collect { effect -> onEffect(effect) }
     }
 
-    val totalSteps = 5
+    val totalSteps = 3
     // Back arrow on all steps except the first
     val backAction: (() -> Unit)? = if (currentStep != WizardStep.Accessibility) onBack else null
 
@@ -108,45 +93,6 @@ fun OnboardingScreen(
             }
         }
 
-        WizardStep.ApiKey -> {
-            OnboardingShell(
-                stepIndex = 4,
-                totalSteps = totalSteps,
-                title = stringResource(R.string.onboarding_screen_title_api_key),
-                onBack = backAction
-            ) {
-                ApiKeyStepContent(
-                    state = stepState as? ApiKeyStepState ?: ApiKeyStepState.Empty,
-                    selectedProvider = selectedProvider,
-                    authMethod = authMethod,
-                    onProviderSelected = onProviderSelected,
-                    onAuthMethodSelected = onAuthMethodSelected,
-                    onStartOAuth = onStartOAuth,
-                    onCancelOAuth = onCancelOAuth,
-                    onContinue = onContinue,
-                    onKeyChanged = onApiKeyChanged,
-                    onValidate = onValidateApiKey,
-                    onRetry = onRetryValidation
-                )
-            }
-        }
-
-        WizardStep.Demo -> {
-            OnboardingShell(
-                stepIndex = 5,
-                totalSteps = totalSteps,
-                title = stringResource(R.string.onboarding_screen_title_demo),
-                onBack = backAction
-            ) {
-                DemoStepContent(
-                    state = stepState as? DemoStepState ?: DemoStepState.Ready,
-                    onRunDemo = onStartDemo,
-                    onSkip = onSkipStep,
-                    onGoToAuthStep = onGoToAuthStep
-                )
-            }
-        }
-
         WizardStep.Complete -> {
             OnboardingShell(
                 stepIndex = totalSteps,
@@ -156,7 +102,6 @@ fun OnboardingScreen(
             ) {
                 CompleteStepContent(
                     outcomes = outcomes,
-                    authMethod = authMethod,
                     accessibilityGranted = accessibilityGranted,
                     overlayGranted = overlayGranted,
                     batteryGranted = batteryGranted,

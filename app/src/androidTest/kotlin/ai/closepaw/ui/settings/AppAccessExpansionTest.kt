@@ -6,7 +6,6 @@ import ai.closepaw.platform.AppInfo
 import ai.closepaw.protocol.AppTier
 import ai.closepaw.protocol.SessionState
 import ai.closepaw.session.AgentSession
-import ai.closepaw.session.SessionCoordinator
 import ai.closepaw.tool.AppClassifier
 import ai.closepaw.ui.theme.ClosePawTheme
 import androidx.compose.ui.test.assertCountEquals
@@ -52,7 +51,7 @@ class AppAccessExpansionTest {
 
     private lateinit var memoryDir: File
     private lateinit var memoryStore: MemoryStore
-    private lateinit var coordinator: SessionCoordinator
+    private lateinit var sessionState: MutableStateFlow<SessionState?>
     private lateinit var gateScope: CoroutineScope
     private lateinit var gate: MemoryEditGate
 
@@ -60,8 +59,8 @@ class AppAccessExpansionTest {
         memoryDir = tempFolder.newFolder("memory")
         memoryStore = MemoryStore(memoryDir)
         gateScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        coordinator = SessionCoordinator(gateScope)
-        gate = MemoryEditGate(coordinator, gateScope)
+        sessionState = MutableStateFlow(null)
+        gate = MemoryEditGate(sessionState, gateScope)
     }
 
     @After fun teardown() {
@@ -166,7 +165,7 @@ class AppAccessExpansionTest {
             every { it.state } returns sessionState
             coEvery { it.submit(any()) } returns Unit
         }
-        coordinator.attachSession(session)
+        sessionState.value = SessionState.Running
 
         renderPage(rows = listOf(row(pkg)), index = emptyIndex())
 

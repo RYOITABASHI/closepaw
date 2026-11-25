@@ -1,5 +1,7 @@
 package ai.closepaw.onboarding
 
+import ai.closepaw.app.hasAppLegacyUsageEvidence
+import ai.closepaw.app.openExistingAuthStore
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
@@ -7,10 +9,12 @@ import android.util.Log
 /**
  * Persistence for onboarding wizard state (step outcomes + completion flag).
  *
- * Auth credentials live in [ai.closepaw.auth.AuthStore]; the API-key typed during
- * onboarding is ViewModel-transient (process-death → retype).
  */
-class OnboardingStore(private val context: Context) {
+class OnboardingStore internal constructor(
+    private val context: Context,
+    private val openAuthStore: (Context) -> SharedPreferences?,
+) {
+    constructor(context: Context) : this(context, ::openExistingAuthStore)
 
     companion object {
         private const val TAG = "OnboardingStore"
@@ -21,8 +25,6 @@ class OnboardingStore(private val context: Context) {
         private const val KEY_STEP_ACCESSIBILITY = "step_accessibility"
         private const val KEY_STEP_OVERLAY = "step_overlay"
         private const val KEY_STEP_BATTERY = "step_battery"
-        private const val KEY_STEP_API_KEY = "step_api_key"
-        private const val KEY_STEP_DEMO = "step_demo"
 
         // Legacy keys removed in schema v2 — retained only for migration cleanup.
         private const val LEGACY_KEY_AUTH_METHOD = "auth_method"
@@ -35,9 +37,12 @@ class OnboardingStore(private val context: Context) {
 
     // ── Public API ──
 
-    /** Whether the full onboarding wizard has been completed. */
+    /** Completion after reconciling prior use for both UI and background callers. */
     val isCompleted: Boolean
-        get() = prefs().getBoolean(KEY_COMPLETED, false)
+        get() {
+            migrateIfNeeded { hasAppLegacyUsageEvidence(context, openAuthStore) }
+            return prefs().getBoolean(KEY_COMPLETED, false)
+        }
 
     /** Mark onboarding as complete. Only called from CompleteStep CTA. */
     fun setCompleted() {
@@ -51,8 +56,6 @@ class OnboardingStore(private val context: Context) {
             accessibility = p.readOutcome(KEY_STEP_ACCESSIBILITY),
             overlay = p.readOutcome(KEY_STEP_OVERLAY),
             battery = p.readOutcome(KEY_STEP_BATTERY),
-            apiKey = p.readOutcome(KEY_STEP_API_KEY),
-            demo = p.readOutcome(KEY_STEP_DEMO)
         )
     }
 
@@ -62,8 +65,6 @@ class OnboardingStore(private val context: Context) {
             WizardStep.Accessibility -> KEY_STEP_ACCESSIBILITY
             WizardStep.Overlay -> KEY_STEP_OVERLAY
             WizardStep.Battery -> KEY_STEP_BATTERY
-            WizardStep.ApiKey -> KEY_STEP_API_KEY
-            WizardStep.Demo -> KEY_STEP_DEMO
             WizardStep.Complete -> return // not persisted as a step outcome
         }
         prefs().edit().putString(key, outcome.toStorageValue()).apply()
@@ -80,11 +81,8 @@ class OnboardingStore(private val context: Context) {
      *   ([LEGACY_KEY_AUTH_METHOD]). The legacy encrypted prefs file
      *   `onboarding_secure_prefs` is left on disk; nothing reads it anymore.
      * - Any run: if onboarding is not complete but [hasLegacyUsageEvidence] still
-     *   reports an existing user, mark complete. Recovers users whose
-     *   `onboarding_prefs` was wiped/reset (e.g. selective Auto Backup restore,
-     *   manual data clear of just this prefs file) while `auth_store` survived.
-     *   Safe because cloud credentials can only be written through onboarding or
-     *   the post-onboarding Settings page — their presence implies prior success.
+     *   reports an existing user, mark complete. This also recovers users whose
+     *   permission onboarding preferences were reset independently of their other data.
      */
     fun migrateIfNeeded(hasLegacyUsageEvidence: () -> Boolean) {
         val p = prefs()
