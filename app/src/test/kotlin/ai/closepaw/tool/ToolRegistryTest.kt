@@ -31,18 +31,6 @@ class ToolRegistryTest {
     }
 
     @Test
-    fun `generateResponsesApiTools respects filter`() {
-        val registry = ToolRegistry()
-        registry.register(RegistryTestToolSpec("keep"))
-        registry.register(RegistryTestToolSpec("drop"))
-
-        val tools = registry.generateResponsesApiTools { it.name == "keep" }
-
-        assertThat(tools).hasSize(1)
-        assertThat(tools.single().name()).isEqualTo("keep")
-    }
-
-    @Test
     fun `createFilteredCopy keeps allowed tools and excludes explicit names`() {
         val registry = ToolRegistry()
         registry.register(RegistryTestToolSpec("mobile_action"))

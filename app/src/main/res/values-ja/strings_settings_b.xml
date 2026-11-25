@@ -44,7 +44,6 @@
     <!-- SettingsHomePage -->
     <string name="settings_home_page_title">設定</string>
     <string name="settings_home_page_section_behavior">動作</string>
-    <string name="settings_home_page_llm_auth">LLM と認証</string>
     <string name="settings_home_page_agent_behavior">エージェントの動作</string>
     <string name="settings_home_page_memory">メモリ</string>
     <string name="settings_home_page_memory_subtitle">ユーザーとデバイスに関する知識</string>
@@ -73,8 +72,6 @@
     <string name="settings_home_page_app_access_counts">%1$s · 許可 %2$d · 確認 %3$d · 拒否 %4$d</string>
 
     <!-- SettingsModels -->
-    <string name="settings_models_lfm_display_name">LFM 1.2B Instruct（推奨）</string>
-    <string name="settings_models_lfm_description">端末上で推論、約1.2Bパラメータ、ツール呼び出しに対応</string>
 
     <!-- SettingsWidgets -->
     <string name="settings_widgets_downloading_model">モデルをダウンロード中…</string>

@@ -3,27 +3,18 @@ package ai.closepaw.session
 import android.content.Context
 import android.util.Log
 import ai.closepaw.app.AppSettingsStore
-import ai.closepaw.agent.definition.AgentDefRegistry
-import ai.closepaw.agent.definition.defaultToolsExcludedByPref
 import ai.closepaw.agent.cognition.prompt.AppSkillRepository
 import ai.closepaw.agent.cognition.prompt.AssetAppSkillRepository
 import ai.closepaw.agent.cognition.prompt.EmptyAppSkillRepository
 import ai.closepaw.agent.cognition.skills.AgentSkillManager
 import ai.closepaw.agent.cognition.skills.BundledAgentSkillInstaller
-import ai.closepaw.auth.AuthStore
 import ai.closepaw.browser.script.BrowserSessionManager
 import ai.closepaw.history.HistoryManager
 import ai.closepaw.history.SessionRecordingService
-import ai.closepaw.llm.LLMClient
-import ai.closepaw.llm.LLMClientFactory
-import ai.closepaw.llm.LLMProvider
-import ai.closepaw.llm.ModelCatalog
-import ai.closepaw.llm.ModelCatalogRepositoryHolder
 import ai.closepaw.memory.MemoryRecaller
 import ai.closepaw.memory.MemoryStore
 import ai.closepaw.platform.AndroidPlatform
 import ai.closepaw.protocol.SessionConfig
-import ai.closepaw.protocol.SessionLlmConfig
 import ai.closepaw.termux.TermuxBridgeManager
 import ai.closepaw.termux.TermuxBridgeStatus
 import ai.closepaw.termux.TermuxCapabilitySnapshot
@@ -62,30 +53,7 @@ private class TermuxBridgeManagerSessionBridge(
     override fun snapshot(enabled: Boolean): TermuxCapabilitySnapshot = manager.snapshot(enabled)
 }
 
-/**
- * SessionServices - Dependency Injection container for all session-scoped services.
- *
- * Pattern from Codex's SessionServices: A single object holding all services needed for a session.
- *
- * Each service has ONE clear responsibility:
- * - toolRegistry: Discovery and schema generation for tools
- * - toolRouter: Execution of tools with state machine (includes approval flow)
- * - historyManager: Conversation history with truncation/normalization
- * - sessionState: Planning state (todos + scratchpad)
- * - policyEngine: Decides ALLOW/DENY/ASK_USER for tool calls
- * - platform: Android-specific operations
- * - config: Session configuration
- *
- * Usage:
- * ```kotlin
- * // For OpenAI backend:
- * val services = SessionServices.create(config, platform, authStore = AuthStore(context), context = context, ...)
- *
- * // For local LLM backend:
- * val localConfig = config.copy(llm = SessionLlmConfig(backendType = LLMBackendType.LOCAL))
- * val services = SessionServices.create(localConfig, platform, authStore = null, context = context, ...)
- * ```
- */
+/** Platform, tools, recording, and policy used by an externally driven session. */
 class SessionServices internal constructor(
         val toolRegistry: ToolRegistry,
         val toolRouter: ToolRouter,
@@ -95,9 +63,6 @@ class SessionServices internal constructor(
         val appClassifier: AppClassifier,
         val platform: AndroidPlatform,
         val config: SessionConfig,
-        val llmClient: LLMClient,
-        val modelCatalog: ModelCatalog,
-        val llmClientFactory: LLMClientFactory,
         val traceRecorder: TraceRecorder,
         val recordingService: SessionRecordingService,
         val browserSessionManager: BrowserSessionManager? = null,
@@ -118,38 +83,19 @@ class SessionServices internal constructor(
          *
          * @param config Session configuration
          * @param platform Android platform abstraction
-         * @param authStore Unified credential store (OAuth + API keys). Null for test factories.
-         * @param baseUrlOverrides Debug-only per-provider base URL overrides.
          * @param context Android context (required for LOCAL backend for model downloading)
          * @return Fully initialized SessionServices
          */
         fun create(
                 config: SessionConfig,
                 platform: AndroidPlatform,
-                authStore: AuthStore?,
-                baseUrlOverrides: Map<LLMProvider, String> = emptyMap(),
                 context: Context,
                 scope: CoroutineScope,
                 traceRecorder: TraceRecorder,
                 appClassifier: AppClassifier,
                 externalDriver: Boolean = false,
-                catalogSnapshot: ModelCatalog? = null,
         ): SessionServices {
             Log.d(TAG, "Creating SessionServices...")
-
-            val catalogRepository = ModelCatalogRepositoryHolder.get(context)
-            val llmBootstrap = SessionLlmBootstrapper.create(
-                    config = config,
-                    catalogRepository = catalogRepository,
-                    context = context,
-                    authStore = authStore,
-                    baseUrlOverrides = baseUrlOverrides,
-                    catalogSnapshot = catalogSnapshot,
-            )
-            val modelCatalog = llmBootstrap.modelCatalog
-            val llmClientFactory = llmBootstrap.llmClientFactory
-            val llmClient: LLMClient = llmBootstrap.llmClient
-            Log.d(TAG, "Created LLMClient: ${llmClient.javaClass.simpleName}")
 
             val skillsDir = java.io.File(context.filesDir, "skills")
             installBundledAgentSkills(context, skillsDir)
@@ -163,13 +109,8 @@ class SessionServices internal constructor(
                     bridge = TermuxBridgeManagerSessionBridge(termuxManager),
                     termuxShellEnabled = settingsStore.termuxShellEnabled.value
             )
-            // Merge user-pref tool exclusions (e.g. browser_script when off) into the canonical
-            // SessionConfig.excludedTools so EVERY downstream resolver sees the same gated set —
-            // bootstrapper for tool registration, SessionAgentRunner for the LLM allowlist, and
-            // any future readers of services.config. Without this, the runner would re-resolve
-            // from the pre-merge config and re-expose the gated tool to the LLM.
             val effectiveExcludedTools = config.excludedTools +
-                    defaultToolsExcludedByPref(settingsStore.browserScriptEnabled.value)
+                if (settingsStore.browserScriptEnabled.value) emptySet() else setOf(ToolName.BrowserScript.raw)
             val effectiveConfig =
                     if (effectiveExcludedTools == config.excludedTools) config
                     else config.copy(excludedTools = effectiveExcludedTools)
@@ -177,8 +118,6 @@ class SessionServices internal constructor(
                 approvalMode = effectiveConfig.approvalMode,
                 appClassifier = appClassifier,
                 agentSkillManager = agentSkillManager,
-                agentRoleDef = AgentDefRegistry.main,
-                delegatableRoleDefs = AgentDefRegistry.delegatableRoles(),
                 termuxSnapshot = termuxSnapshot,
                 excludedTools = effectiveConfig.excludedTools,
                 context = context.applicationContext,
@@ -223,9 +162,6 @@ class SessionServices internal constructor(
                     appClassifier = appClassifier,
                     platform = platform,
                     config = effectiveConfig,
-                    llmClient = llmClient,
-                    modelCatalog = modelCatalog,
-                    llmClientFactory = llmClientFactory,
                     traceRecorder = traceRecorder,
                     recordingService = recordingService,
                     browserSessionManager = browserSessionManager,
@@ -348,9 +284,6 @@ class SessionServices internal constructor(
             appClassifier: AppClassifier = this.appClassifier,
             platform: AndroidPlatform = this.platform,
             config: SessionConfig = this.config,
-            llmClient: LLMClient = this.llmClient,
-            modelCatalog: ModelCatalog = this.modelCatalog,
-            llmClientFactory: LLMClientFactory = this.llmClientFactory,
             traceRecorder: TraceRecorder = this.traceRecorder,
             recordingService: SessionRecordingService = this.recordingService,
             browserSessionManager: BrowserSessionManager? = this.browserSessionManager,
@@ -370,9 +303,6 @@ class SessionServices internal constructor(
                 appClassifier = appClassifier,
                 platform = platform,
                 config = config,
-                llmClient = llmClient,
-                modelCatalog = modelCatalog,
-                llmClientFactory = llmClientFactory,
                 traceRecorder = traceRecorder,
                 recordingService = recordingService,
                 browserSessionManager = browserSessionManager,
@@ -400,8 +330,6 @@ class SessionServices internal constructor(
         val failures = mutableListOf<CleanupFailure>()
         runStep("browserSessionManager.close", failures) { browserSessionManager?.close() }
         runStep("platform.stop", failures) { platform.stop() }
-        runStep("llmClient.cleanup", failures) { llmClient.cleanup() }
-        runStep("llmClientFactory.cleanupAll", failures) { llmClientFactory.cleanupAll() }
         // Flush/close trace last so we still capture teardown artifacts if needed
         if (externalDriver) {
             Log.d(TAG, "External session trace recorder stays owned by the caller")

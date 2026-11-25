@@ -102,7 +102,7 @@ class SessionCheckpointCoordinatorTest {
         assertThat(snapshot.lastTaskOutcome).isEqualTo("GOAL_ACHIEVED")
         assertThat(snapshot.lastCheckpointAt).isAtLeast(beforeMs)
         assertThat(snapshot.lastCheckpointAt).isAtMost(afterMs)
-        assertThat(snapshot.config.mainModel).isEqualTo(SessionConfig().mainModel)
+        assertThat(snapshot.config.mainModel).isEqualTo("external")
     }
 
     @Test

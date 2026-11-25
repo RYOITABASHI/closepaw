@@ -6,10 +6,7 @@ import ai.closepaw.mcp.McpBackend
 import ai.closepaw.mcp.McpHandler
 import ai.closepaw.mcp.McpHttpRequest
 import ai.closepaw.mcp.McpHttpServer
-import ai.closepaw.mcp.McpMainCall
 import ai.closepaw.mcp.McpRunRegistry
-import ai.closepaw.mcp.reconcileLateStart
-import ai.closepaw.mcp.stopTargetsLiveSession
 import ai.closepaw.platform.virtualdisplay.DisplayTask
 import ai.closepaw.platform.virtualdisplay.MainDisplayHandover
 import ai.closepaw.platform.virtualdisplay.MainDisplayReconcileOutcome
@@ -99,36 +96,6 @@ class ShellyBackgroundRunTest {
         assertThat(fallbackRan).isTrue()
         assertThat(barrier.outstanding).isEqualTo(0)
         assertThat(barrier.awaitClear(1_000)).isTrue()
-    }
-
-    @Test
-    fun `untrusted caller is ignored even with a valid action and goal`() {
-        val req = ShellyBackgroundRun.parseRequest(
-            ShellyBackgroundRun.ACTION_RUN_GOAL, "open chrome", callerVerified = false, allowMainDisplay = false,
-        )
-        assertThat(req).isNull()
-    }
-
-    @Test
-    fun `wrong action is ignored even for a verified caller`() {
-        val req = ShellyBackgroundRun.parseRequest(
-            "android.intent.action.VIEW", "open chrome", callerVerified = true, allowMainDisplay = false,
-        )
-        assertThat(req).isNull()
-    }
-
-    @Test
-    fun `missing or blank goal is ignored`() {
-        assertThat(ShellyBackgroundRun.parseRequest(ShellyBackgroundRun.ACTION_RUN_GOAL, null, true, false)).isNull()
-        assertThat(ShellyBackgroundRun.parseRequest(ShellyBackgroundRun.ACTION_RUN_GOAL, "   ", true, false)).isNull()
-    }
-
-    @Test
-    fun `verified request is accepted, trimmed and length-capped`() {
-        val long = " " + "x".repeat(ShellyBackgroundRun.MAX_GOAL_CHARS + 10) + " "
-        val req = ShellyBackgroundRun.parseRequest(ShellyBackgroundRun.ACTION_RUN_GOAL, long, true, true)!!
-        assertThat(req.goal.length).isEqualTo(ShellyBackgroundRun.MAX_GOAL_CHARS)
-        assertThat(req.allowMainDisplay).isTrue()
     }
 
     // ── Sender identity (API 34+) ──
@@ -1299,19 +1266,9 @@ class ShellyBackgroundRunTest {
     private val mcpToken = "a".repeat(64)
 
     private class FakeMcpBackend(private val registry: McpRunRegistry) : McpBackend {
-        var refuse: McpBackend.StartResult.Refused? = null
-        val started = mutableListOf<String>()
         val stopRequests = mutableListOf<String>()
         /** Simulates AgentService: a stop request ends the session -> tracker finishes STOPPED. */
         var stopFinishesRun = true
-
-        override fun startRun(goal: String): McpBackend.StartResult {
-            refuse?.let { return it }
-            val handle = registry.issue()
-            registry.markRunning(handle)
-            started += goal
-            return McpBackend.StartResult.Started(handle)
-        }
 
         override fun stopRun(runHandle: String): Boolean {
             stopRequests += runHandle
@@ -1475,7 +1432,6 @@ class ShellyBackgroundRunTest {
             val res = f.handler.handle(mcpRequest(rpc("tools/call", """{"name":"$tool","arguments":{}}"""), session = session))
             assertThat(res.body).contains("-32602")
         }
-        assertThat(f.backend.started).isEmpty()
     }
 
     @Test
@@ -1528,46 +1484,10 @@ class ShellyBackgroundRunTest {
     }
 
     @Test
-    fun `mcp run_goal, get_run_result and audit lines`() {
-        val f = McpFixture(mcpToken)
-        val session = f.initialize()
-        val handle = f.callTool(session, "run_goal", """{"goal":"open Settings"}""").toolData()["runHandle"]!!.jsonPrimitive.content
-        assertThat(f.backend.started).containsExactly("open Settings")
-
-        val running = f.callTool(session, "get_run_result", """{"runHandle":"$handle","waitMs":10}""").toolData()
-        assertThat(running["status"]!!.jsonPrimitive.content).isEqualTo("running")
-
-        f.registry.complete(handle, McpRunRegistry.Status.COMPLETED, "opened")
-        val done = f.callTool(session, "get_run_result", """{"runHandle":"$handle","waitMs":999999}""").toolData()
-        assertThat(done["status"]!!.jsonPrimitive.content).isEqualTo("completed")
-        assertThat(done["summary"]!!.jsonPrimitive.content).isEqualTo("opened")
-
-        assertThat(f.callTool(session, "run_goal", """{"goal":"  "}""")["isError"]!!.jsonPrimitive.boolean).isTrue()
-        f.backend.refuse = McpBackend.StartResult.Refused("BUSY", "ClosePaw is busy with another task")
-        val refused = f.callTool(session, "run_goal", """{"goal":"x"}""")
-        assertThat(refused.toolText()).isEqualTo("Error: [BUSY] ClosePaw is busy with another task")
-
-        val unknown = f.callTool(session, "get_run_result", """{"runHandle":"nope"}""")
-        assertThat(unknown["isError"]!!.jsonPrimitive.boolean).isTrue()
-
-        val status = f.callTool(session, "closepaw_status", "{}").toolData()
-        assertThat(status["serverOn"]!!.jsonPrimitive.boolean).isTrue()
-        assertThat(status["activeRuns"]!!.jsonPrimitive.int).isEqualTo(0)
-
-        // One line per tool call, with tool, handle and outcome — and never the goal text.
-        val toolLines = f.audit.filter { it.startsWith("mcp tool=") }
-        assertThat(toolLines).hasSize(7)
-        assertThat(toolLines[0]).isEqualTo("mcp tool=run_goal handle=$handle outcome=started")
-        assertThat(toolLines[2]).isEqualTo("mcp tool=get_run_result handle=$handle outcome=completed")
-        assertThat(toolLines[4]).isEqualTo("mcp tool=run_goal handle=- outcome=refused:BUSY")
-        assertThat(f.audit.none { "open Settings" in it }).isTrue()
-    }
-
-    @Test
     fun `mcp stop_run propagates to the run and the poll sees cancelled`() {
         val f = McpFixture(mcpToken)
         val session = f.initialize()
-        val handle = f.callTool(session, "run_goal", """{"goal":"g"}""").toolData()["runHandle"]!!.jsonPrimitive.content
+        val handle = f.registry.issue().also { f.registry.markRunning(it) }
 
         val stop = f.callTool(session, "stop_run", """{"runHandle":"$handle"}""").toolData()
         assertThat(f.backend.stopRequests).containsExactly(handle)
@@ -1580,23 +1500,6 @@ class ShellyBackgroundRunTest {
         val again = f.callTool(session, "stop_run", """{"runHandle":"$handle"}""").toolData()
         assertThat(again["stopRequested"]!!.jsonPrimitive.boolean).isFalse()
         assertThat(f.backend.stopRequests).hasSize(1)
-    }
-
-    @Test
-    fun `mcp runs are halted by STOP-ALL through the shared tracker`() {
-        // STOP-ALL / notification Stop end the session (Op.Shutdown -> SessionCompleted). The MCP
-        // run shares the Shelly tracker, whose terminal state AgentService hands to the registry.
-        val registry = McpRunRegistry()
-        val handle = registry.issue()
-        registry.markRunning(handle)
-        val t = tracker()
-        t.onEvent(screen("com.android.settings"))
-        t.onEvent(SessionCompleted(sid, 0L, SessionEndReason.USER_STOPPED))
-        assertThat(t.isFinished).isTrue()
-        // MCP runs carry no Shelly correlation: nothing would be sent to Shelly.
-        assertThat(t.claimResult(0L)).isNull()
-        McpRunStatus.complete(registry, handle, t.state as ShellyRunState.Finished)
-        assertThat(registry.await(handle, 0)!!.status).isEqualTo(McpRunRegistry.Status.CANCELLED)
     }
 
     @Test
@@ -2301,97 +2204,26 @@ class ShellyBackgroundRunTest {
 
     // ── Gate fix round 2: the start choke point is AgentSession's platform start (every path) ──
 
-    /**
-     * A session as MainActivity / onboarding / AgentService create it (AgentSession), whose
-     * platform start is recorded and then fails, so the test ends at the platform start without
-     * running an agent.
-     */
-    private fun sessionRecordingPlatformStart(scope: kotlinx.coroutines.CoroutineScope, log: MutableList<String>):
-            Pair<ai.closepaw.session.AgentSession, ai.closepaw.platform.AndroidPlatform> {
+    @Test
+    fun `external session starts and shuts down with only platform and session services`() = kotlinx.coroutines.runBlocking {
         val platform = mockk<ai.closepaw.platform.AndroidPlatform>(relaxed = true)
-        coEvery { platform.start() } answers {
-            log += "platform start"
-            throw IllegalStateException("test: stop at the platform start")
-        }
         val services = mockk<ai.closepaw.session.SessionServices>(relaxed = true)
         every { services.platform } returns platform
-        val session = ai.closepaw.session.AgentSession.createWithServices(
+        every { services.historyManager } returns ai.closepaw.history.HistoryManager()
+        every { services.sessionState } returns ai.closepaw.session.AgentSessionState()
+        val session = ai.closepaw.session.AgentSession(
+            sessionId = ai.closepaw.protocol.SessionId.generate(),
             config = ai.closepaw.protocol.SessionConfig(),
-            service = mockk<android.accessibilityservice.AccessibilityService>(relaxed = true),
-            scope = scope,
+            scope = this,
             services = services,
         )
-        return session to platform
-    }
 
-    @Test
-    fun `wiring - a session's first task does not start its platform while a replaced teardown is running`() = runTest {
-        val log = mutableListOf<String>()
-        // E.g. MainActivity created this session (observeExternalSession) while a Shelly
-        // replacement's old teardown is still restoring / handing over display-0 tasks.
-        val (session, _) = sessionRecordingPlatformStart(backgroundScope, log)
-        val oldTeardown = Job()
-        ReplacedSessionShutdownBarrier.process.add(oldTeardown, owner = Any())
-        try {
-            val firstTask = launch { session.submit(ai.closepaw.protocol.Op.UserInput(text = "goal")) }
-            runCurrent()
-            assertThat(log).isEmpty() // the platform has not started: no task can run yet
-            assertThat(firstTask.isCompleted).isFalse()
-            log += "old teardown completed"
-            oldTeardown.complete()
-            advanceUntilIdle()
-            firstTask.join()
-            assertThat(log).containsExactly("old teardown completed", "platform start").inOrder()
-        } finally {
-            oldTeardown.complete()
-        }
-    }
-
-    @Test
-    fun `wiring - a start whose wait times out fails without starting the platform`() = runTest {
-        val log = mutableListOf<String>()
-        val (session, _) = sessionRecordingPlatformStart(backgroundScope, log)
-        val stuckTeardown = Job()
-        ReplacedSessionShutdownBarrier.process.add(stuckTeardown, owner = Any())
-        try {
-            session.submit(ai.closepaw.protocol.Op.UserInput(text = "goal")) // waits the bound out
-            assertThat(log).isEmpty() // failed (bootstrap failure path): never started
-            assertThat(session.state.value).isEqualTo(ai.closepaw.protocol.SessionState.Created)
-            assertThat(ReplacedSessionShutdownBarrier.process.outstanding).isEqualTo(1) // still registered
-        } finally {
-            stuckTeardown.complete()
-        }
-    }
-
-    @Test
-    fun `wiring - a cancelled replaced teardown fails the start instead of permitting it`() = runTest {
-        val log = mutableListOf<String>()
-        val (session, _) = sessionRecordingPlatformStart(backgroundScope, log)
-        val cancelledTeardown = Job()
-        ReplacedSessionShutdownBarrier.process.add(cancelledTeardown, owner = Any())
-        try {
-            cancelledTeardown.cancel() // e.g. ended before its teardown ran
-            session.submit(ai.closepaw.protocol.Op.UserInput(text = "goal"))
-            assertThat(log).isEmpty() // the platform never started
-            assertThat(session.state.value).isEqualTo(ai.closepaw.protocol.SessionState.Created)
-            assertThat(ReplacedSessionShutdownBarrier.process.outstanding).isEqualTo(1)
-        } finally {
-            ReplacedSessionShutdownBarrier.process.discardForTest(cancelledTeardown)
-        }
-    }
-
-    @Test
-    fun `wiring - a session never waits for its own registered teardown`() = runTest {
-        val log = mutableListOf<String>()
-        val (session, platform) = sessionRecordingPlatformStart(backgroundScope, log)
-        val ownTeardown = Job()
-        ReplacedSessionShutdownBarrier.process.add(ownTeardown, owner = platform)
-        try {
-            session.submit(ai.closepaw.protocol.Op.UserInput(text = "goal"))
-            assertThat(log).containsExactly("platform start")
-        } finally {
-            ownTeardown.complete()
-        }
+        session.startForExternalDriver()
+        assertThat(session.state.value).isEqualTo(ai.closepaw.protocol.SessionState.Running)
+        io.mockk.coVerify(exactly = 1) { platform.start() }
+        session.submit(ai.closepaw.protocol.Op.Shutdown)
+        assertThat(session.state.value).isEqualTo(ai.closepaw.protocol.SessionState.Shutdown)
+        io.mockk.coVerify(exactly = 1) { services.cleanup() }
     }
 
     @Test
@@ -2604,117 +2436,6 @@ class ShellyBackgroundRunTest {
         // failure stays a failure, exactly as before build 61).
         assertThat(createWithOptionalFlags(base, 0) { plain += it; -1 }).isEqualTo(-1)
         assertThat(plain).containsExactly(base)
-    }
-
-    // ---- MCP intake: post-and-await with abandon/reconcile on timeout -------------------------
-
-    @Test
-    fun `mcp main call - a block posted but not yet run at timeout never executes`() {
-        val queued = mutableListOf<Runnable>()
-        val call = McpMainCall(post = { queued += it }, onTargetThread = { false }, timeoutMs = 50)
-        var ran = false
-        val result = call.call<String> { ran = true; "started" }
-        assertThat(result).isNull()
-        queued.forEach { it.run() } // the looper finally gets to it
-        assertThat(ran).isFalse()
-    }
-
-    @Test
-    fun `mcp main call - a block that completes after the timeout has its created run reconciled`() {
-        val registry = McpRunRegistry()
-        val guards = java.util.concurrent.ConcurrentHashMap<String, String>()
-        val stopped = mutableListOf<String>()
-        val entered = java.util.concurrent.CountDownLatch(1)
-        val release = java.util.concurrent.CountDownLatch(1)
-        var worker: Thread? = null
-        val call = McpMainCall(
-            post = { r -> worker = Thread(r).also { it.start() } },
-            onTargetThread = { false },
-            timeoutMs = 300,
-        )
-        val result = call.call<String>(
-            reconcile = { handle -> reconcileLateStart(handle, registry, guards) { stopped += it } },
-        ) {
-            entered.countDown()
-            release.await(5, java.util.concurrent.TimeUnit.SECONDS)
-            val handle = registry.issue()
-            guards[handle] = "guard-$handle"
-            registry.markRunning(handle)
-            handle
-        }
-        assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue()
-        assertThat(result).isNull() // the client is told TIMEOUT
-        release.countDown()
-        worker!!.join(5_000)
-
-        assertThat(registry.activeCount()).isEqualTo(0)
-        assertThat(guards).isEmpty()
-        assertThat(stopped).hasSize(1)
-        val handle = stopped.single().removePrefix("guard-")
-        val snap = registry.snapshot(handle)!!
-        assertThat(snap.status).isEqualTo(McpRunRegistry.Status.CANCELLED)
-        assertThat(snap.summary).contains("timed out")
-    }
-
-    @Test
-    fun `mcp main call - reconcile of an already finished run is harmless`() {
-        val registry = McpRunRegistry()
-        val guards = java.util.concurrent.ConcurrentHashMap<String, String>()
-        val handle = registry.issue()
-        registry.markRunning(handle)
-        registry.complete(handle, McpRunRegistry.Status.COMPLETED, "done")
-        reconcileLateStart(handle, registry, guards) { error("no guard, nothing to stop") }
-        assertThat(registry.snapshot(handle)!!.status).isEqualTo(McpRunRegistry.Status.COMPLETED)
-    }
-
-    @Test
-    fun `mcp intake stop - a replacement session B is never shut down on behalf of run A`() {
-        val registry = McpRunRegistry()
-        val guards = java.util.concurrent.ConcurrentHashMap<String, String>()
-        val handleA = registry.issue()
-        registry.markRunning(handleA)
-        guards[handleA] = "session-A"
-        val shutdownsDelivered = mutableListOf<String>()
-        val liveSession = "session-B"
-        // Mirrors AgentService.stopIntakeRun: delegate to the live session's Shutdown only on identity.
-        var finishedDirectly = false
-        reconcileLateStart(handleA, registry, guards) { trackerSession ->
-            if (stopTargetsLiveSession(trackerSession, liveSession)) shutdownsDelivered += liveSession
-            else finishedDirectly = true
-        }
-        assertThat(shutdownsDelivered).isEmpty()
-        assertThat(finishedDirectly).isTrue()
-        assertThat(registry.snapshot(handleA)!!.status).isEqualTo(McpRunRegistry.Status.CANCELLED)
-    }
-
-    @Test
-    fun `mcp intake stop - the run's own session or no live session is stopped through shutdown`() {
-        assertThat(stopTargetsLiveSession("session-A", "session-A")).isTrue()
-        assertThat(stopTargetsLiveSession("session-A", null)).isTrue()
-        assertThat(stopTargetsLiveSession("session-A", "session-B")).isFalse()
-    }
-
-    @Test
-    fun `mcp main call - the normal path returns the block result unchanged and does not reconcile`() {
-        var reconciled = false
-        val call = McpMainCall(
-            post = { r -> Thread(r).start() },
-            onTargetThread = { false },
-            timeoutMs = 5_000,
-        )
-        val result = call.call<String>(reconcile = { reconciled = true }) { "run-1" }
-        assertThat(result).isEqualTo("run-1")
-        assertThat(reconciled).isFalse()
-    }
-
-    @Test
-    fun `mcp main call - a block failure is rethrown and on the target thread the block runs inline`() {
-        val failing = McpMainCall(post = { r -> Thread(r).start() }, onTargetThread = { false }, timeoutMs = 5_000)
-        val thrown = runCatching { failing.call<String> { throw IllegalStateException("boom") } }.exceptionOrNull()
-        assertThat(thrown).isInstanceOf(IllegalStateException::class.java)
-
-        val inline = McpMainCall(post = { error("must not post") }, onTargetThread = { true }, timeoutMs = 1)
-        assertThat(inline.call<String> { "inline" }).isEqualTo("inline")
     }
 
     @Test

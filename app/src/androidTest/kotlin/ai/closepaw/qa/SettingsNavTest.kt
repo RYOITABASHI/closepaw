@@ -28,7 +28,7 @@ class SettingsNavTest {
     @Test fun sheet_opens_to_home_page() {
         compose.setContent { TestSettingsSheet() }
 
-        compose.onNodeWithText("LLM & Authentication").assertExists()
+        compose.onAllNodesWithText("LLM & Authentication").assertCountEquals(0)
         compose.onNodeWithText("Agent Behavior").assertExists()
         compose.onNodeWithText("Permissions & Advanced").assertExists()
 
@@ -47,18 +47,18 @@ class SettingsNavTest {
         assertEquals(1, dismissed)
     }
 
-    // S3: Navigate to LLM Auth sub-page, press Back → home restored.
+    // S3: Navigate to Agent Behavior sub-page, press Back → home restored.
     @Test fun back_from_subpage_returns_to_home() {
         compose.setContent { TestSettingsSheet() }
 
         // Enter sub-page via nav row.
-        compose.onNodeWithText("LLM & Authentication").performClick()
-        compose.onNodeWithText("Sign In").assertExists()  // tabs visible = sub-page
+        compose.onNodeWithText("Agent Behavior").performClick()
+        compose.onNodeWithText("Termux Shell").assertExists()
 
         // Press Back icon — "Back" contentDescription exists only on sub-page headers.
         compose.onNodeWithContentDescription("Back").performClick()
 
-        // Home markers back, sub-page tabs gone.
+        // Home markers back, sub-page controls gone.
         compose.onAllNodesWithText("Sign In").assertCountEquals(0)
         compose.onNodeWithText("Agent Behavior").assertExists()
         compose.onNodeWithText("Permissions & Advanced").assertExists()

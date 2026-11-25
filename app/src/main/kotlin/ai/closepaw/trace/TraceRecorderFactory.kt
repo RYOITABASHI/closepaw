@@ -40,9 +40,9 @@ object TraceRecorderFactory {
                 deviceSdkInt = Build.VERSION.SDK_INT,
                 config =
                     TraceRunConfig(
-                        llmBackend = config.llm.backendType.name,
-                        model = config.mainModel,
-                        mainModel = config.mainModel,
+                        llmBackend = "external",
+                        model = "external",
+                        mainModel = "external",
                         debugMode = config.debugMode,
                         screenshotInput = config.perceptionConfig.capturesScreenshot
                     )

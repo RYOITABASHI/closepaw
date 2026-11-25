@@ -8,13 +8,8 @@ import ai.closepaw.history.model.ConversationConfigSnapshot
 import ai.closepaw.history.model.HistoryItemConverter
 import ai.closepaw.history.model.SessionRuntimeSnapshot
 import ai.closepaw.history.model.TodoSnapshot
-import ai.closepaw.llm.LocalLLMConfig
 import ai.closepaw.perception.PerceptionConfig
-import ai.closepaw.protocol.ApprovalMode
-import ai.closepaw.protocol.LLMBackendType
-import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.protocol.SessionConfig
-import ai.closepaw.protocol.SessionLlmConfig
 import ai.closepaw.protocol.SessionState
 
 /**
@@ -86,12 +81,9 @@ internal class SessionCheckpointCoordinator(
 }
 
 internal fun SessionConfig.toConfigSnapshot() = ConversationConfigSnapshot(
-    mainModel = mainModel,
+    mainModel = "external",
     perceptionMode = perceptionConfig.toModeString(),
     platformMode = platformMode.name,
-    llmBackendType = llm.backendType.name,
-    localModelSlug = llm.localConfig?.modelSlug,
-    localQuantizationSlug = llm.localConfig?.quantizationSlug,
     actionDelayMs = actionDelayMs,
     approvalMode = approvalMode.name,
     debugMode = debugMode,
@@ -105,41 +97,3 @@ private fun PerceptionConfig.toModeString(): String = when (this) {
     is PerceptionConfig.ScreenshotOnly -> "screenshot_only"
     is PerceptionConfig.Hybrid -> "hybrid"
 }
-
-internal fun ConversationConfigSnapshot.toSessionConfig(): SessionConfig = SessionConfig(
-    mainModel = mainModel,
-    perceptionConfig = when (perceptionMode) {
-        "screenshot_only" -> PerceptionConfig.ScreenshotOnly()
-        "hybrid" -> PerceptionConfig.Hybrid()
-        else -> PerceptionConfig.AccessibilityOnly
-    },
-    platformMode = try { PlatformMode.valueOf(platformMode) } catch (_: Exception) {
-        Log.w(SNAPSHOT_TAG, "Unknown PlatformMode in snapshot: $platformMode"); PlatformMode.ACCESSIBILITY
-    },
-    llm = SessionLlmConfig(
-        backendType = try {
-            LLMBackendType.valueOf(llmBackendType)
-        } catch (_: Exception) {
-            Log.w(SNAPSHOT_TAG, "Unknown LLMBackendType in snapshot: $llmBackendType")
-            LLMBackendType.OPENAI
-        },
-        localConfig = if (llmBackendType == LLMBackendType.LOCAL.name) {
-            LocalLLMConfig(
-                modelSlug = localModelSlug ?: LocalLLMConfig().modelSlug,
-                quantizationSlug = localQuantizationSlug ?: LocalLLMConfig().quantizationSlug
-            )
-        } else {
-            null
-        }
-    ),
-    actionDelayMs = actionDelayMs,
-    approvalMode = try { ApprovalMode.valueOf(approvalMode) } catch (_: Exception) {
-        Log.w(SNAPSHOT_TAG, "Unknown ApprovalMode in snapshot: $approvalMode"); ApprovalMode.SMART
-    },
-    debugMode = debugMode,
-    traceEnabled = traceEnabled,
-    traceRunId = traceRunId,
-    excludedTools = excludedTools.toSet()
-)
-
-private const val SNAPSHOT_TAG = "ConfigSnapshot"

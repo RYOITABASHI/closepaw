@@ -3,9 +3,6 @@ package ai.closepaw.session
 import android.content.Context
 import android.util.Log
 import ai.closepaw.agent.cognition.skills.AgentSkillManager
-import ai.closepaw.agent.definition.AgentRoleDef
-import ai.closepaw.agent.definition.ResolvedAgentRole
-import ai.closepaw.agent.definition.DefaultRoleDef
 import ai.closepaw.protocol.ApprovalMode
 import ai.closepaw.termux.TermuxBridgeManager
 import ai.closepaw.termux.TermuxCapabilitySnapshot
@@ -41,8 +38,6 @@ internal object SessionToolingBootstrapper {
         approvalMode: ApprovalMode,
         appClassifier: AppClassifier,
         agentSkillManager: AgentSkillManager? = null,
-        agentRoleDef: AgentRoleDef = DefaultRoleDef,
-        delegatableRoleDefs: List<AgentRoleDef> = emptyList(),
         termuxSnapshot: TermuxCapabilitySnapshot = TermuxCapabilitySnapshot.Unavailable,
         excludedTools: Set<String> = emptySet(),
         context: Context? = null,
@@ -59,8 +54,6 @@ internal object SessionToolingBootstrapper {
         )
         val sessionState = AgentSessionState()
         val allowedToolNames = resolveAllowedToolNames(
-            agentRoleDef = agentRoleDef,
-            delegatableRoleDefs = delegatableRoleDefs,
             termuxSnapshot = termuxSnapshot,
             excludedTools = excludedTools
         )
@@ -94,19 +87,20 @@ internal object SessionToolingBootstrapper {
     }
 
     private fun resolveAllowedToolNames(
-        agentRoleDef: AgentRoleDef,
-        delegatableRoleDefs: List<AgentRoleDef>,
         termuxSnapshot: TermuxCapabilitySnapshot,
-        excludedTools: Set<String>
+        excludedTools: Set<String>,
     ): Set<String> {
-        val excludedToolNames = excludedTools.map { ToolName.from(it) }.toSet()
-        val resolvedRoles: List<ResolvedAgentRole> =
-            (listOf(agentRoleDef) + delegatableRoleDefs)
-                .map { it.resolve(termuxSnapshot, excludedToolNames) }
-
-        return resolvedRoles
-            .flatMap { role -> role.allowedTools.map { tool -> tool.raw } }
-            .toSet()
+        val excluded = excludedTools.map { ToolName.from(it).canonical }.toSet()
+        return buildSet {
+            addAll(
+                listOf(
+                    ToolName.CompleteTask, ToolName.MobileAction, ToolName.SystemButton,
+                    ToolName.Wait, ToolName.OpenApp, ToolName.Shell, ToolName.WriteTodos,
+                    ToolName.Scratchpad, ToolName.ActivateSkill,
+                ),
+            )
+            if (termuxSnapshot.available) add(ToolName.TermuxShell)
+        }.filterNot { it.canonical in excluded }.map { it.raw }.toSet()
     }
 
     private fun ToolRegistry.registerBuiltInTools(

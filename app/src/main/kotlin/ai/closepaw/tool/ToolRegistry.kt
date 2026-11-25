@@ -1,7 +1,6 @@
 package ai.closepaw.tool
 
 import android.util.Log
-import com.openai.models.responses.FunctionTool
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -121,31 +120,6 @@ class ToolRegistry {
         }
     }
     
-    /**
-     * Generate FunctionTool objects for the OpenAI Responses API.
-     * 
-     * Note: strict mode is disabled because it requires ALL properties to be
-     * in the required array, which doesn't work well with optional parameters.
-     * 
-     * @param filter Optional filter to include only specific tools
-     * @return List of FunctionTool objects ready for the Responses API
-     */
-    fun generateResponsesApiTools(filter: ((ToolSpec) -> Boolean)? = null): List<FunctionTool> {
-        return tools.values
-            .filter { filter?.invoke(it) != false }
-            .map { tool ->
-                val parameters = FunctionTool.Parameters.builder()
-                    .putAllAdditionalProperties(jsonObjectToJsonValueMap(tool.parameterSchema))
-                    .build()
-                FunctionTool.builder()
-                    .name(tool.name)
-                    .description(tool.description)
-                    .parameters(parameters)
-                    // strict mode disabled - it requires ALL properties in required array,
-                    // which doesn't work with optional parameters like duration_ms
-                    .strict(false)
-                    .build()
-            }
-    }
+
     
 }

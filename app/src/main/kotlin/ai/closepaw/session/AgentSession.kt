@@ -4,11 +4,6 @@ package ai.closepaw.session
 
 import android.accessibilityservice.AccessibilityService
 import android.util.Log
-import ai.closepaw.agent.AgentStopReason
-import ai.closepaw.history.model.CheckpointState
-import ai.closepaw.history.model.HistoryItemConverter
-import ai.closepaw.history.model.SessionRuntimeSnapshot
-import ai.closepaw.history.model.isReloadable
 import ai.closepaw.platform.AndroidPlatform
 import ai.closepaw.platform.OverlayTouchGate
 import ai.closepaw.platform.PlatformFactory
@@ -19,12 +14,8 @@ import ai.closepaw.trace.TraceRecorder
 import ai.closepaw.trace.TraceRecorderFactory
 import ai.closepaw.ui.overlay.visualizer.ActionVisualizerManager
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.DisposableHandle
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -47,41 +38,27 @@ enum class ShutdownCause {
 }
 
 class AgentSession
-private constructor(
+internal constructor(
         val sessionId: SessionId,
         private val config: SessionConfig,
-        private val service: AccessibilityService,
         private val scope: CoroutineScope,
         private val services: SessionServices,
-        internal val externalDriver: Boolean = false,
+        internal val externalDriver: Boolean = true,
 ) {
     companion object {
         private const val TAG = "AgentSession"
 
-        /** Hot Idle timeout: auto-shutdown after 5 minutes of inactivity. */
-        private const val IDLE_TIMEOUT_MS = 300_000L
-
-        /** Re-check interval while the platform holds Hot Idle teardown ([AndroidPlatform.hasDeferredWork]). */
-        private const val IDLE_HOLD_RECHECK_MS = 30_000L
-
-        /** Consecutive reacquirePlatform failures from Idle before forcing shutdown. */
-        private const val MAX_REACQUIRE_FAILURES = 3
-
-        fun create(
+        internal fun createForExternalDriver(
                 config: SessionConfig,
                 service: AccessibilityService,
                 scope: CoroutineScope,
-                authStore: ai.closepaw.auth.AuthStore?,
-                baseUrlOverrides: Map<ai.closepaw.llm.LLMProvider, String> = emptyMap(),
                 visualizer: ActionVisualizerManager? = null,
                 overlayTouchGate: OverlayTouchGate? = null,
-                externalDriver: Boolean = false,
                 onTraceRecorderCreated: ((TraceRecorder) -> Unit)? = null,
                 isDispatchCancelled: (() -> Boolean)? = null,
-                catalogSnapshot: ai.closepaw.llm.ModelCatalog? = null,
         ): AgentSession {
             val sessionId = SessionId.generate()
-            val traceRecorder = TraceRecorderFactory.create(service, config, sessionId, boundedCleanup = externalDriver)
+            val traceRecorder = TraceRecorderFactory.create(service, config, sessionId, boundedCleanup = true)
             onTraceRecorderCreated?.invoke(traceRecorder)
             val appClassifier = AppClassifierHolder.get(service.applicationContext)
             val platform: AndroidPlatform =
@@ -90,167 +67,32 @@ private constructor(
                             service = service,
                             visualizer = visualizer,
                             // External runs trace only their fingerprint-based transcript.
-                            traceRecorder = if (externalDriver) NoopTraceRecorder else traceRecorder,
+                            traceRecorder = NoopTraceRecorder,
                             overlayTouchGate = overlayTouchGate,
                             isPackageBlocked = { appClassifier.classify(it) == AppTier.BLOCKED },
-                            externalDriver = externalDriver,
-                            isDispatchCancelled = isDispatchCancelled.takeIf { externalDriver },
+                            externalDriver = true,
+                            isDispatchCancelled = isDispatchCancelled,
                     )
-            // SessionServices requires an LLM client. Its unloaded local client avoids
-            // cloud credential/model checks for a session that will never run a turn.
-            val bootstrapConfig = if (externalDriver) {
-                config.copy(llm = config.llm.copy(backendType = LLMBackendType.LOCAL))
-            } else config
             val services =
                     SessionServices.create(
-                            config = bootstrapConfig,
+                            config = config,
                             platform = platform,
-                            authStore = if (externalDriver) null else authStore,
-                            baseUrlOverrides = baseUrlOverrides,
                             context = service,
                             scope = scope,
                             traceRecorder = traceRecorder,
                             appClassifier = appClassifier,
-                            externalDriver = externalDriver,
-                            catalogSnapshot = catalogSnapshot,
+                            externalDriver = true,
                     )
 
             return AgentSession(
                     sessionId = sessionId,
                     config = config,
-                    service = service,
                     scope = scope,
                     services = services,
-                    externalDriver = externalDriver,
+                    externalDriver = true,
             )
         }
 
-        fun createWithServices(
-                config: SessionConfig,
-                service: AccessibilityService,
-                scope: CoroutineScope,
-                services: SessionServices
-        ): AgentSession {
-            return AgentSession(
-                    sessionId = SessionId.generate(),
-                    config = config,
-                    service = service,
-                    scope = scope,
-                    services = services
-            )
-        }
-
-        /**
-         * Reload a session from a persisted [SessionRuntimeSnapshot].
-         *
-         * Hydrates HistoryManager, TodoState, ScratchpadState from the snapshot
-         * and resumes the UI recording service. Returns a session in [SessionState.Created]
-         * state — the first [Op.UserInput] triggers platform start as usual.
-         *
-         * @return the reloaded session, or null if the snapshot is invalid.
-         */
-        fun reload(
-                snapshot: SessionRuntimeSnapshot,
-                service: AccessibilityService,
-                scope: CoroutineScope,
-                authStore: ai.closepaw.auth.AuthStore?,
-                baseUrlOverrides: Map<ai.closepaw.llm.LLMProvider, String> = emptyMap(),
-                visualizer: ActionVisualizerManager? = null,
-                overlayTouchGate: OverlayTouchGate? = null,
-        ): AgentSession? {
-            if (snapshot.externalDriver) {
-                Log.w(TAG, "External-driver sessions cannot be reloaded")
-                return null
-            }
-            if (snapshot.schemaVersion != 2) {
-                Log.w(TAG, "Session from previous version — start a new session. (schema=${snapshot.schemaVersion})")
-                return null
-            }
-            if (!snapshot.checkpointState.isReloadable()) {
-                Log.w(
-                    TAG,
-                    "Snapshot state is ${snapshot.checkpointState}, expected IDLE_READY or CLOSED"
-                )
-                return null
-            }
-
-            val config = snapshot.config.toSessionConfig()
-            val sessionId = SessionId(snapshot.sessionId)
-            val traceRecorder = TraceRecorderFactory.create(service, config, sessionId)
-            val appClassifier = AppClassifierHolder.get(service.applicationContext)
-            val platform: AndroidPlatform =
-                    PlatformFactory.create(
-                            config = config,
-                            service = service,
-                            visualizer = visualizer,
-                            traceRecorder = traceRecorder,
-                            overlayTouchGate = overlayTouchGate,
-                            isPackageBlocked = { appClassifier.classify(it) == AppTier.BLOCKED },
-                    )
-            val services =
-                    SessionServices.create(
-                            config = config,
-                            platform = platform,
-                            authStore = authStore,
-                            baseUrlOverrides = baseUrlOverrides,
-                            context = service,
-                            scope = scope,
-                            traceRecorder = traceRecorder,
-                            appClassifier = appClassifier
-                    )
-
-            val historyItems = HistoryItemConverter.fromRecords(snapshot.historyItems)
-            services.historyManager.replaceAll(historyItems)
-
-            val restoredTodos =
-                    snapshot.todos.map { todo ->
-                        val status = try {
-                            TodoStatus.valueOf(todo.status)
-                        } catch (_: IllegalArgumentException) {
-                            Log.w(TAG, "Unknown TodoStatus in snapshot: ${todo.status}")
-                            TodoStatus.PENDING
-                        }
-                        ai.closepaw.protocol.Todo(
-                                description = todo.description,
-                                status = status
-                        )
-                    }
-            services.sessionState.todos.update(restoredTodos)
-
-            try {
-                val scratchpadObj = org.json.JSONObject(snapshot.scratchpadJson)
-                if (scratchpadObj.length() > 0) {
-                    scratchpadObj.keys().forEach { key ->
-                        services.sessionState.scratchpad.write(key, scratchpadObj.get(key))
-                    }
-                } else if (!snapshot.scratchpad.isNullOrEmpty()) {
-                    // Migrate legacy Map<String, String> format
-                    snapshot.scratchpad.forEach { (key, value) ->
-                        services.sessionState.scratchpad.write(key, value)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to parse scratchpad checkpoint, starting with empty scratchpad", e)
-            }
-
-            Log.i(TAG, "Reloaded session $sessionId with ${historyItems.size} history items")
-
-            snapshot.lastTaskOutcome?.let { outcomeName ->
-                try {
-                    services.recordingService.setLastTaskOutcome(TaskOutcome.valueOf(outcomeName))
-                } catch (_: IllegalArgumentException) {
-                    Log.w(TAG, "Unknown TaskOutcome in snapshot: $outcomeName")
-                }
-            }
-
-            return AgentSession(
-                    sessionId = sessionId,
-                    config = config,
-                    service = service,
-                    scope = scope,
-                    services = services
-            )
-        }
     }
 
     fun getServices(): SessionServices = services
@@ -263,16 +105,6 @@ private constructor(
 
     /** Serializes all lifecycle state transitions (user ops, runner completion, idle timeout). */
     private val lifecycleMutex = Mutex()
-
-    private val agentRunner =
-            SessionAgentRunner(
-                    scope = scope,
-                    services = services,
-                    sessionId = sessionId,
-                    config = config,
-                    emitEvent = { event -> emit(event) },
-                    context = service,
-            )
 
     private val checkpointCoordinator = SessionCheckpointCoordinator(
             sessionId = sessionId.value,
@@ -288,21 +120,7 @@ private constructor(
         services.sessionState.todos.setMutationListener { checkpointCoordinator.scheduleCheckpoint(_state.value) }
         services.sessionState.scratchpad.setMutationListener { checkpointCoordinator.scheduleCheckpoint(_state.value) }
 
-        // Route runner completion through the serialized lifecycle path
-        scope.launch {
-            for (reason in agentRunner.completions) {
-                lifecycleMutex.withLock { handleAgentComplete(reason) }
-            }
-        }
     }
-
-    private var currentTaskId: String? = null
-
-    /** Idle timeout job — auto-triggers Shutdown after [IDLE_TIMEOUT_MS] of inactivity. */
-    private var idleTimeoutJob: Job? = null
-
-    /** Consecutive failed reacquirePlatform attempts from Idle. Reset on success. */
-    private var consecutiveReacquireFailures = 0
 
     suspend fun submit(op: Op) {
         Log.d(TAG, "Received Op: $op (current state: ${_state.value})")
@@ -312,7 +130,7 @@ private constructor(
             is Op.Resume -> lifecycleMutex.withLock { handleResume() }
             is Op.Interrupt -> lifecycleMutex.withLock { handleInterrupt() }
             is Op.Shutdown -> lifecycleMutex.withLock { handleShutdown(ShutdownCause.UserRequested) }
-            is Op.UserInput -> lifecycleMutex.withLock { handleUserInput(op) }
+            is Op.UserInput -> Unit
             is Op.Supplement -> handleSupplement(op.text)
             is Op.UserResponse -> handleUserResponse(op.callId, op.response)
             is Op.Approve -> handleApproval(op)
@@ -331,134 +149,6 @@ private constructor(
         }
     }
 
-    private val admissionToken = Any()
-    private var admissionClaimHeld = false
-    @Volatile private var admissionFenced = false
-    private var admissionScopeHandle: DisposableHandle? = null
-
-    internal fun tryClaimInternalAdmission(): Boolean = synchronized(admissionToken) {
-        val scopeJob = scope.coroutineContext[Job]
-        if (externalDriver) return@synchronized false
-        if (admissionFenced) return@synchronized false
-        if (state.value == SessionState.Shutdown || scopeJob?.isActive == false) {
-            return@synchronized !ai.closepaw.app.BrainSessionAdmission.gate.isBrainActive()
-        }
-        if (!ai.closepaw.app.BrainSessionAdmission.tryClaimInternal(admissionToken)) return@synchronized false
-        admissionClaimHeld = true
-        if (admissionScopeHandle == null) {
-            // Replaced sessions can outlive service observation. Retire their claim if
-            // their owning scope ends before they reach normal shutdown.
-            admissionScopeHandle = scopeJob?.invokeOnCompletion {
-                releaseInternalAdmission()
-            }
-        }
-        true
-    }
-
-    internal fun releaseInternalAdmission() = synchronized(admissionToken) {
-        if (admissionClaimHeld) {
-            ai.closepaw.app.BrainSessionAdmission.releaseInternal(admissionToken)
-            admissionClaimHeld = false
-        }
-        admissionScopeHandle?.dispose()
-        admissionScopeHandle = null
-    }
-
-    internal fun terminallyResolveAdmissionForReplacement(): Boolean = synchronized(admissionToken) {
-        admissionFenced = true
-        val claimWasHeld = admissionClaimHeld
-        if (claimWasHeld) releaseInternalAdmission()
-        claimWasHeld
-    }
-
-    private suspend fun handleUserInput(op: Op.UserInput) {
-        if (externalDriver) return
-        when (_state.value) {
-            SessionState.Running, SessionState.Paused, SessionState.TakeoverPending -> {
-                Log.w(TAG, "Rejecting UserInput: Session is busy")
-                emitStatus("⚠️ Agent is busy. Please wait.")
-                return
-            }
-            SessionState.Shutdown -> {
-                Log.w(TAG, "Rejecting UserInput: Session is shut down")
-                return
-            }
-            SessionState.Created -> {
-                if (!tryClaimInternalAdmission()) {
-                    emitBootstrapFailure(op.text, "ClosePaw is busy with another task")
-                    return
-                }
-                cancelIdleTimeout()
-                try {
-                    if (!initializeForFirstTask()) {
-                        emitBootstrapFailure(op.text, "Platform initialization failed")
-                        return
-                    }
-                    if (admissionFenced) {
-                        Log.w(TAG, "Rejecting UserInput: Session was replaced")
-                        return
-                    }
-                    emit(SessionStarted(sessionId = sessionId, timestamp = now(), goal = op.text))
-                    if (admissionFenced) {
-                        Log.w(TAG, "Rejecting UserInput: Session was replaced")
-                        return
-                    }
-                    startTask(op.text)
-                } finally {
-                    if (_state.value == SessionState.Created) scheduleIdleTimeout()
-                }
-                return
-            }
-            SessionState.Idle -> {
-                if (!tryClaimInternalAdmission()) {
-                    emitBootstrapFailure(op.text, "ClosePaw is busy with another task")
-                    return
-                }
-                if (!reacquirePlatform()) {
-                    emitBootstrapFailure(op.text, "Platform start failed")
-                    if (consecutiveReacquireFailures >= MAX_REACQUIRE_FAILURES) {
-                        Log.e(TAG, "Reacquire failed $consecutiveReacquireFailures times; auto-shutdown")
-                        handleShutdown(ShutdownCause.ReacquireFailed)
-                    }
-                    return
-                }
-            }
-        }
-        if (admissionFenced) {
-            Log.w(TAG, "Rejecting UserInput: Session was replaced")
-            return
-        }
-        startTask(op.text)
-    }
-
-    /**
-     * Surface a bootstrap failure as chat-visible events: a [TaskStarted] so the
-     * user's input is preserved in the conversation, followed by a [SessionError]
-     * so the chat UI can render the failure reason.
-     */
-    private suspend fun emitBootstrapFailure(input: String, reason: String) {
-        val failedTaskId = "task-${now()}"
-        emit(
-                TaskStarted(
-                        sessionId = sessionId,
-                        timestamp = now(),
-                        taskId = failedTaskId,
-                        input = input
-                )
-        )
-        emit(
-                SessionError(
-                        sessionId = sessionId,
-                        timestamp = now(),
-                        message = reason
-                )
-        )
-    }
-
-    /**
-     * Starts the platform without a task for an external MCP driver. No turn runs.
-     * Op.Approve still resolves through the tool router.
-     */
     suspend fun startForExternalDriver(): Unit = lifecycleMutex.withLock {
         check(_state.value == SessionState.Created)
         check(externalDriver)
@@ -468,13 +158,13 @@ private constructor(
         _state.value = SessionState.Running
     }
 
-    /** Initialize recording + platform on first [Op.UserInput]. Returns false on failure. */
+    /** Initialize recording and start the platform for the external driver. */
     private suspend fun initializeForFirstTask(): Boolean {
         val recorderSessionId = services.recordingService.getCurrentSessionId()
         if (recorderSessionId == null || recorderSessionId != sessionId.value) {
             services.recordingService.initializeNewSession(
                     sessionId = sessionId.value,
-                    model = config.mainModel
+                    model = "external"
             )
         }
         try {
@@ -488,34 +178,6 @@ private constructor(
         return true
     }
 
-    /** Ensure platform is ready for Hot Idle follow-up. Returns false on failure. */
-    private suspend fun reacquirePlatform(): Boolean {
-        cancelIdleTimeout()
-        try {
-            awaitReplacedTeardowns()
-            services.platform.start() // Idempotent — no-op if already running
-        } catch (e: Exception) {
-            Log.e(TAG, "Platform start failed on follow-up", e)
-            emitStatus("⚠️ Platform start failed: ${e.message}")
-            consecutiveReacquireFailures++
-            scheduleIdleTimeout() // re-arm so session doesn't leak in Idle
-            return false
-        }
-        consecutiveReacquireFailures = 0
-        Log.i(TAG, "Hot Idle follow-up: platform ready")
-        return true
-    }
-
-    /**
-     * The choke point every task start passes, whoever created this session (AgentService,
-     * MainActivity, onboarding) and whoever submitted the input: before the platform starts a
-     * task, wait until no replaced session's teardown is still running
-     * ([ai.closepaw.app.ReplacedSessionShutdownBarrier.process]). Android tasks and display 0
-     * are global, so an overlapping old teardown could move or refront the very task this run
-     * operates. Our own teardown is excluded (it needs [lifecycleMutex], held here). Past the
-     * liveness bound the start FAILS (the callers' platform-start failure path) instead of
-     * proceeding; the teardown stays registered, so the next start waits for it again.
-     */
     private suspend fun awaitReplacedTeardowns() {
         val barrier = ai.closepaw.app.ReplacedSessionShutdownBarrier.process
         val timeoutMs = ai.closepaw.app.ReplacedSessionShutdownBarrier.START_TIMEOUT_MS
@@ -524,174 +186,18 @@ private constructor(
         }
     }
 
-    private suspend fun startTask(text: String) {
-        val taskId = "task-${System.currentTimeMillis()}"
-        currentTaskId = taskId
-        _state.value = SessionState.Running
-
-        emit(
-                TaskStarted(
-                        sessionId = sessionId,
-                        timestamp = now(),
-                        taskId = taskId,
-                        input = text
-                )
-        )
-
-        agentRunner.start(text, taskId)
-
-        Log.i(TAG, "Task started: $taskId, input: $text")
-    }
-
-    /**
-     * Handle agent task completion — transition to Hot Idle.
-     *
-     * Releases agent runner but keeps platform alive (VD apps keep running).
-     * Lightweight conversation state stays in memory for instant follow-up.
-     * Schedules idle timeout for auto-shutdown.
-     */
-    private suspend fun handleAgentComplete(reason: AgentStopReason) {
-        if (_state.value == SessionState.Shutdown) {
-            return
-        }
-
-        val taskId = currentTaskId ?: "unknown"
-        val outcome = reason.toTaskOutcome()
-        val resultMessage =
-                when (reason) {
-                    is AgentStopReason.Error -> reason.message
-                    is AgentStopReason.GoalAchieved -> reason.message
-                    is AgentStopReason.TaskImpossible -> reason.message
-                    else -> null
-                }
-
-        // 1. Flush trace to disk BEFORE signaling completion — guarantees all trace
-        //    events (including session_stopped + run_summary) are on disk before the
-        //    runner detects TaskCompleted in logcat and force-stops the process.
-        try {
-            services.traceRecorder.flush()
-        } catch (e: Exception) {
-            Log.w(TAG, "Trace flush failed (non-fatal): ${e.message}")
-        }
-
-        // 2. Emit TaskCompleted (per-task event, not session-level)
-        emit(
-                TaskCompleted(
-                        sessionId = sessionId,
-                        timestamp = now(),
-                        taskId = taskId,
-                        result = resultMessage,
-                        outcome = outcome,
-                        handoff = buildHandoffIfVd(),
-                )
-        )
-
-        // Platform run-end work (VD: return displaced display-0 tasks) is RECORDED while the
-        // state is not yet Idle, so a follow-up's platform.start() is ordered after it; it runs
-        // once the service has reported the run's result (Shelly runs), otherwise right away.
-        try {
-            services.platform.onTaskEnded()
-        } catch (e: Exception) {
-            Log.w(TAG, "Platform onTaskEnded failed (non-fatal)", e)
-        }
-
-        // 3. Flush checkpoint for process-death recovery
-        val checkpointed = checkpointCoordinator.flushIdleReady()
-        if (!checkpointed) {
-            emitStatus("⚠️ Checkpoint save failed; session kept alive in memory.")
-            Log.e(TAG, "Checkpoint save failed for task $taskId; session kept alive in memory")
-        }
-
-        // 4. Transition to Idle (Hot Idle)
-        _state.value = SessionState.Idle
-        currentTaskId = null
-
-        // 5. Release agent runner only; platform stays alive for follow-up tasks
-        agentRunner.clear()
-
-        // 6. Schedule idle timeout (auto-shutdown after inactivity)
-        scheduleIdleTimeout()
-
-        Log.i(TAG, "Task $taskId completed (outcome=$outcome). Session idle, awaiting follow-up.")
-    }
-
-    private fun AgentStopReason.toTaskOutcome(): TaskOutcome =
-            when (this) {
-                is AgentStopReason.GoalAchieved -> TaskOutcome.GOAL_ACHIEVED
-                is AgentStopReason.UserRequested -> TaskOutcome.USER_STOPPED
-                is AgentStopReason.TaskImpossible -> TaskOutcome.TASK_IMPOSSIBLE
-                is AgentStopReason.Error -> TaskOutcome.ERROR
-            }
-
-    /**
-     * Capture runtime handoff metadata when running a Virtual Display platform; null otherwise.
-     *
-     * VD mode reads the current foreground package so chat can render the explicit
-     * "Open <App>" CTA. Accessibility mode emits no handoff — the agent worked on
-     * the real screen so the user is already there.
-     */
-    private fun buildHandoffIfVd(): CompletionHandoff? {
-        val platform = services.platform
-        if (platform.mode != PlatformMode.VIRTUAL_DISPLAY) return null
-        return buildVdCompletionHandoff(
-                appPackage = platform.getCurrentPackageName(),
-                packageManager = service.packageManager,
-                selfPackage = service.packageName,
-                classifyTier = { services.appClassifier.classify(it) },
-        )
-    }
-
     private suspend fun handleTakeover() {
-        val confirmed = lifecycleMutex.withLock {
-            if (_state.value != SessionState.Running) {
-                Log.w(TAG, "Cannot takeover: not running (state: ${_state.value})")
-                return
-            }
-            val deferred = agentRunner.pause()
-            _state.value = SessionState.TakeoverPending
-            deferred
-        }
-
-        // Wait for the agent to reach a safe pause point (end of current turn).
-        // The mutex is released so other ops can observe TakeoverPending and reject.
-        confirmed.await()
-
         lifecycleMutex.withLock {
-            if (_state.value != SessionState.TakeoverPending) {
-                // State changed while waiting (e.g. agent completed or session shut down)
-                Log.w(TAG, "State changed during takeover await: ${_state.value}")
-                return
-            }
+            if (_state.value != SessionState.Running) return
             _state.value = SessionState.Paused
         }
-
         emit(SessionTakeover(sessionId = sessionId, timestamp = now()))
-
-        Log.i(TAG, "Session takeover (paused): $sessionId")
     }
 
     private suspend fun handleResume() {
-        if (_state.value == SessionState.TakeoverPending) {
-            Log.w(TAG, "Cannot resume: takeover still pending (agent hasn't paused yet)")
-            return
-        }
-        if (_state.value != SessionState.Paused) {
-            Log.w(TAG, "Cannot resume: not paused (state: ${_state.value})")
-            return
-        }
-
-        if (!externalDriver && !tryClaimInternalAdmission()) {
-            emitStatus("⚠️ Agent is busy. Please wait.")
-            return
-        }
-
+        if (_state.value != SessionState.Paused) return
         _state.value = SessionState.Running
-
-        agentRunner.resume()
-
         emit(SessionResumed(sessionId = sessionId, timestamp = now()))
-
-        Log.i(TAG, "Session resumed: $sessionId")
     }
 
     private suspend fun handleSupplement(text: String) {
@@ -730,8 +236,6 @@ private constructor(
 
         services.userResponseChannel.cancel()
 
-        agentRunner.stop()
-        agentRunner.cancelJob()
         Log.i(TAG, "Interrupt requested")
     }
 
@@ -744,64 +248,16 @@ private constructor(
 
         Log.i(TAG, "Shutting down session: $sessionId (cause=$cause)")
 
-        // If a task is still running, emit TaskCompleted(USER_STOPPED) so the
-        // recording service captures the interrupted outcome before shutdown.
-        val priorState = _state.value
-        val runningTaskId = currentTaskId
-        val priorTaskActive = priorState in setOf(
-            SessionState.Running,
-            SessionState.Paused,
-            SessionState.TakeoverPending
-        )
-        if (runningTaskId != null && priorTaskActive) {
-            emit(
-                    TaskCompleted(
-                            sessionId = sessionId,
-                            timestamp = now(),
-                            taskId = runningTaskId,
-                            result = null,
-                            outcome = TaskOutcome.USER_STOPPED,
-                            handoff = buildHandoffIfVd(),
-                    )
-            )
-        }
-
         _state.value = SessionState.Shutdown
-        try {
-            currentTaskId = null
+        if (!checkpointCoordinator.flushClosed()) {
+            Log.w(TAG, "Failed to flush CLOSED checkpoint for $sessionId")
+        }
+        disableCheckpointMutationListeners()
+        services.userResponseChannel.cancel()
 
-            // When shutdown is driven by the idle-timeout job itself, cancelling that job here
-            // cancels the coroutine we are currently running in. The next suspension point
-            // (flushClosed → recordingService IO) then throws CancellationException and the rest of
-            // this method — including services.cleanup() → platform.stop() — never runs. On the
-            // virtual-display platform that leaks the Shizuku VirtualDisplay (and the DeX launcher /
-            // app tasks parked on it) until the process dies. Only cancel the job when we are NOT
-            // that job; otherwise just drop the reference.
-            if (cause == ShutdownCause.IdleTimeout) {
-                idleTimeoutJob = null
-            } else {
-                cancelIdleTimeout()
-            }
-
-            val closedCheckpointSaved = checkpointCoordinator.flushClosed()
-            if (!closedCheckpointSaved) {
-                Log.w(TAG, "Failed to flush CLOSED checkpoint for $sessionId")
-            }
-
-            disableCheckpointMutationListeners()
-            services.userResponseChannel.cancel()
-
-            agentRunner.shutdown()
-            agentRunner.completions.close()
-
-            // Resource release must survive cancellation of the calling coroutine (scope teardown,
-            // idle-timeout job, etc.). Without this a cancelled shutdown leaks the virtual display.
-            val cleanupResult = withContext(NonCancellable) { services.cleanup() }
-            if (cleanupResult is CleanupResult.PartialFailure) {
-                Log.w(TAG, "Cleanup partial failure: ${cleanupResult.failures.joinToString(", ") { it.step }}")
-            }
-        } finally {
-            releaseInternalAdmission()
+        val cleanupResult = withContext(NonCancellable) { services.cleanup() }
+        if (cleanupResult is CleanupResult.PartialFailure) {
+            Log.w(TAG, "Cleanup partial failure: ${cleanupResult.failures.joinToString(", ") { it.step }}")
         }
 
         val reason = when (cause) {
@@ -865,30 +321,6 @@ private constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to emit event: $event", e)
         }
-    }
-
-    // ===== Idle Timeout =====
-
-    /** External sessions use MCP limits and explicit shutdown instead of Hot Idle expiry. */
-    private fun scheduleIdleTimeout() {
-        if (externalDriver) return
-        idleTimeoutJob?.cancel()
-        idleTimeoutJob = scope.launch {
-            delay(IDLE_TIMEOUT_MS)
-            // The platform still has deferred work on its resources (a VD holding the user's
-            // tasks until the screen turns off): keep the session idle until it is done.
-            while (services.platform.hasDeferredWork()) {
-                Log.i(TAG, "Idle timeout expired but the platform holds deferred work; re-checking")
-                delay(IDLE_HOLD_RECHECK_MS)
-            }
-            Log.i(TAG, "Idle timeout expired, auto-shutting down session $sessionId")
-            lifecycleMutex.withLock { handleShutdown(ShutdownCause.IdleTimeout) }
-        }
-    }
-
-    private fun cancelIdleTimeout() {
-        idleTimeoutJob?.cancel()
-        idleTimeoutJob = null
     }
 
     private fun now(): Long = System.currentTimeMillis()

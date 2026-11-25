@@ -44,7 +44,6 @@
     <!-- SettingsHomePage -->
     <string name="settings_home_page_title">Settings</string>
     <string name="settings_home_page_section_behavior">Behavior</string>
-    <string name="settings_home_page_llm_auth">LLM &amp; Authentication</string>
     <string name="settings_home_page_agent_behavior">Agent Behavior</string>
     <string name="settings_home_page_memory">Memory</string>
     <string name="settings_home_page_memory_subtitle">User and device knowledge</string>
@@ -73,8 +72,6 @@
     <string name="settings_home_page_app_access_counts">%1$s · %2$d Allow · %3$d Ask · %4$d Reject</string>
 
     <!-- SettingsModels -->
-    <string name="settings_models_lfm_display_name">LFM 1.2B Instruct (Recommended)</string>
-    <string name="settings_models_lfm_description">On-device inference, ~1.2B parameters, tool-calling support</string>
 
     <!-- SettingsWidgets -->
     <string name="settings_widgets_downloading_model">Downloading model...</string>

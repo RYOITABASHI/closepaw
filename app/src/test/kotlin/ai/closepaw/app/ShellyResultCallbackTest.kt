@@ -19,44 +19,23 @@ class ShellyResultCallbackTest {
     private val reqId = "1760500000000-0123abcd"
     private val nonce = "0123456789abcdef0123456789abcdef"
 
-    // ── Correlation parsing on the goal broadcast ──
+    // ── Correlation parsing ──
 
     @Test
     fun `well-formed req id and nonce become a correlation`() {
-        val req = ShellyBackgroundRun.parseRequest(
-            ShellyBackgroundRun.ACTION_RUN_GOAL, "set an alarm", true, false, reqId, nonce,
-        )!!
-        assertThat(req.correlation).isEqualTo(ShellyBackgroundRun.ResultCorrelation(reqId, nonce))
+        assertThat(ShellyBackgroundRun.parseResultCorrelation(reqId, nonce))
+            .isEqualTo(ShellyBackgroundRun.ResultCorrelation(reqId, nonce))
     }
 
     @Test
-    fun `missing or malformed correlation is dropped without failing the request`() {
-        fun corr(r: String?, n: String?) =
-            ShellyBackgroundRun.parseRequest(ShellyBackgroundRun.ACTION_RUN_GOAL, "g", true, false, r, n)!!.correlation
-        assertThat(corr(null, null)).isNull()
-        assertThat(corr(reqId, null)).isNull()
-        assertThat(corr(null, nonce)).isNull()
-        assertThat(corr("../etc", nonce)).isNull()
-        assertThat(corr(reqId, "ZZ")).isNull()
-        assertThat(corr(reqId, nonce.uppercase())).isNull()
-    }
-
-    @Test
-    fun `an unverified caller never gets a request, correlation or not`() {
-        assertThat(
-            ShellyBackgroundRun.parseRequest(ShellyBackgroundRun.ACTION_RUN_GOAL, "g", false, false, reqId, nonce),
-        ).isNull()
-    }
-
-    @Test
-    fun `result_callback capability only for a started run with a correlation`() {
-        val corr = ShellyBackgroundRun.ResultCorrelation(reqId, nonce)
-        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY, corr)).isTrue()
-        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.RESULT_STARTED_MAIN_DISPLAY, corr)).isTrue()
-        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.RESULT_STARTED_VIRTUAL_DISPLAY, null)).isFalse()
-        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.RESULT_REJECTED, corr)).isFalse()
-        assertThat(ShellyBackgroundRun.reportsResult(ShellyBackgroundRun.Block.BUSY.resultCode, corr)).isFalse()
-        assertThat(ShellyBackgroundRun.RESULT_EXTRA_RESULT_CALLBACK).isEqualTo("result_callback")
+    fun `missing or malformed correlation is dropped`() {
+        val parse = ShellyBackgroundRun::parseResultCorrelation
+        assertThat(parse(null, null)).isNull()
+        assertThat(parse(reqId, null)).isNull()
+        assertThat(parse(null, nonce)).isNull()
+        assertThat(parse("../etc", nonce)).isNull()
+        assertThat(parse(reqId, "ZZ")).isNull()
+        assertThat(parse(reqId, nonce.uppercase())).isNull()
     }
 
     // ── Payload ──

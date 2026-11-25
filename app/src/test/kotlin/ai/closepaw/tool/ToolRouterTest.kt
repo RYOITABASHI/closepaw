@@ -1,8 +1,6 @@
 package ai.closepaw.tool
 
 import com.google.common.truth.Truth.assertThat
-import ai.closepaw.agent.toActionOutcome
-import ai.closepaw.protocol.ActionOutcome
 import ai.closepaw.protocol.ApprovalMode
 import ai.closepaw.protocol.ApprovalDecision
 import ai.closepaw.protocol.AppTier
@@ -155,7 +153,7 @@ class ToolRouterTest {
     }
 
     @Test
-    fun `blocked app policy deny returns cancelled mapped to skipped`() = runTest {
+    fun `blocked app policy deny returns cancelled`() = runTest {
         val registry = ToolRegistry().apply { register(TestToolSpec()) }
         val policy = PolicyEngine(ApprovalMode.AUTO_APPROVE, blockedClassifier("com.bank"))
         val router = ToolRouter(registry, policy)
@@ -165,7 +163,6 @@ class ToolRouterTest {
 
         assertThat(result).isInstanceOf(ToolCallResult.Cancelled::class.java)
         assertThat((result as ToolCallResult.Cancelled).reason).contains("Policy denied")
-        assertThat(result.toActionOutcome()).isEqualTo(ActionOutcome.SKIPPED)
     }
 
     @Test

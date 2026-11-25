@@ -1,8 +1,5 @@
 package ai.closepaw.onboarding
 
-import ai.closepaw.app.AppSettingsState
-import ai.closepaw.auth.AuthStore
-import ai.closepaw.llm.ModelCatalog
 import com.google.common.truth.Truth.assertThat
 import io.mockk.every
 import io.mockk.mockk
@@ -17,7 +14,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
-import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -35,56 +31,22 @@ import org.junit.Test
 class PermissionStepStateTest {
 
     private lateinit var store: OnboardingStore
-    private lateinit var settingsState: AppSettingsState
     private lateinit var permissionMonitor: PermissionStateMonitor
-    private lateinit var authStore: AuthStore
-    private lateinit var demoController: OnboardingDemoController
-    private lateinit var server: MockWebServer
-    private lateinit var catalog: ModelCatalog
 
     @Before
     fun setUp() {
-        server = MockWebServer().apply { start() }
-        val baseUrl = server.url("/v1").toString()
-        val catalogJson = """
-            {
-              "oai-resp":{"display_name":"OAI","provider":"OPENAI_API","api":"response","model_id":"gpt-test","base_url":"$baseUrl"},
-              "oai-codex":{"display_name":"Codex","provider":"OPENAI_CODEX","api":"response","model_id":"gpt-test"},
-              "or-chat":{"display_name":"OR","provider":"OPENROUTER","api":"chat","model_id":"or-test","base_url":"$baseUrl"}
-            }
-        """.trimIndent()
-        catalog = ModelCatalog.fromJson(catalogJson)
-
         store = mockk(relaxed = true)
-        settingsState = mockk(relaxed = true)
         permissionMonitor = mockk(relaxed = true)
-        authStore = mockk(relaxed = true)
-        demoController = mockk(relaxed = true)
-
         every { store.loadOutcomes() } returns StepOutcomes()
-        every { authStore.has(any()) } returns false
         every { permissionMonitor.isAccessibilityEnabled() } returns false
         every { permissionMonitor.isOverlayEnabled() } returns false
         every { permissionMonitor.isBatteryOptimized() } returns false
     }
 
     @After
-    fun tearDown() {
-        try {
-            server.shutdown()
-        } catch (_: Exception) { /* ignore */ }
-        unmockkAll()
-    }
+    fun tearDown() = unmockkAll()
 
-    private fun makeVm(scope: CoroutineScope) = OnboardingViewModel(
-        store = store,
-        settingsState = settingsState,
-        modelCatalog = catalog,
-        permissionMonitor = permissionMonitor,
-        authStore = authStore,
-        demoController = demoController,
-        scope = scope
-    )
+    private fun makeVm(scope: CoroutineScope) = OnboardingViewModel(store, permissionMonitor, scope)
 
     /** Drain pending launches on the scope (mirrors OnboardingViewModelTest.drain). */
     private suspend fun drain(scope: CoroutineScope, testScope: TestScope) {
@@ -126,14 +88,14 @@ class PermissionStepStateTest {
         // All permissions live=true; outcomes default Pending.
         // firstIncompleteStep (live override) skips Accessibility/Overlay (live true) and
         // returns Battery (because outcomes.battery == Pending). Battery's live check is
-        // true → autoAdvance path runs synchronously → advances to ApiKey.
+        // true → autoAdvance path runs synchronously → advances to Complete.
         allPermissionsGranted()
 
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler) + Job())
         val vm = makeVm(scope)
         drain(scope, this)
 
-        assertThat(vm.currentStep).isEqualTo(WizardStep.ApiKey)
+        assertThat(vm.currentStep).isEqualTo(WizardStep.Complete)
         verify { store.saveOutcome(WizardStep.Battery, StepOutcome.Done) }
         assertThat(vm.outcomes.battery).isEqualTo(StepOutcome.Done)
 
@@ -144,20 +106,19 @@ class PermissionStepStateTest {
 
     @Test
     fun `goBack to satisfied permission step lands on Satisfied without advancing`() = runTest {
-        // Start past Battery on ApiKey, with all permissions granted so goBack to Battery
+        // Start past Battery on Complete, with all permissions granted so goBack to Battery
         // re-derives Satisfied.
         allPermissionsGranted()
         every { store.loadOutcomes() } returns StepOutcomes(
             accessibility = StepOutcome.Done,
             overlay = StepOutcome.Done,
             battery = StepOutcome.Done,
-            apiKey = StepOutcome.Pending
         )
 
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler) + Job())
         val vm = makeVm(scope)
         drain(scope, this)
-        assertThat(vm.currentStep).isEqualTo(WizardStep.ApiKey)
+        assertThat(vm.currentStep).isEqualTo(WizardStep.Complete)
 
         vm.goBack()
         drain(scope, this)
@@ -364,7 +325,7 @@ class PermissionStepStateTest {
 
         verify { store.saveOutcome(WizardStep.Battery, StepOutcome.Skipped) }
         assertThat(vm.outcomes.battery).isEqualTo(StepOutcome.Skipped)
-        assertThat(vm.currentStep).isEqualTo(WizardStep.ApiKey)
+        assertThat(vm.currentStep).isEqualTo(WizardStep.Complete)
 
         scope.coroutineContext.job.cancel()
     }
@@ -390,7 +351,7 @@ class PermissionStepStateTest {
 
         verify { store.saveOutcome(WizardStep.Battery, StepOutcome.Skipped) }
         assertThat(vm.outcomes.battery).isEqualTo(StepOutcome.Skipped)
-        assertThat(vm.currentStep).isEqualTo(WizardStep.ApiKey)
+        assertThat(vm.currentStep).isEqualTo(WizardStep.Complete)
 
         scope.coroutineContext.job.cancel()
     }
@@ -438,25 +399,24 @@ class PermissionStepStateTest {
     // ── Guard: onHostResumed outside permission family is a no-op ──
 
     @Test
-    fun `onHostResumed on ApiKey step does not touch permission state`() = runTest {
+    fun `onHostResumed on Complete step does not touch permission state`() = runTest {
         allPermissionsGranted()
         every { store.loadOutcomes() } returns StepOutcomes(
             accessibility = StepOutcome.Done,
             overlay = StepOutcome.Done,
             battery = StepOutcome.Skipped,
-            apiKey = StepOutcome.Pending
         )
 
         val scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler) + Job())
         val vm = makeVm(scope)
         drain(scope, this)
-        assertThat(vm.currentStep).isEqualTo(WizardStep.ApiKey)
+        assertThat(vm.currentStep).isEqualTo(WizardStep.Complete)
         val before = vm.stepState
 
         vm.onHostResumed()
         drain(scope, this)
 
-        assertThat(vm.currentStep).isEqualTo(WizardStep.ApiKey)
+        assertThat(vm.currentStep).isEqualTo(WizardStep.Complete)
         assertThat(vm.stepState).isEqualTo(before)
 
         scope.coroutineContext.job.cancel()

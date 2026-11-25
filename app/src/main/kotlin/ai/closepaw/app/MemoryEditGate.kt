@@ -1,7 +1,6 @@
 package ai.closepaw.app
 
 import ai.closepaw.protocol.SessionState
-import ai.closepaw.session.SessionCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,23 +32,23 @@ import kotlinx.coroutines.flow.stateIn
  * flow has not yet emitted).
  */
 class MemoryEditGate(
-    private val sessionCoordinator: SessionCoordinator,
+    private val currentSessionState: StateFlow<SessionState?>,
     scope: CoroutineScope,
 ) {
     val memoryEditLocked: StateFlow<Boolean> =
-        sessionCoordinator.currentSessionState
+        currentSessionState
             .map { state -> state != null && state != SessionState.Shutdown }
             .stateIn(scope, SharingStarted.Eagerly, initialValue = true)
 
     /**
      * Synchronous, race-free locked check. Reads the underlying
-     * [SessionCoordinator.currentSessionState] directly so callers performing
+     * [currentSessionState] directly so callers performing
      * action-time TOCTOU checks (e.g. inside `withContext(IO)` immediately
      * before `MemoryStore.write`) cannot observe a stale unlocked value
      * during the map-collector window.
      */
     fun isLockedNow(): Boolean {
-        val state = sessionCoordinator.currentSessionState.value
+        val state = currentSessionState.value
         return state != null && state != SessionState.Shutdown
     }
 }

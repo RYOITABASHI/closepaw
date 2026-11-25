@@ -1,6 +1,5 @@
 package ai.closepaw.qa
 
-import ai.closepaw.protocol.LLMBackendType
 import ai.closepaw.protocol.PlatformMode
 import ai.closepaw.tool.AppClassifier
 import ai.closepaw.ui.settings.DisplaySection
@@ -115,11 +114,6 @@ private fun HomeUnderTest(
 ) {
     ClosePawTheme {
         SettingsHomePage(
-            llmBackend = LLMBackendType.OPENAI,
-            selectedModel = "gpt-5.2",
-            modelOptions = listOf("gpt-5.2" to "GPT-5.2"),
-            selectedLocalModel = "LFM2.5-1.2B-Instruct",
-            modelCatalog = testModelCatalog(),
             perceptionMode = "accessibility_only",
             isAccessibilityEnabled = false,
             isOverlayEnabled = false,

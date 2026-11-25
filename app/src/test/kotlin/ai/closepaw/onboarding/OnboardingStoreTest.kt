@@ -7,10 +7,15 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.unmockkAll
 import org.junit.After
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import org.junit.Before
 import org.junit.Test
 
 class OnboardingStoreTest {
+
+    @get:Rule
+    val files = TemporaryFolder()
 
     private lateinit var context: Context
     private lateinit var plainBacking: MutableMap<String, Any?>
@@ -70,15 +75,11 @@ class OnboardingStoreTest {
         store.saveOutcome(WizardStep.Accessibility, StepOutcome.Done)
         store.saveOutcome(WizardStep.Overlay, StepOutcome.Skipped)
         store.saveOutcome(WizardStep.Battery, StepOutcome.Done)
-        store.saveOutcome(WizardStep.ApiKey, StepOutcome.Pending)
-        store.saveOutcome(WizardStep.Demo, StepOutcome.Skipped)
 
         val outcomes = OnboardingStore(context).loadOutcomes()
         assertThat(outcomes.accessibility).isEqualTo(StepOutcome.Done)
         assertThat(outcomes.overlay).isEqualTo(StepOutcome.Skipped)
         assertThat(outcomes.battery).isEqualTo(StepOutcome.Done)
-        assertThat(outcomes.apiKey).isEqualTo(StepOutcome.Pending)
-        assertThat(outcomes.demo).isEqualTo(StepOutcome.Skipped)
     }
 
     @Test
@@ -112,15 +113,37 @@ class OnboardingStoreTest {
     }
 
     @Test
-    fun `migrateIfNeeded reconciles current-schema incomplete user when evidence appears`() {
-        // Simulate: onboarding_prefs is at current schema but never marked complete
-        // (e.g. selective Auto Backup restore wiped this file but auth_store survived).
-        plainBacking["schema_version"] = 2
-        plainBacking["onboarding_completed"] = false
+    fun `a surviving cloud credential alone restores onboarding completion`() {
+        every { context.filesDir } returns files.root
+        every { context.getSharedPreferences("agent_prefs", any()) } returns fakePrefs(mutableMapOf())
+        val credential = """{"type":"api_key","key":"fixture"}"""
+        for (provider in listOf("OPENAI_API", "OPENROUTER")) {
+            val authPrefs = fakePrefs(mutableMapOf(provider to credential))
+            for (schema in listOf(null, 2)) {
+                plainBacking.clear()
+                if (schema != null) {
+                    plainBacking["schema_version"] = schema
+                    plainBacking["onboarding_completed"] = false
+                }
 
-        OnboardingStore(context).migrateIfNeeded { true }
+                val store = OnboardingStore(context) { authPrefs }
 
-        assertThat(plainBacking["onboarding_completed"]).isEqualTo(true)
+                assertThat(store.isCompleted).isTrue()
+                assertThat(plainBacking["onboarding_completed"]).isEqualTo(true)
+            }
+        }
+    }
+
+    @Test
+    fun `only a readable surviving credential counts as prior use`() {
+        every { context.filesDir } returns files.root
+        every { context.getSharedPreferences("agent_prefs", any()) } returns fakePrefs(mutableMapOf())
+        val authPrefs = fakePrefs(mutableMapOf(
+            "OPENAI_CODEX" to """{"type":"oauth","accessToken":"fixture"}""",
+            "OPENAI_API" to """{"type":"api_key","key":null}""",
+        ))
+
+        assertThat(OnboardingStore(context) { authPrefs }.isCompleted).isFalse()
     }
 
     @Test

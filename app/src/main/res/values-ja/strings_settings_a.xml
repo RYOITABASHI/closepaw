@@ -20,8 +20,6 @@
     <string name="agent_skill_toggle_rows_close">閉じる</string>
 
     <!-- ApiKeyFields -->
-    <string name="api_key_fields_hide">非表示</string>
-    <string name="api_key_fields_show">表示</string>
 
     <!-- AppAccessSettingsPage -->
     <string name="app_access_settings_page_title">アプリのアクセス</string>
@@ -88,35 +86,11 @@
     <string name="display_section_grant_shizuku">Shizuku の権限を許可</string>
 
     <!-- LlmAuthDiscoveryUi -->
-    <string name="llm_auth_discovery_ui_search_models">モデルを検索</string>
-    <string name="llm_auth_discovery_ui_no_match">「%1$s」に一致するモデルはありません</string>
-    <string name="llm_auth_discovery_ui_no_models">利用できるモデルがありません</string>
-    <string name="llm_auth_discovery_ui_group_search">(検索結果)</string>
-    <string name="llm_auth_discovery_ui_group_other">(その他)</string>
-    <string name="llm_auth_discovery_ui_selected">選択中</string>
-    <string name="llm_auth_discovery_ui_refreshing">更新中…</string>
-    <string name="llm_auth_discovery_ui_refresh_models">モデル一覧を更新</string>
-    <string name="llm_auth_discovery_ui_last_refreshed">最終更新: %1$s</string>
-    <string name="llm_auth_discovery_ui_refresh_disabled">更新できません: %1$s</string>
 
     <!-- LlmAuthSettingsPage -->
-    <string name="llm_auth_settings_page_title">LLM と認証</string>
     <string name="codex_probe_check">利用可能な Codex モデルを確認</string>
     <string name="codex_probe_checking">Codex モデルを確認中…</string>
     <string name="codex_probe_empty">利用可能な Codex モデルはありません</string>
-    <string name="llm_auth_settings_page_tab_sign_in">サインイン</string>
-    <string name="llm_auth_settings_page_tab_api_key">API キー</string>
-    <string name="llm_auth_settings_page_tab_local">ローカル</string>
-    <string name="llm_auth_settings_page_section_cloud_model">クラウドモデル</string>
-    <string name="llm_auth_settings_page_section_authentication">認証</string>
-    <string name="llm_auth_settings_page_section_provider">プロバイダ</string>
-    <string name="llm_auth_settings_page_base_url">ベース URL</string>
-    <string name="llm_auth_settings_page_custom_model_id">カスタムモデル ID</string>
-    <string name="llm_auth_settings_page_api_key">API キー</string>
-    <string name="llm_auth_settings_page_openai_key">OpenAI キー</string>
-    <string name="llm_auth_settings_page_openrouter_key">OpenRouter キー</string>
-    <string name="llm_auth_settings_page_local_warning">試験運用: ローカルモデルは低速で性能も限られるため、エージェントを安定して動かせません。実際の作業にはクラウドモデルをお使いください。</string>
-    <string name="llm_auth_settings_page_section_local_model">ローカルモデル</string>
 
     <!-- MemoryFileEditor -->
     <string name="memory_file_editor_locked_banner">セッション実行中です。メモリを編集するにはセッションを停止してください。</string>
@@ -148,14 +122,6 @@
     <string name="memory_settings_page_app_memory">アプリメモリ</string>
 
     <!-- OpenAiAuthCard -->
-    <string name="open_ai_auth_card_not_signed_in">サインインしていません</string>
-    <string name="open_ai_auth_card_sign_in">OpenAI でサインイン</string>
-    <string name="open_ai_auth_card_signing_in">サインイン中…</string>
-    <string name="open_ai_auth_card_cancel">キャンセル</string>
-    <string name="open_ai_auth_card_finishing">OpenAI との連携を完了しています…</string>
-    <string name="open_ai_auth_card_signed_in">OpenAI でサインイン済み</string>
-    <string name="open_ai_auth_card_sign_out">サインアウト</string>
-    <string name="open_ai_auth_card_try_again">再試行</string>
 
     <!-- OpenSourceLicensesPage -->
     <string name="open_source_licenses_page_title">オープンソースライセンス</string>

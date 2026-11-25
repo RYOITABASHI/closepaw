@@ -14,7 +14,6 @@ class McpSelfUpdateArgumentsTest {
             expectedToken = { token },
             registry = McpRunRegistry(),
             backend = object : McpBackend {
-                override fun startRun(goal: String): McpBackend.StartResult = error("Unexpected startRun")
                 override fun stopRun(runHandle: String) = false
                 override fun status() = McpBackend.Status("test", false, false)
             },
