@@ -195,7 +195,7 @@ dependencies {
     // OpenAI SDK
 
     // OkHttp — used by CodexResponseClient for raw SSE streaming to chatgpt.com
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.2.1")
     
     
     // Kotlin Serialization for session persistence
