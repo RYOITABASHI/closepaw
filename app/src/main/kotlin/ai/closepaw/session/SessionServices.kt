@@ -133,6 +133,7 @@ class SessionServices internal constructor(
                 traceRecorder: TraceRecorder,
                 appClassifier: AppClassifier,
                 externalDriver: Boolean = false,
+                catalogSnapshot: ModelCatalog? = null,
         ): SessionServices {
             Log.d(TAG, "Creating SessionServices...")
 
@@ -142,7 +143,8 @@ class SessionServices internal constructor(
                     catalogRepository = catalogRepository,
                     context = context,
                     authStore = authStore,
-                    baseUrlOverrides = baseUrlOverrides
+                    baseUrlOverrides = baseUrlOverrides,
+                    catalogSnapshot = catalogSnapshot,
             )
             val modelCatalog = llmBootstrap.modelCatalog
             val llmClientFactory = llmBootstrap.llmClientFactory

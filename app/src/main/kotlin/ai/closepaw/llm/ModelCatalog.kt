@@ -101,6 +101,9 @@ class ModelCatalog private constructor(private val entries: Map<String, ModelEnt
     fun modelsFor(provider: LLMProvider, api: ApiType? = null): List<ModelEntry> =
             entries.values.filter { it.provider == provider && (api == null || it.api == api) }
 
+    internal fun withoutProvider(provider: LLMProvider): ModelCatalog =
+            ModelCatalog(entries.filterValues { it.provider != provider })
+
     /** First (preferred) model for a given provider/API type, or null if none match. */
     fun preferredModelFor(provider: LLMProvider, api: ApiType? = null): ModelEntry? =
             modelsFor(provider, api).firstOrNull()
