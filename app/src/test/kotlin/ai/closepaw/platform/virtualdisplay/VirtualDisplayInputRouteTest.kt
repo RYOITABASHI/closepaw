@@ -51,6 +51,41 @@ class VirtualDisplayInputRouteTest {
         assertEquals(listOf(listOf("input", "-d", "42", "tap", "1", "2")), commands)
     }
 
+    @Test fun flagDisabledUsesTheIncumbentForBothGestures() = runBlocking<Unit> {
+        val commands = mutableListOf<List<String>>()
+        val helper: suspend (TaskHelperInputRequest) -> InputOutcome = { error("Helper disabled") }
+        val injector = VirtualDisplayInputInjector(
+            ShizukuClient(), { 42 }, { command ->
+                commands += command.toList()
+                if (commands.size == 1) 0 else 1
+            },
+            confirmChannel = { true },
+            helper = helper.takeIf { TaskHelperInputPolicy.useHelper(sdkInt = 33, routeEnabled = false) },
+        )
+        assertTrue(injector.injectTap(1, 2) is ActionResult.Success)
+        assertTrue(injector.injectSwipe(UIAction.Swipe(1, 2, 3, 4, 50)) is ActionResult.Failure)
+        assertEquals(listOf(
+            listOf("input", "-d", "42", "tap", "1", "2"),
+            listOf("input", "-d", "42", "swipe", "1", "2", "3", "4", "50"),
+        ), commands)
+    }
+
+    @Test fun unconfirmedSwipeNeedsSuccessfulFallbackForThatCall() = runBlocking<Unit> {
+        var helperCalls = 0
+        val commands = mutableListOf<List<String>>()
+        val injector = VirtualDisplayInputInjector(
+            ShizukuClient(), { 42 }, { command -> commands += command.toList(); 1 }, { true },
+        ) {
+            helperCalls++
+            inputOutcome(singleEvent = false, reflectionOk = true, down = true, up = helperCalls == 2, error = null)
+        }
+        val swipe = UIAction.Swipe(1, 2, 3, 4, 2000)
+        assertTrue(injector.injectSwipe(swipe) is ActionResult.Failure)
+        assertTrue(injector.injectSwipe(swipe) is ActionResult.Success)
+        assertEquals(2, helperCalls)
+        assertEquals(listOf(listOf("input", "-d", "42", "swipe", "1", "2", "3", "4", "2000")), commands)
+    }
+
     @Test fun helperDeathOrChannelLossLeavesTheCallFailed() = runBlocking<Unit> {
         for (failure in listOf(InputOutcome.HELPER_DIED, InputOutcome.CHANNEL_UNAVAILABLE)) {
             val injector = VirtualDisplayInputInjector(ShizukuClient(), { 42 }, { error("Unexpected shell injection") }, { true }) {
@@ -282,6 +317,7 @@ class VirtualDisplayInputRouteTest {
         display = 0
         assertFalse(viewer.onViewerTouch(MotionEvent.ACTION_DOWN, 50f, 75f, 130, 130, 100, 100))
         assertTrue(injector.injectTap(5, 6) is ActionResult.Failure)
+        assertTrue(injector.injectSwipe(UIAction.Swipe(1, 2, 3, 4, 50)) is ActionResult.Failure)
         assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP), requests.map { it.action })
         assertEquals(listOf(100L, 100L), requests.map { it.downTime })
         assertEquals(listOf(100L, 120L), requests.map { it.eventTime })

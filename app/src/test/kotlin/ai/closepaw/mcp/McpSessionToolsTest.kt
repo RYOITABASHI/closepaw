@@ -42,7 +42,7 @@ class McpSessionToolsTest {
     @Test
     fun advertisesSessionToolsOnlyWithAnInjectedOperation() {
         val baseTools = setOf("run_goal", "get_run_result", "stop_run", "closepaw_status")
-        val sessionTools = setOf("start_session", "observe", "tap", "type_text", "system_button",
+        val sessionTools = setOf("start_session", "observe", "tap", "tap_at", "swipe", "type_text", "system_button",
             "open_app", "wait", "finish_run")
         assertEquals(baseTools, tools(handler()).keys)
         val enabled = tools(handler(sessionOps = { _, _ -> error("Unexpected dispatch") }))
@@ -50,6 +50,93 @@ class McpSessionToolsTest {
         for (name in sessionTools) {
             val schema = enabled.getValue(name).getValue("inputSchema").jsonObject
             assertEquals(name, JsonPrimitive(false), schema["additionalProperties"])
+        }
+    }
+
+    @Test
+    fun gestureSchemasDescribeVdPixelsAndRequireEveryArgument() {
+        val enabled = tools(handler(sessionOps = { _, _ -> error("Unexpected dispatch") }))
+        val coordinates = mapOf("tap_at" to listOf("x", "y"), "swipe" to listOf("fromX", "fromY", "toX", "toY"))
+        for ((name, keys) in coordinates) {
+            val schema = enabled.getValue(name).getValue("inputSchema").jsonObject
+            val required = listOf("runHandle") + keys + if (name == "swipe") listOf("durationMs") else emptyList()
+            assertEquals(required.map(::JsonPrimitive), schema.getValue("required").jsonArray)
+            val properties = schema.getValue("properties").jsonObject
+            assertEquals(required.toSet(), properties.keys)
+            for (key in keys) {
+                val property = properties.getValue(key).jsonObject
+                assertEquals(JsonPrimitive("integer"), property["type"])
+                assertEquals(JsonPrimitive(0), property["minimum"])
+                assertTrue(property.getValue("description").jsonPrimitive.content.contains("VD pixels"))
+            }
+            if (name == "swipe") {
+                val duration = properties.getValue("durationMs").jsonObject
+                assertEquals(JsonPrimitive(50), duration["minimum"])
+                assertEquals(JsonPrimitive(2000), duration["maximum"])
+            }
+        }
+    }
+
+    @Test
+    fun gestureArgumentsRefuseNegativeCoordinatesAndOutOfRangeDurations() {
+        val accepted = mutableListOf<JsonObject>()
+        val handler = handler(
+            sessionResults = FakeExternalResults().apply { markRunning("valid") },
+            sessionOps = { _, args ->
+                accepted += args
+                buildJsonObject {}
+            },
+        )
+        val headers = session(handler)
+        val swipe = """"runHandle":"valid","fromX":0,"fromY":1,"toX":2,"toY":3"""
+        val invalid = listOf(
+            "tap_at" to """{"runHandle":"valid","x":-1,"y":0}""",
+            "tap_at" to """{"runHandle":"valid","x":0,"y":-1}""",
+            "tap_at" to """{"runHandle":"valid","x":2147483648,"y":0}""",
+            "tap_at" to """{"runHandle":"valid","x":0.5,"y":0}""",
+            "swipe" to """{$swipe}""",
+            "swipe" to """{$swipe,"durationMs":49}""",
+            "swipe" to """{$swipe,"durationMs":2001}""",
+            "swipe" to """{$swipe,"durationMs":50.5}""",
+            "swipe" to """{$swipe,"durationMs":"50"}""",
+        ) + listOf("fromX", "fromY", "toX", "toY").map { key ->
+            val args = Json.parseToJsonElement("""{$swipe,"durationMs":50}""").jsonObject
+            "swipe" to JsonObject(args + (key to JsonPrimitive(-1))).toString()
+        }
+        for ((name, arguments) in invalid) {
+            assertError("invalid_params", call(handler, headers, name, arguments))
+        }
+        assertTrue(accepted.isEmpty())
+
+        val valid = listOf(
+            "tap_at" to """{"runHandle":"valid","x":0,"y":1}""",
+            "swipe" to """{$swipe,"durationMs":50}""",
+            "swipe" to """{$swipe,"durationMs":2000}""",
+        )
+        for ((name, arguments) in valid) {
+            assertEquals(JsonPrimitive(false), call(handler, headers, name, arguments)["isError"])
+        }
+        assertEquals(valid.map { Json.parseToJsonElement(it.second) }, accepted)
+    }
+
+    @Test
+    fun gesturesPreserveTheStandardSessionRefusals() {
+        val handler = handler(
+            sessionResults = FakeExternalResults().apply {
+                complete("ended", McpRunRegistry.Status.COMPLETED, "done")
+            },
+            sessionOps = { _, _ -> throw AssertionError("Refused handles must not reach dispatch") },
+        )
+        val headers = session(handler)
+        for ((handle, code) in listOf("ended" to "session_ended", "unknown" to "unknown_handle")) {
+            val back = call(handler, headers, "system_button", """{"runHandle":"$handle","button":"back"}""")
+            val tap = call(handler, headers, "tap_at", """{"runHandle":"$handle","x":1,"y":2}""")
+            val swipe = call(handler, headers, "swipe",
+                """{"runHandle":"$handle","fromX":1,"fromY":2,"toX":3,"toY":4,"durationMs":300}""")
+            assertError(code, tap)
+            assertError(code, swipe)
+            assertEquals(back, tap)
+            assertEquals(back, swipe)
         }
     }
 
