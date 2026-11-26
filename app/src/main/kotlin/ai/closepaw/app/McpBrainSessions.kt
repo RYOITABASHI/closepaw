@@ -72,6 +72,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
+import org.json.JSONArray
 import org.json.JSONObject
 
 internal class AgentServiceBrainSessions(
@@ -886,6 +887,23 @@ internal class AgentServiceBrainSessions(
                 params.put("action", "click").put("element_index", index)
                 "mobile_action" to "element:$index"
             }
+            McpHandler.TOOL_TAP_AT -> {
+                val x = McpSessionArgs.coordinate(args, "x")
+                val y = McpSessionArgs.coordinate(args, "y")
+                params.put("action", "click").put("x", x).put("y", y)
+                "mobile_action" to "coordinate:$x,$y"
+            }
+            McpHandler.TOOL_SWIPE -> {
+                val fromX = McpSessionArgs.coordinate(args, "fromX")
+                val fromY = McpSessionArgs.coordinate(args, "fromY")
+                val toX = McpSessionArgs.coordinate(args, "toX")
+                val toY = McpSessionArgs.coordinate(args, "toY")
+                params.put("action", "swipe")
+                    .put("start", JSONArray().put(fromX).put(fromY))
+                    .put("end", JSONArray().put(toX).put(toY))
+                    .put("duration_ms", McpSessionArgs.swipeDurationMs(args))
+                "mobile_action" to "coordinate:$fromX,$fromY->$toX,$toY"
+            }
             McpHandler.TOOL_TYPE_TEXT -> {
                 val value = McpSessionArgs.text(args)
                 params.put("action", "type").put("input_text", value)
@@ -910,6 +928,26 @@ internal class AgentServiceBrainSessions(
         }
         val waiting = name == McpHandler.TOOL_WAIT
         val services = brain.session.getServices()
+        if ((name == McpHandler.TOOL_TAP_AT || name == McpHandler.TOOL_SWIPE) &&
+            services.platform !is VirtualDisplayPlatform
+        ) {
+            throw McpTypedOpError("virtual_display_unavailable", "ClosePaw's virtual display became unavailable")
+        }
+        if (name == McpHandler.TOOL_SWIPE) {
+            val display = services.platform.getDisplayInfo()
+            val start = params.getJSONArray("start")
+            val end = params.getJSONArray("end")
+            val validX = 0 until display.widthPixels
+            val validY = 0 until display.heightPixels
+            if (start.getInt(0) !in validX || start.getInt(1) !in validY ||
+                end.getInt(0) !in validX || end.getInt(1) !in validY
+            ) {
+                throw McpTypedOpError(
+                    "invalid_params",
+                    "Swipe endpoints must be within display bounds ${display.widthPixels}x${display.heightPixels}",
+                )
+            }
+        }
         val callId = UUID.randomUUID().toString()
         val preResult = if (waiting) null else capture(brain)
         if (preResult is CaptureResult.VdLost) displayLost(brain, preResult.reason)

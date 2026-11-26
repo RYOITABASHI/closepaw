@@ -442,6 +442,8 @@ class McpHandler(
         const val TOOL_START_SESSION = "start_session"
         const val TOOL_OBSERVE = "observe"
         const val TOOL_TAP = "tap"
+        const val TOOL_TAP_AT = "tap_at"
+        const val TOOL_SWIPE = "swipe"
         const val TOOL_TYPE_TEXT = "type_text"
         const val TOOL_SYSTEM_BUTTON = "system_button"
         const val TOOL_OPEN_APP = "open_app"
@@ -449,7 +451,7 @@ class McpHandler(
         const val TOOL_FINISH_RUN = "finish_run"
 
         private val SESSION_OP_NAMES = setOf(
-            TOOL_START_SESSION, TOOL_OBSERVE, TOOL_TAP, TOOL_TYPE_TEXT,
+            TOOL_START_SESSION, TOOL_OBSERVE, TOOL_TAP, TOOL_TAP_AT, TOOL_SWIPE, TOOL_TYPE_TEXT,
             TOOL_SYSTEM_BUTTON, TOOL_OPEN_APP, TOOL_WAIT, TOOL_FINISH_RUN,
         )
 
@@ -661,6 +663,23 @@ class McpHandler(
                     put("description", "Index of an element from the latest observe")
                 }
             })
+            add(sessionTool(TOOL_TAP_AT, "Taps a point on the session virtual display.", "x", "y") {
+                put("x", vdCoordinate("Horizontal tap position in VD pixels from the left edge."))
+                put("y", vdCoordinate("Vertical tap position in VD pixels from the top edge."))
+            })
+            add(sessionTool(TOOL_SWIPE, "Swipes between two points on the session virtual display.",
+                "fromX", "fromY", "toX", "toY", "durationMs") {
+                put("fromX", vdCoordinate("Start position in VD pixels from the left edge."))
+                put("fromY", vdCoordinate("Start position in VD pixels from the top edge."))
+                put("toX", vdCoordinate("End position in VD pixels from the left edge."))
+                put("toY", vdCoordinate("End position in VD pixels from the top edge."))
+                putJsonObject("durationMs") {
+                    put("type", "integer")
+                    put("minimum", McpSessionArgs.MIN_SWIPE_DURATION_MS)
+                    put("maximum", McpSessionArgs.MAX_SWIPE_DURATION_MS)
+                    put("description", "Swipe duration in milliseconds.")
+                }
+            })
             add(sessionTool(TOOL_TYPE_TEXT, "Types text into the focused field.", "text") {
                 put("text", stringProp("Text to type."))
                 putJsonObject("clearFirst") { put("type", "boolean") }
@@ -692,6 +711,13 @@ class McpHandler(
                     put("description", "Defaults to done. Use failed to mark the run failed with the summary as the reason.")
                 }
             })
+        }
+
+        private fun vdCoordinate(description: String) = buildJsonObject {
+            put("type", "integer")
+            put("minimum", 0)
+            put("maximum", Int.MAX_VALUE)
+            put("description", description)
         }
 
         private fun sessionTool(

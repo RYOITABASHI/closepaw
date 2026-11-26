@@ -8,6 +8,8 @@ import kotlinx.serialization.json.JsonPrimitive
 object McpSessionArgs {
     internal enum class CorrelationPair { ABSENT, WELL_FORMED, MALFORMED }
 
+    internal const val MIN_SWIPE_DURATION_MS = 50L
+    internal const val MAX_SWIPE_DURATION_MS = 2_000L
     private const val MAX_CORRELATION_CHARS = 128
     private val jsonNumber = Regex("-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 
@@ -15,6 +17,8 @@ object McpSessionArgs {
         McpHandler.TOOL_START_SESSION to setOf("goal", "reqId", "nonce"),
         McpHandler.TOOL_OBSERVE to setOf("runHandle", "includeImage"),
         McpHandler.TOOL_TAP to setOf("runHandle", "elementIndex"),
+        McpHandler.TOOL_TAP_AT to setOf("runHandle", "x", "y"),
+        McpHandler.TOOL_SWIPE to setOf("runHandle", "fromX", "fromY", "toX", "toY", "durationMs"),
         McpHandler.TOOL_TYPE_TEXT to setOf("runHandle", "text", "clearFirst"),
         McpHandler.TOOL_SYSTEM_BUTTON to setOf("runHandle", "button"),
         McpHandler.TOOL_OPEN_APP to setOf("runHandle", "appName"),
@@ -41,6 +45,14 @@ object McpSessionArgs {
                 if (integer(args, "elementIndex", Int.MAX_VALUE.toLong()) == null) {
                     "elementIndex must be an integer between 0 and ${Int.MAX_VALUE}"
                 } else null
+            McpHandler.TOOL_TAP_AT ->
+                coordinateError(args, "x") ?: coordinateError(args, "y")
+            McpHandler.TOOL_SWIPE ->
+                coordinateError(args, "fromX") ?: coordinateError(args, "fromY")
+                    ?: coordinateError(args, "toX") ?: coordinateError(args, "toY")
+                    ?: if (swipeDurationOrNull(args) == null) {
+                        "durationMs must be an integer between $MIN_SWIPE_DURATION_MS and $MAX_SWIPE_DURATION_MS"
+                    } else null
             McpHandler.TOOL_TYPE_TEXT ->
                 stringLimitError("text", string(args, "text"), BrainSessionLimits.MAX_TYPE_TEXT_CHARS)
                     ?: optionalBoolean(args, "clearFirst")
@@ -71,6 +83,9 @@ object McpSessionArgs {
 
     fun runHandle(args: JsonObject): String = checkNotNull(runHandleOrNull(args))
     fun elementIndex(args: JsonObject): Int = checkNotNull(integer(args, "elementIndex", Int.MAX_VALUE.toLong())).toInt()
+    internal fun coordinate(args: JsonObject, key: String): Int =
+        checkNotNull(integer(args, key, Int.MAX_VALUE.toLong())).toInt()
+    internal fun swipeDurationMs(args: JsonObject): Long = checkNotNull(swipeDurationOrNull(args))
     fun text(args: JsonObject): String = checkNotNull(string(args, "text"))
     fun clearFirst(args: JsonObject): Boolean = args["clearFirst"] == JsonPrimitive(true)
     fun button(args: JsonObject): String = checkNotNull(normalizedButton(args))
@@ -120,6 +135,14 @@ object McpSessionArgs {
         return if (value == null || value == JsonPrimitive(true) || value == JsonPrimitive(false)) null
         else "$key must be a boolean"
     }
+
+    private fun coordinateError(args: JsonObject, key: String): String? =
+        if (integer(args, key, Int.MAX_VALUE.toLong()) == null) {
+            "$key must be an integer between 0 and ${Int.MAX_VALUE}"
+        } else null
+
+    private fun swipeDurationOrNull(args: JsonObject): Long? =
+        integer(args, "durationMs", MAX_SWIPE_DURATION_MS)?.takeIf { it >= MIN_SWIPE_DURATION_MS }
 
     private fun integer(args: JsonObject, key: String, max: Long): Long? {
         val token = (args[key] as? JsonPrimitive)?.takeUnless(JsonPrimitive::isString)?.content ?: return null
