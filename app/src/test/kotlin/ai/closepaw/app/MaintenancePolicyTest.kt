@@ -286,8 +286,10 @@ class MaintenancePolicyTest {
             AccessibilityServiceSetting.AGENT,
             aliases = listOf(AccessibilityServiceSetting.AGENT_SHORT),
         )
-        assertEquals(true, command.startsWith("setsid sh -c '"))
-        assertEquals(true, command.endsWith("& echo ${SelfRestartPlan.DISPATCHED_MARKER}"))
+        // Survives ClosePaw's early stream close: double fork, SIGHUP ignored, reply after a wait.
+        assertEquals(true, command.startsWith("( nohup setsid sh -c '"))
+        assertEquals(true, command.endsWith("& ) ; sleep 1; echo ${SelfRestartPlan.DISPATCHED_MARKER}"))
+        assertEquals(true, command.contains("sh -c 'sleep 2; am force-stop"))
         assertEquals(true, command.contains("am force-stop ai.closepaw"))
         assertEquals(true, command.indexOf("am force-stop") < command.indexOf("settings put secure accessibility_enabled 1"))
         assertEquals(false, command.contains("am start"))

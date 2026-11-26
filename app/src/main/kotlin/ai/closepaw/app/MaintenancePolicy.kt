@@ -320,8 +320,8 @@ internal object SelfRestartPlan {
         require(component.matches(componentPattern) && aliases.all { it.matches(componentPattern) })
         val removals = (listOf(component) + aliases).joinToString(" ") { "-e ${shellQuote(it)}" }
         val key = "enabled_accessibility_services"
-        // The short sleep only lets the dispatch reply reach ClosePaw; starts are latched meanwhile.
-        val script = "sleep 1; am force-stop $packageName; sleep 1; " +
+        // The pre-stop sleep lets the dispatch reply reach ClosePaw first; starts are latched meanwhile.
+        val script = "sleep 2; am force-stop $packageName; sleep 1; " +
             "c=${shellQuote(component)}; " +
             "cur=\$(settings get secure $key); [ \"\$cur\" = null ] && cur=; " +
             "rest=\$(printf '%s\\n' \"\$cur\" | tr ':' '\\n' | grep -vx -F $removals -e '' | tr '\\n' ':'); " +
@@ -330,7 +330,12 @@ internal object SelfRestartPlan {
             "else settings delete secure $key; fi; " +
             "sleep 1; settings put secure $key \"\${rest:+\$rest:}\$c\"; " +
             "settings put secure accessibility_enabled 1"
-        return "setsid sh -c ${shellQuote(script)} </dev/null >/dev/null 2>&1 & echo $DISPATCHED_MARKER"
+        // ClosePaw's channel closes the stream as soon as the exit marker arrives, and adbd then
+        // hangs up the session. A plain `setsid … &` child can be hit before it has left the
+        // session (D1, 2026-11-26). Double fork + nohup (SIGHUP ignored) + a short wait before
+        // replying survived every early-close trial on the device.
+        return "( nohup setsid sh -c ${shellQuote(script)} </dev/null >/dev/null 2>&1 & ) ; " +
+            "sleep 1; echo $DISPATCHED_MARKER"
     }
 
     private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
