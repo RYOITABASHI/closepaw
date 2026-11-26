@@ -119,6 +119,15 @@ class ShizukuClient {
         runtimeGateway.removeBinderDeadListener(listener)
     }
 
+    /** Register a listener for a (re)delivered Shizuku binder. */
+    internal fun addBinderReceivedListener(listener: Shizuku.OnBinderReceivedListener) {
+        runtimeGateway.addBinderReceivedListener(listener)
+    }
+
+    internal fun removeBinderReceivedListener(listener: Shizuku.OnBinderReceivedListener) {
+        runtimeGateway.removeBinderReceivedListener(listener)
+    }
+
     /** Register a listener for Shizuku permission request results. */
     fun addRequestPermissionResultListener(listener: Shizuku.OnRequestPermissionResultListener) {
         runtimeGateway.addRequestPermissionResultListener(listener)

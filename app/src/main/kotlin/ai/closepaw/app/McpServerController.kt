@@ -147,7 +147,10 @@ internal object McpServerController {
         if (server?.isRunning == true) return
         token = store.tokenOrCreate()
         val channel = adbChannel ?: AdbShellChannel(app).also { adbChannel = it }
-        val worker = maintenance ?: McpMaintenance(app, channel, runStore).also {
+        val worker = maintenance ?: McpMaintenance(
+            app, channel, runStore,
+            activeRuns = { registry.activeCount() + (brainSessions?.activeCount() ?: 0) },
+        ).also {
             maintenance = it
             it.start()
         }
