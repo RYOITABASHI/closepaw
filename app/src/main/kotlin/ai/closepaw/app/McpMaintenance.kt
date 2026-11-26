@@ -34,6 +34,7 @@ internal class McpMaintenance(
     private val channel: AdbShellChannel,
     private val runStore: RunRecoveryStore,
     private val activeRuns: () -> Int = { 0 },
+    private val engageRestartLatch: (holdMs: Long) -> Boolean = { true },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lastRecovery: Long? = null
@@ -50,6 +51,7 @@ internal class McpMaintenance(
     }
     /** Set while a live server is known but this process holds no binder (heal v2 H-2). */
     @Volatile private var unreachableIdentity: ShizukuServerIdentity.Present? = null
+    private var lastTerminalCheckMs: Long? = null
     private val shizukuBinderReceivedListener = Shizuku.OnBinderReceivedListener {
         lastShizukuPing = ShizukuPingSample(true, SystemClock.elapsedRealtime())
         if (unreachableIdentity != null) {
@@ -187,6 +189,11 @@ internal class McpMaintenance(
     private suspend fun healShizukuClaimed() {
         if (awaitShizukuBinder(CONFIRM_DOWN_MS, pollMs = 100L)) return
         val now = SystemClock.elapsedRealtime()
+        if (!ShizukuHealPlan.terminalRecheckDue(
+                terminalRecorded = healPrefs.contains(PREF_TERMINAL_INSTALL_KEY),
+                nowMs = now,
+                lastTerminalCheckMs = lastTerminalCheckMs,
+            )) return
         val plan = ShizukuHealPlan.decide(
             binderAlive = false,
             vdSessionActive = vdBusy(),
@@ -252,9 +259,13 @@ internal class McpMaintenance(
         val route = available.route
         val terminalKey = healPrefs.getString(PREF_TERMINAL_INSTALL_KEY, null)
         if (ShizukuHealPlan.startBlockedByTerminal(terminalKey, available.installKey)) {
+            // No start happened: give the attempt back and space re-probes separately.
+            shizukuAttempts.removeLastOrNull()
+            lastTerminalCheckMs = SystemClock.elapsedRealtime()
             recordHeal("shizuku_start_terminal_skip")
             return
         }
+        lastTerminalCheckMs = null
         val result = channel.execGuarded(
             ShizukuHealPlan.buildHealCommand(route),
             START_TIMEOUT_MS,
@@ -340,6 +351,11 @@ internal class McpMaintenance(
             recordHeal("self_restart_skipped_${decision.code}")
             return
         }
+        // Atomically re-confirm idleness and refuse new session starts until this process dies.
+        if (!engageRestartLatch(SELF_RESTART_HOLD_MS)) {
+            recordHeal("self_restart_skipped_${SelfRestartDecision.SKIP_ACTIVE_RUNS.code}")
+            return
+        }
         // Persist before dispatch: this process will not survive a successful restart.
         healPrefs.edit()
             .putString(PREF_SELF_RESTART_HISTORY, SelfRestartPlan.appendHistory(history, now))
@@ -363,10 +379,16 @@ internal class McpMaintenance(
         }
         if (result?.stdout?.contains(SelfRestartPlan.DISPATCHED_MARKER) == true) {
             recordHeal("self_restart_dispatched")
+            // Keep holding the heal gate (VD starts are deferred) and the start latch until the
+            // detached sequence stops this process. Reaching the end means it did not.
+            delay(SELF_RESTART_HOLD_MS)
+            healPrefs.edit().remove(PREF_SELF_RESTART_PENDING_AT).apply()
+            recordHeal("self_restart_not_executed")
         } else {
             healPrefs.edit().remove(PREF_SELF_RESTART_PENDING_AT).apply()
             recordHeal(if (result == null) "self_restart_aborted" else "self_restart_dispatch_failed")
         }
+        SelfRestartLatch.release()
     }
 
     private fun vdBusy(): Boolean = isVirtualDisplaySessionActive() || ShizukuHealGate.vdActivationInFlight
@@ -570,6 +592,7 @@ internal class McpMaintenance(
         private const val STARTUP_POLL_TIMEOUT_MS = 10_000L
         private const val ROUTE_PROBE_TIMEOUT_MS = 10_000L
         private const val SELF_RESTART_DISPATCH_TIMEOUT_MS = 5_000L
+        private const val SELF_RESTART_HOLD_MS = 30_000L
         private const val SELF_RESTART_VERIFY_WINDOW_MS = 10 * 60_000L
         private const val SELF_RESTART_BINDER_WAIT_MS = 60_000L
         private const val HEAL_PREFS = "mcp_shizuku_heal"

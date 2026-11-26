@@ -150,6 +150,11 @@ internal object McpServerController {
         val worker = maintenance ?: McpMaintenance(
             app, channel, runStore,
             activeRuns = { registry.activeCount() + (brainSessions?.activeCount() ?: 0) },
+            engageRestartLatch = { holdMs ->
+                val now = android.os.SystemClock.elapsedRealtime()
+                brainSessions?.tryEngageSelfRestartLatch(now, holdMs)
+                    ?: true.also { SelfRestartLatch.engage(now, holdMs) }
+            },
         ).also {
             maintenance = it
             it.start()

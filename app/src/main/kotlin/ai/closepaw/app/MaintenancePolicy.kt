@@ -116,6 +116,11 @@ internal enum class ShizukuHealPlan {
         const val DIED_MARKER = "HEAL_DIED"
         const val STARTER_FATAL_MARKER = "HEAL_STARTER_FATAL"
 
+        /** Only Shizuku's own native-library failure is terminal, never another app's crash. */
+        const val TERMINAL_LINK_SIGNATURE =
+            "UnsatisfiedLinkError.*(moe\\.shizuku\\.privileged\\.api|librish\\.so|libshizuku\\.so)"
+        internal const val TERMINAL_RECHECK_INTERVAL_MS = 5 * 60_000L
+
         /**
          * Sets `cp` to Shizuku's codePath and `lib` to an extracted library directory holding
          * libshizuku.so (empty when none). dumpsys is retried because `pm`-backed lookups flake
@@ -176,7 +181,7 @@ internal enum class ShizukuHealPlan {
                 "${startFragment(route)}; " +
                 "sleep 3; pid=\$(pidof shizuku_server 2>/dev/null); " +
                 "if [ -n \"\$pid\" ]; then echo \"$STARTED_MARKER \$pid\"; " +
-                "elif logcat -b crash -d -T \"\$t0\" 2>/dev/null | grep -q 'UnsatisfiedLinkError'; " +
+                "elif logcat -b crash -d -T \"\$t0\" 2>/dev/null | grep -qE '$TERMINAL_LINK_SIGNATURE'; " +
                 "then echo \"$TERMINAL_LINK_MARKER \$cp\"; " +
                 "else echo $DIED_MARKER; fi"
 
@@ -196,6 +201,13 @@ internal enum class ShizukuHealPlan {
             if (DIED_MARKER in lines) return ShizukuStartOutcome.Died(starterFatal = STARTER_FATAL_MARKER in lines)
             return ShizukuStartOutcome.Unparsed
         }
+
+        /**
+         * While a terminal failure is recorded, the install is re-probed at most every
+         * [TERMINAL_RECHECK_INTERVAL_MS] and the probe does not consume start attempts.
+         */
+        fun terminalRecheckDue(terminalRecorded: Boolean, nowMs: Long, lastTerminalCheckMs: Long?): Boolean =
+            !terminalRecorded || lastTerminalCheckMs == null || nowMs - lastTerminalCheckMs >= TERMINAL_RECHECK_INTERVAL_MS
 
         /** A recorded terminal failure blocks starts only while the same install is present. */
         fun startBlockedByTerminal(terminalKey: String?, installKey: String?): Boolean =
@@ -244,6 +256,24 @@ internal enum class SelfRestartDecision(val code: String) {
     SKIP_BUDGET("budget"),
 }
 
+/**
+ * Refuses new MCP session starts while a self restart is pending. Engaged under the session
+ * ownership lock together with the idleness check, so no start can slip in between.
+ */
+internal object SelfRestartLatch {
+    @Volatile private var engagedUntilElapsedMs = 0L
+
+    fun engage(nowElapsedMs: Long, holdMs: Long) {
+        engagedUntilElapsedMs = nowElapsedMs + holdMs
+    }
+
+    fun release() {
+        engagedUntilElapsedMs = 0L
+    }
+
+    fun isEngaged(nowElapsedMs: Long): Boolean = nowElapsedMs < engagedUntilElapsedMs
+}
+
 internal object SelfRestartPlan {
     const val MIN_INTERVAL_MS = 30 * 60_000L
     const val MAX_PER_DAY = 2
@@ -290,7 +320,8 @@ internal object SelfRestartPlan {
         require(component.matches(componentPattern) && aliases.all { it.matches(componentPattern) })
         val removals = (listOf(component) + aliases).joinToString(" ") { "-e ${shellQuote(it)}" }
         val key = "enabled_accessibility_services"
-        val script = "sleep 2; am force-stop $packageName; sleep 1; " +
+        // The short sleep only lets the dispatch reply reach ClosePaw; starts are latched meanwhile.
+        val script = "sleep 1; am force-stop $packageName; sleep 1; " +
             "c=${shellQuote(component)}; " +
             "cur=\$(settings get secure $key); [ \"\$cur\" = null ] && cur=; " +
             "rest=\$(printf '%s\\n' \"\$cur\" | tr ':' '\\n' | grep -vx -F $removals -e '' | tr '\\n' ':'); " +

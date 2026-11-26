@@ -217,6 +217,37 @@ class MaintenancePolicyTest {
         assertEquals(ShizukuStartOutcome.Unparsed, ShizukuHealPlan.parseStartOutcome("info: start.sh begin\n"))
     }
 
+    @Test fun terminalSignatureMatchesOnlyShizukuLibraries() {
+        val signature = Regex(ShizukuHealPlan.TERMINAL_LINK_SIGNATURE)
+        val shizuku = "java.lang.UnsatisfiedLinkError: dlopen failed: library " +
+            "\"/data/app/~~a==/moe.shizuku.privileged.api-b==/base.apk!/lib/arm64-v8a/librish.so\" not found"
+        assertEquals(true, signature.containsMatchIn(shizuku))
+        assertEquals(true, signature.containsMatchIn("java.lang.UnsatisfiedLinkError: couldn't find libshizuku.so"))
+        assertEquals(false, signature.containsMatchIn("java.lang.UnsatisfiedLinkError: dlopen failed: libfoo.so not found"))
+        assertEquals(false, signature.containsMatchIn("moe.shizuku.privileged.api crashed: NullPointerException"))
+        val command = ShizukuHealPlan.buildHealCommand(ShizukuStartRoute.EXTRACTED_LIBS)
+        assertEquals(true, command.contains("grep -qE '${ShizukuHealPlan.TERMINAL_LINK_SIGNATURE}'"))
+    }
+
+    @Test fun terminalStateIsReprobedOnItsOwnScheduleWithoutUsingStartAttempts() {
+        val interval = ShizukuHealPlan.TERMINAL_RECHECK_INTERVAL_MS
+        assertEquals(true, ShizukuHealPlan.terminalRecheckDue(false, 10, 9))
+        assertEquals(true, ShizukuHealPlan.terminalRecheckDue(true, 10, null))
+        assertEquals(false, ShizukuHealPlan.terminalRecheckDue(true, interval - 1, 0))
+        assertEquals(true, ShizukuHealPlan.terminalRecheckDue(true, interval, 0))
+    }
+
+    @Test fun selfRestartLatchRefusesStartsOnlyWhileEngaged() {
+        SelfRestartLatch.release()
+        assertEquals(false, SelfRestartLatch.isEngaged(1_000))
+        SelfRestartLatch.engage(1_000, 30_000)
+        assertEquals(true, SelfRestartLatch.isEngaged(30_999))
+        assertEquals(false, SelfRestartLatch.isEngaged(31_000))
+        SelfRestartLatch.engage(1_000, 30_000)
+        SelfRestartLatch.release()
+        assertEquals(false, SelfRestartLatch.isEngaged(1_001))
+    }
+
     @Test fun terminalFailureBlocksOnlyTheSameInstall() {
         val cp = "/data/app/~~a==/moe.shizuku.privileged.api-b=="
         assertEquals(true, ShizukuHealPlan.startBlockedByTerminal(cp, cp))
