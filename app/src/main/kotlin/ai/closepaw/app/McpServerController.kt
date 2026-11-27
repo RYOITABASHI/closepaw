@@ -147,7 +147,15 @@ internal object McpServerController {
         if (server?.isRunning == true) return
         token = store.tokenOrCreate()
         val channel = adbChannel ?: AdbShellChannel(app).also { adbChannel = it }
-        val worker = maintenance ?: McpMaintenance(app, channel, runStore).also {
+        val worker = maintenance ?: McpMaintenance(
+            app, channel, runStore,
+            activeRuns = { registry.activeCount() + (brainSessions?.activeCount() ?: 0) },
+            engageRestartLatch = { holdMs ->
+                val now = android.os.SystemClock.elapsedRealtime()
+                brainSessions?.tryEngageSelfRestartLatch(now, holdMs)
+                    ?: true.also { SelfRestartLatch.engage(now, holdMs) }
+            },
+        ).also {
             maintenance = it
             it.start()
         }

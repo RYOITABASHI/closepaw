@@ -39,7 +39,34 @@ internal enum class ShizukuHealDisposition {
     PROBE_UNKNOWN,
 }
 
-internal const val SHIZUKU_START_SCRIPT_PATH = "/sdcard/Android/data/moe.shizuku.privileged.api/start.sh"
+internal const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
+internal const val SHIZUKU_START_SCRIPT_PATH = "/sdcard/Android/data/$SHIZUKU_PACKAGE/start.sh"
+
+/**
+ * How the server is started. EXTRACTED_LIBS runs app_process directly with the installer-extracted
+ * native libraries (the starter's `base.apk!/lib` path cannot load DEFLATED libraries).
+ * START_SCRIPT is kept only for installs whose libraries were not extracted.
+ */
+internal enum class ShizukuStartRoute(val code: String) {
+    EXTRACTED_LIBS("extracted_libs"),
+    START_SCRIPT("start_script"),
+}
+
+internal sealed interface ShizukuRouteProbe {
+    /** [installKey] is the Shizuku codePath; it changes whenever the APK is replaced. */
+    data class Available(val route: ShizukuStartRoute, val installKey: String?) : ShizukuRouteProbe
+    data object Missing : ShizukuRouteProbe
+}
+
+internal sealed interface ShizukuStartOutcome {
+    data class Started(val pid: Int) : ShizukuStartOutcome
+    data object IdentityAborted : ShizukuStartOutcome
+    data object RouteGone : ShizukuStartOutcome
+    /** The new server died with the deflated-library signature. Not retryable until the APK changes. */
+    data class TerminalLinkError(val installKey: String?) : ShizukuStartOutcome
+    data class Died(val starterFatal: Boolean) : ShizukuStartOutcome
+    data object Unparsed : ShizukuStartOutcome
+}
 
 internal enum class ShizukuHealPlan {
     NO_OP, START;
@@ -83,20 +110,108 @@ internal enum class ShizukuHealPlan {
             }
         }
 
-        const val START_ROUTE_PROBE_COMMAND =
-            "if [ -f $SHIZUKU_START_SCRIPT_PATH ]; then echo PRESENT; else echo MISSING; fi"
+        const val ROUTE_GONE_MARKER = "HEAL_ROUTE_GONE"
+        const val STARTED_MARKER = "HEAL_STARTED"
+        const val TERMINAL_LINK_MARKER = "HEAL_TERMINAL_LINK"
+        const val DIED_MARKER = "HEAL_DIED"
+        const val STARTER_FATAL_MARKER = "HEAL_STARTER_FATAL"
 
-        fun parseStartRoutePresent(output: String): Boolean? = when (output.trim()) {
-            "PRESENT" -> true
-            "MISSING" -> false
-            else -> null
+        /** Only Shizuku's own native-library failure is terminal, never another app's crash. */
+        const val TERMINAL_LINK_SIGNATURE =
+            "UnsatisfiedLinkError.*(moe\\.shizuku\\.privileged\\.api|librish\\.so|libshizuku\\.so)"
+        internal const val TERMINAL_RECHECK_INTERVAL_MS = 5 * 60_000L
+
+        /**
+         * Sets `cp` to Shizuku's codePath and `lib` to an extracted library directory holding
+         * libshizuku.so (empty when none). dumpsys is retried because `pm`-backed lookups flake
+         * under load (diagnosis 2026-11-23, cause 3).
+         */
+        const val RESOLVE_INSTALL_FRAGMENT: String =
+            "cp=; for i in 1 2 3; do " +
+                "cp=\$(dumpsys package $SHIZUKU_PACKAGE 2>/dev/null | sed -n 's/^ *codePath=//p' | head -n 1); " +
+                "[ -n \"\$cp\" ] && break; sleep 1; done; " +
+                "lib=; case \"\$cp\" in /data/app/*) " +
+                "if [ -f \"\$cp/base.apk\" ]; then for abi in arm64 x86_64 arm x86; do " +
+                "if [ -f \"\$cp/lib/\$abi/libshizuku.so\" ]; then lib=\"\$cp/lib/\$abi\"; break; fi; " +
+                "done; fi;; esac"
+
+        const val START_ROUTE_PROBE_COMMAND: String =
+            "$RESOLVE_INSTALL_FRAGMENT; " +
+                "if [ -n \"\$lib\" ]; then echo \"EXTRACTED \$cp\"; " +
+                "elif [ -f $SHIZUKU_START_SCRIPT_PATH ]; then echo \"SCRIPT \$cp\"; " +
+                "else echo MISSING; fi"
+
+        fun parseStartRoute(output: String): ShizukuRouteProbe? {
+            val value = output.trim()
+            if (value == "MISSING") return ShizukuRouteProbe.Missing
+            val route = when (value.substringBefore(' ')) {
+                "EXTRACTED" -> ShizukuStartRoute.EXTRACTED_LIBS
+                "SCRIPT" -> ShizukuStartRoute.START_SCRIPT
+                else -> return null
+            }
+            if (value.contains('\n')) return null
+            val key = value.substringAfter(' ', "").trim().takeIf { it.startsWith("/data/app/") }
+            if (route == ShizukuStartRoute.EXTRACTED_LIBS && key == null) return null
+            return ShizukuRouteProbe.Available(route, key)
         }
 
-        fun buildHealCommand(startCommand: String): String {
-            require(startCommand == "sh $SHIZUKU_START_SCRIPT_PATH")
-            return "current=\$($IDENTITY_PROBE_COMMAND) || current=; " +
-                "case \"\$current\" in ABSENT) $startCommand;; *) echo $HEAL_ABORT_MARKER;; esac"
+        private fun startFragment(route: ShizukuStartRoute): String = when (route) {
+            // setsid detaches the server from the adb shell session (R14 drill C, measured 2026-11-24).
+            ShizukuStartRoute.EXTRACTED_LIBS ->
+                "[ -n \"\$lib\" ] || { echo $ROUTE_GONE_MARKER; exit 0; }; " +
+                    "{ setsid /system/bin/app_process -Djava.class.path=\"\$cp/base.apk\" " +
+                    "-Dshizuku.library.path=\"\$lib\" /system/bin --nice-name=shizuku_server " +
+                    "rikka.shizuku.server.ShizukuService </dev/null >/dev/null 2>&1 & }"
+            // start.sh exits 0 even when the starter fails, so its output is scanned instead.
+            ShizukuStartRoute.START_SCRIPT ->
+                "[ -f $SHIZUKU_START_SCRIPT_PATH ] || { echo $ROUTE_GONE_MARKER; exit 0; }; " +
+                    "sh $SHIZUKU_START_SCRIPT_PATH </dev/null 2>&1 | grep -q '^fatal:' && echo $STARTER_FATAL_MARKER"
         }
+
+        /**
+         * Re-validates on the device that no server exists, starts one, and reports what happened.
+         * Success is judged by a live server pid (and later the binder), never by an exit code.
+         * A live server is never killed.
+         */
+        fun buildHealCommand(route: ShizukuStartRoute): String =
+            "current=\$($IDENTITY_PROBE_COMMAND) || current=; " +
+                "case \"\$current\" in ABSENT) ;; *) echo $HEAL_ABORT_MARKER; exit 0;; esac; " +
+                "$RESOLVE_INSTALL_FRAGMENT; " +
+                "t0=\$(date '+%m-%d %H:%M:%S.000'); " +
+                "${startFragment(route)}; " +
+                "sleep 3; pid=\$(pidof shizuku_server 2>/dev/null); " +
+                "if [ -n \"\$pid\" ]; then echo \"$STARTED_MARKER \$pid\"; " +
+                "elif logcat -b crash -d -T \"\$t0\" 2>/dev/null | grep -qE '$TERMINAL_LINK_SIGNATURE'; " +
+                "then echo \"$TERMINAL_LINK_MARKER \$cp\"; " +
+                "else echo $DIED_MARKER; fi"
+
+        fun parseStartOutcome(output: String): ShizukuStartOutcome {
+            val lines = output.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
+            if (HEAL_ABORT_MARKER in lines) return ShizukuStartOutcome.IdentityAborted
+            if (ROUTE_GONE_MARKER in lines) return ShizukuStartOutcome.RouteGone
+            lines.firstOrNull { it.startsWith("$STARTED_MARKER ") }?.let { line ->
+                val pid = line.removePrefix("$STARTED_MARKER ").trim().split(Regex("\\s+")).firstOrNull()
+                    ?.toIntOrNull()
+                return if (pid != null && pid > 0) ShizukuStartOutcome.Started(pid) else ShizukuStartOutcome.Unparsed
+            }
+            lines.firstOrNull { it == TERMINAL_LINK_MARKER || it.startsWith("$TERMINAL_LINK_MARKER ") }?.let { line ->
+                val key = line.removePrefix(TERMINAL_LINK_MARKER).trim().takeIf { it.startsWith("/data/app/") }
+                return ShizukuStartOutcome.TerminalLinkError(key)
+            }
+            if (DIED_MARKER in lines) return ShizukuStartOutcome.Died(starterFatal = STARTER_FATAL_MARKER in lines)
+            return ShizukuStartOutcome.Unparsed
+        }
+
+        /**
+         * While a terminal failure is recorded, the install is re-probed at most every
+         * [TERMINAL_RECHECK_INTERVAL_MS] and the probe does not consume start attempts.
+         */
+        fun terminalRecheckDue(terminalRecorded: Boolean, nowMs: Long, lastTerminalCheckMs: Long?): Boolean =
+            !terminalRecorded || lastTerminalCheckMs == null || nowMs - lastTerminalCheckMs >= TERMINAL_RECHECK_INTERVAL_MS
+
+        /** A recorded terminal failure blocks starts only while the same install is present. */
+        fun startBlockedByTerminal(terminalKey: String?, installKey: String?): Boolean =
+            terminalKey != null && installKey != null && terminalKey == installKey
 
         fun shouldDispatch(
             cachedBinderAlive: Boolean,
@@ -127,3 +242,101 @@ private const val ATTEMPT_WINDOW_MS = 60 * 60_000L
 
 internal fun attemptsInLastHour(attempts: Iterable<Long>, nowMs: Long): Int =
     attempts.count { nowMs - it < ATTEMPT_WINDOW_MS }
+
+/**
+ * Heal v2 H-3: last-resort self restart when the Shizuku server is alive but this process never
+ * received its binder (the server only hands binders to apps started after it).
+ */
+internal enum class SelfRestartDecision(val code: String) {
+    DISPATCH("dispatch"),
+    SKIP_ACTIVE_RUNS("active_runs"),
+    SKIP_VD_BUSY("vd_busy"),
+    SKIP_ADB("adb_unavailable"),
+    SKIP_INTERVAL("interval"),
+    SKIP_BUDGET("budget"),
+}
+
+/**
+ * Refuses new MCP session starts while a self restart is pending. Engaged under the session
+ * ownership lock together with the idleness check, so no start can slip in between.
+ */
+internal object SelfRestartLatch {
+    @Volatile private var engagedUntilElapsedMs = 0L
+
+    fun engage(nowElapsedMs: Long, holdMs: Long) {
+        engagedUntilElapsedMs = nowElapsedMs + holdMs
+    }
+
+    fun release() {
+        engagedUntilElapsedMs = 0L
+    }
+
+    fun isEngaged(nowElapsedMs: Long): Boolean = nowElapsedMs < engagedUntilElapsedMs
+}
+
+internal object SelfRestartPlan {
+    const val MIN_INTERVAL_MS = 30 * 60_000L
+    const val MAX_PER_DAY = 2
+    const val DAY_MS = 24 * 60 * 60_000L
+    const val DISPATCHED_MARKER = "SELF_RESTART_DISPATCHED"
+
+    /**
+     * [historyWallMs] is persisted wall-clock time because the process does not survive the
+     * restart. Entries in the future (clock moved back) count as recent, so a clock jump can
+     * only make the gate stricter.
+     */
+    fun decide(
+        activeRuns: Int,
+        vdBusy: Boolean,
+        adbConnected: Boolean,
+        nowWallMs: Long,
+        historyWallMs: List<Long>,
+    ): SelfRestartDecision {
+        val recent = historyWallMs.filter { nowWallMs - it < DAY_MS }
+        return when {
+            activeRuns > 0 -> SelfRestartDecision.SKIP_ACTIVE_RUNS
+            vdBusy -> SelfRestartDecision.SKIP_VD_BUSY
+            !adbConnected -> SelfRestartDecision.SKIP_ADB
+            recent.any { nowWallMs - it < MIN_INTERVAL_MS } -> SelfRestartDecision.SKIP_INTERVAL
+            recent.size >= MAX_PER_DAY -> SelfRestartDecision.SKIP_BUDGET
+            else -> SelfRestartDecision.DISPATCH
+        }
+    }
+
+    fun parseHistory(value: String?): List<Long> =
+        value.orEmpty().split(',').mapNotNull { it.trim().toLongOrNull() }
+
+    fun appendHistory(history: List<Long>, nowWallMs: Long): String =
+        (history.filter { nowWallMs - it < DAY_MS } + nowWallMs).takeLast(MAX_PER_DAY * 2).joinToString(",")
+
+    /**
+     * The manual recovery sequence (force-stop, then rebind accessibility), run in a detached shell
+     * session so it completes after this process dies. Other accessibility services are preserved;
+     * nothing is launched in the foreground.
+     */
+    fun buildCommand(packageName: String, component: String, aliases: List<String> = emptyList()): String {
+        val componentPattern = Regex("[A-Za-z0-9_.]+/[A-Za-z0-9_.\$]+")
+        require(packageName.matches(Regex("[A-Za-z0-9_.]+")))
+        require(component.matches(componentPattern) && aliases.all { it.matches(componentPattern) })
+        val removals = (listOf(component) + aliases).joinToString(" ") { "-e ${shellQuote(it)}" }
+        val key = "enabled_accessibility_services"
+        // The pre-stop sleep lets the dispatch reply reach ClosePaw first; starts are latched meanwhile.
+        val script = "sleep 2; am force-stop $packageName; sleep 1; " +
+            "c=${shellQuote(component)}; " +
+            "cur=\$(settings get secure $key); [ \"\$cur\" = null ] && cur=; " +
+            "rest=\$(printf '%s\\n' \"\$cur\" | tr ':' '\\n' | grep -vx -F $removals -e '' | tr '\\n' ':'); " +
+            "rest=\${rest%:}; " +
+            "if [ -n \"\$rest\" ]; then settings put secure $key \"\$rest\"; " +
+            "else settings delete secure $key; fi; " +
+            "sleep 1; settings put secure $key \"\${rest:+\$rest:}\$c\"; " +
+            "settings put secure accessibility_enabled 1"
+        // ClosePaw's channel closes the stream as soon as the exit marker arrives, and adbd then
+        // hangs up the session. A plain `setsid … &` child can be hit before it has left the
+        // session (D1, 2026-11-26). Double fork + nohup (SIGHUP ignored) + a short wait before
+        // replying survived every early-close trial on the device.
+        return "( nohup setsid sh -c ${shellQuote(script)} </dev/null >/dev/null 2>&1 & ) ; " +
+            "sleep 1; echo $DISPATCHED_MARKER"
+    }
+
+    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+}

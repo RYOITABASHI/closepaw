@@ -124,6 +124,14 @@ internal class ShizukuRuntimeGateway {
                 Shizuku.removeBinderDeadListener(listener)
         }
 
+        fun addBinderReceivedListener(listener: Shizuku.OnBinderReceivedListener) {
+                Shizuku.addBinderReceivedListener(listener)
+        }
+
+        fun removeBinderReceivedListener(listener: Shizuku.OnBinderReceivedListener) {
+                Shizuku.removeBinderReceivedListener(listener)
+        }
+
         fun addRequestPermissionResultListener(
                 listener: Shizuku.OnRequestPermissionResultListener
         ) {

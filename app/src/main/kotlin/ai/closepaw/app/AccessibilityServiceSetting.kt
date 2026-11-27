@@ -2,12 +2,13 @@ package ai.closepaw.app
 
 internal object AccessibilityServiceSetting {
     const val AGENT = "ai.closepaw/ai.closepaw.app.AgentService"
+    const val AGENT_SHORT = "ai.closepaw/.app.AgentService"
 
     fun entries(value: String?): List<String> =
         if (value.isNullOrEmpty() || value == "null") emptyList() else value.split(':')
 
     private fun isAgent(entry: String): Boolean =
-        entry == AGENT || entry == "ai.closepaw/.app.AgentService"
+        entry == AGENT || entry == AGENT_SHORT
 
     fun containsAgent(value: String?): Boolean = entries(value).any(::isAgent)
 

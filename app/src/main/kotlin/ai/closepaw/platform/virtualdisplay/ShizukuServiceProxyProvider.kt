@@ -1,11 +1,54 @@
 package ai.closepaw.platform.virtualdisplay
 
 import android.os.IBinder
+import android.util.Log
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
 
 /** Lazily resolves and caches Shizuku-wrapped system service proxies. */
 internal class ShizukuServiceProxyProvider {
+        companion object {
+                private const val TAG = "ShizukuProxies"
+                private val generation = AtomicLong(0)
+                private val hooksInstalled = AtomicBoolean(false)
+
+                /** Heal v2 H-4: every provider in the process drops its proxies on the next use. */
+                fun invalidateAll() {
+                        generation.incrementAndGet()
+                }
+
+                internal fun currentGeneration(): Long = generation.get()
+
+                /** Registers process-wide binder lifecycle hooks once; any binder change invalidates. */
+                fun installBinderLifecycleHooks() {
+                        if (!hooksInstalled.compareAndSet(false, true)) return
+                        try {
+                                Shizuku.addBinderDeadListener { invalidateAll() }
+                                Shizuku.addBinderReceivedListenerSticky { invalidateAll() }
+                        } catch (t: Throwable) {
+                                hooksInstalled.set(false)
+                                Log.w(TAG, "Binder lifecycle hooks unavailable: ${t.javaClass.simpleName}")
+                        }
+                }
+        }
+
+        init {
+                installBinderLifecycleHooks()
+        }
+
+        @Volatile private var cachedGeneration: Long = generation.get()
+
+        private fun syncGeneration() {
+                val current = generation.get()
+                if (current != cachedGeneration) {
+                        clear()
+                        cachedGeneration = current
+                }
+        }
+
         @Volatile private var cachedDisplayProxy: Any? = null
         @Volatile private var cachedInputProxy: Any? = null
         @Volatile private var cachedActivityTaskProxy: Any? = null
@@ -21,6 +64,7 @@ internal class ShizukuServiceProxyProvider {
         }
 
         fun displayManagerProxy(): Any {
+                syncGeneration()
                 cachedDisplayProxy?.let { return it }
                 val binder =
                         SystemServiceHelper.getSystemService("display")
@@ -33,6 +77,7 @@ internal class ShizukuServiceProxyProvider {
         }
 
         fun inputManagerProxy(): Any {
+                syncGeneration()
                 cachedInputProxy?.let { return it }
                 val binder =
                         SystemServiceHelper.getSystemService("input")
@@ -43,6 +88,7 @@ internal class ShizukuServiceProxyProvider {
         }
 
         fun activityTaskManagerProxy(): Any {
+                syncGeneration()
                 cachedActivityTaskProxy?.let { return it }
                 val binder =
                         SystemServiceHelper.getSystemService("activity_task")
@@ -55,6 +101,7 @@ internal class ShizukuServiceProxyProvider {
         }
 
         fun windowManagerProxy(): Any {
+                syncGeneration()
                 cachedWindowManagerProxy?.let { return it }
                 val binder =
                         SystemServiceHelper.getSystemService("window")
@@ -66,6 +113,7 @@ internal class ShizukuServiceProxyProvider {
 
         /** Shizuku-wrapped IPackageManager for the self-update fallback. */
         fun packageManagerProxy(): Any {
+                syncGeneration()
                 cachedPackageManagerProxy?.let { return it }
                 val binder =
                         SystemServiceHelper.getSystemService("package")

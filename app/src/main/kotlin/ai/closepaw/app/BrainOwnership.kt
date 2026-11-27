@@ -69,6 +69,8 @@ internal class BrainOwnership<Start : Any>(
             }
         }
 
+    fun hasStarting(): Boolean = synchronized(lock) { starting != null }
+
     fun protect(handle: String) {
         synchronized(lock) { protected.add(handle) }
     }

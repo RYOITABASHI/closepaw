@@ -152,6 +152,16 @@ internal class AgentServiceBrainSessions(
 
     override fun activeCount(): Int = sessions.size
 
+    /**
+     * Heal v2 H-3: atomically confirms that no session exists or is starting and latches new
+     * starts for [holdMs]. Returns false (and latches nothing) when the device is not idle.
+     */
+    fun tryEngageSelfRestartLatch(nowElapsedMs: Long, holdMs: Long): Boolean = synchronized(ownershipLock) {
+        if (sessions.isNotEmpty() || ownership.hasStarting()) return@synchronized false
+        SelfRestartLatch.engage(nowElapsedMs, holdMs)
+        true
+    }
+
     private fun newHandle(): String {
         val bytes = ByteArray(12).also(RANDOM::nextBytes)
         return "run_" + bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
@@ -305,6 +315,12 @@ internal class AgentServiceBrainSessions(
         var worker: Deferred<BrainSession>? = null
         try {
             val claim = synchronized(ownershipLock) {
+                if (SelfRestartLatch.isEngaged(SystemClock.elapsedRealtime())) {
+                    throw McpTypedOpError(
+                        "self_restart_pending",
+                        "ClosePaw is restarting to recover Shizuku; try again shortly",
+                    )
+                }
                 val handle = newHandle()
                 val candidate = BrainStart(serviceProvider(), handle, pending, identity)
                 if (!ownership.reserve(candidate)) {

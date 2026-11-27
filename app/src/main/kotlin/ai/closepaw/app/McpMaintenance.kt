@@ -33,6 +33,8 @@ internal class McpMaintenance(
     private val app: Context,
     private val channel: AdbShellChannel,
     private val runStore: RunRecoveryStore,
+    private val activeRuns: () -> Int = { 0 },
+    private val engageRestartLatch: (holdMs: Long) -> Boolean = { true },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var lastRecovery: Long? = null
@@ -47,6 +49,17 @@ internal class McpMaintenance(
         lastShizukuPing = ShizukuPingSample(false, SystemClock.elapsedRealtime())
         checkRecovery()
     }
+    /** Set while a live server is known but this process holds no binder (heal v2 H-2). */
+    @Volatile private var unreachableIdentity: ShizukuServerIdentity.Present? = null
+    private var lastTerminalCheckMs: Long? = null
+    private val shizukuBinderReceivedListener = Shizuku.OnBinderReceivedListener {
+        lastShizukuPing = ShizukuPingSample(true, SystemClock.elapsedRealtime())
+        if (unreachableIdentity != null) {
+            unreachableIdentity = null
+            recordHeal("shizuku_binder_reacquired")
+        }
+    }
+    private val healPrefs by lazy { app.getSharedPreferences(HEAL_PREFS, Context.MODE_PRIVATE) }
     private val recoveryCheck = Mutex()
     private val shizukuAttempts = ArrayDeque<Long>()
 
@@ -93,6 +106,7 @@ internal class McpMaintenance(
     fun stop() {
         try {
             shizuku.removeBinderDeadListener(shizukuBinderDeadListener)
+            shizuku.removeBinderReceivedListener(shizukuBinderReceivedListener)
         } finally {
             scope.cancel()
         }
@@ -100,7 +114,21 @@ internal class McpMaintenance(
 
     fun start() {
         shizuku.addBinderDeadListener(shizukuBinderDeadListener)
+        shizuku.addBinderReceivedListener(shizukuBinderReceivedListener)
+        verifyPendingSelfRestart()
         checkRecovery()
+    }
+
+    /** Reports whether a self restart dispatched by the previous process brought the binder back. */
+    private fun verifyPendingSelfRestart() {
+        val pendingAt = healPrefs.getLong(PREF_SELF_RESTART_PENDING_AT, 0L)
+        if (pendingAt == 0L) return
+        healPrefs.edit().remove(PREF_SELF_RESTART_PENDING_AT).apply()
+        if (System.currentTimeMillis() - pendingAt !in 0..SELF_RESTART_VERIFY_WINDOW_MS) return
+        scope.launch {
+            val recovered = awaitShizukuBinder(SELF_RESTART_BINDER_WAIT_MS, pollMs = 500L)
+            recordHeal(if (recovered) "self_restart_recovered" else "self_restart_unrecovered")
+        }
     }
 
     fun checkRecovery() {
@@ -161,6 +189,11 @@ internal class McpMaintenance(
     private suspend fun healShizukuClaimed() {
         if (awaitShizukuBinder(CONFIRM_DOWN_MS, pollMs = 100L)) return
         val now = SystemClock.elapsedRealtime()
+        if (!ShizukuHealPlan.terminalRecheckDue(
+                terminalRecorded = healPrefs.contains(PREF_TERMINAL_INSTALL_KEY),
+                nowMs = now,
+                lastTerminalCheckMs = lastTerminalCheckMs,
+            )) return
         val plan = ShizukuHealPlan.decide(
             binderAlive = false,
             vdSessionActive = vdBusy(),
@@ -183,27 +216,31 @@ internal class McpMaintenance(
         if (shizukuAttempts.size == ShizukuHealPlan.MAX_ATTEMPTS_PER_HOUR) shizukuAttempts.removeFirst()
         shizukuAttempts.addLast(SystemClock.elapsedRealtime())
         recordHeal("shizuku_attempt")
+        var identity: ShizukuServerIdentity? = null
+        var routeProbe: ShizukuRouteProbe? = null
         val disposition = try {
             val probe = channel.exec(ShizukuHealPlan.IDENTITY_PROBE_COMMAND, IDENTITY_TIMEOUT_MS)
-            val identity = if (probe.exitCode == 0 && !probe.truncated) {
+            identity = if (probe.exitCode == 0 && !probe.truncated) {
                 ShizukuHealPlan.parseServerIdentity(probe.stdout)
             } else null
-            val startRoutePresent = if (identity == ShizukuServerIdentity.Absent) {
-                val routeProbe = channel.exec(ShizukuHealPlan.START_ROUTE_PROBE_COMMAND, IDENTITY_TIMEOUT_MS)
-                if (routeProbe.exitCode == 0 && !routeProbe.truncated) {
-                    ShizukuHealPlan.parseStartRoutePresent(routeProbe.stdout)
+            if (identity == ShizukuServerIdentity.Absent) {
+                val result = channel.exec(ShizukuHealPlan.START_ROUTE_PROBE_COMMAND, ROUTE_PROBE_TIMEOUT_MS)
+                routeProbe = if (result.exitCode == 0 && !result.truncated) {
+                    ShizukuHealPlan.parseStartRoute(result.stdout)
                 } else null
-            } else null
-            ShizukuHealPlan.disposition(identity, startRoutePresent)
+            }
+            ShizukuHealPlan.disposition(identity, routeProbe?.let { it != ShizukuRouteProbe.Missing })
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
             ShizukuHealDisposition.PROBE_UNKNOWN
         }
+        val available = routeProbe as? ShizukuRouteProbe.Available
         when (disposition) {
-            ShizukuHealDisposition.START_SERVER -> Log.i(TAG, "Shizuku heal disposition: start_server")
+            ShizukuHealDisposition.START_SERVER ->
+                Log.i(TAG, "Shizuku heal disposition: start_server route=${available?.route?.code}")
             ShizukuHealDisposition.ALIVE_BUT_UNREACHABLE -> {
-                recordHeal("shizuku_alive_but_unreachable")
+                (identity as? ShizukuServerIdentity.Present)?.let { onAliveButUnreachable(it) }
                 return
             }
             ShizukuHealDisposition.START_ROUTE_MISSING -> {
@@ -215,8 +252,22 @@ internal class McpMaintenance(
                 return
             }
         }
+        if (available == null) {
+            recordHeal("shizuku_probe_unknown")
+            return
+        }
+        val route = available.route
+        val terminalKey = healPrefs.getString(PREF_TERMINAL_INSTALL_KEY, null)
+        if (ShizukuHealPlan.startBlockedByTerminal(terminalKey, available.installKey)) {
+            // No start happened: give the attempt back and space re-probes separately.
+            shizukuAttempts.removeLastOrNull()
+            lastTerminalCheckMs = SystemClock.elapsedRealtime()
+            recordHeal("shizuku_start_terminal_skip")
+            return
+        }
+        lastTerminalCheckMs = null
         val result = channel.execGuarded(
-            ShizukuHealPlan.buildHealCommand(SHIZUKU_START_COMMAND),
+            ShizukuHealPlan.buildHealCommand(route),
             START_TIMEOUT_MS,
         ) {
             val sample = lastShizukuPing
@@ -231,18 +282,37 @@ internal class McpMaintenance(
             recordHeal("shizuku_dispatch_aborted")
             return
         }
-        if (result.stdout.contains(ShizukuHealPlan.HEAL_ABORT_MARKER)) {
-            recordHeal("shizuku_probe_aborted")
-            return
+        when (val outcome = ShizukuHealPlan.parseStartOutcome(result.stdout)) {
+            ShizukuStartOutcome.IdentityAborted -> {
+                recordHeal("shizuku_probe_aborted")
+                return
+            }
+            ShizukuStartOutcome.RouteGone -> {
+                recordHeal("shizuku_start_route_missing")
+                return
+            }
+            is ShizukuStartOutcome.TerminalLinkError -> {
+                outcome.installKey?.let { healPrefs.edit().putString(PREF_TERMINAL_INSTALL_KEY, it).apply() }
+                recordHeal("shizuku_start_terminal_link_error")
+                return
+            }
+            is ShizukuStartOutcome.Died -> {
+                recordHeal(if (outcome.starterFatal) "shizuku_start_failed_starter_fatal" else "shizuku_start_died")
+                return
+            }
+            ShizukuStartOutcome.Unparsed -> {
+                recordHeal("shizuku_start_failed_${result.exitCode}")
+                return
+            }
+            is ShizukuStartOutcome.Started -> recordHeal("shizuku_started_${route.code}")
         }
-        if (result.exitCode != 0) {
-            recordHeal("shizuku_start_failed_${result.exitCode}")
-            return
-        }
-        Log.i(TAG, "Shizuku start.sh exited successfully")
+        if (terminalKey != null) healPrefs.edit().remove(PREF_TERMINAL_INSTALL_KEY).apply()
 
         if (!awaitShizukuBinder(STARTUP_POLL_TIMEOUT_MS, pollMs = 250L)) {
-            recordHeal("shizuku_start_timeout")
+            // The server only hands its binder to apps started after it, so a running ClosePaw
+            // usually needs the restart sequence to receive it (R14 drill C).
+            recordHeal("shizuku_started_binder_not_delivered")
+            trySelfRestart()
             return
         }
         if (!shizuku.hasPermission()) {
@@ -250,7 +320,75 @@ internal class McpMaintenance(
             return
         }
         recordHeal("shizuku_recovered")
+        unreachableIdentity = null
         shizukuAttempts.clear()
+    }
+
+    /**
+     * H-2: wait for the binder to be (re)delivered in-process. Escalate to H-3 only when the same
+     * server instance is still unreachable on the next heal attempt, so a server that is starting
+     * up is never raced.
+     */
+    private suspend fun onAliveButUnreachable(identity: ShizukuServerIdentity.Present) {
+        recordHeal("shizuku_alive_but_unreachable")
+        val previous = unreachableIdentity
+        unreachableIdentity = identity
+        if (previous == identity) trySelfRestart()
+    }
+
+    /** H-3: the detached force-stop + accessibility rebind sequence, under strict gates. */
+    private suspend fun trySelfRestart() {
+        val now = System.currentTimeMillis()
+        val history = SelfRestartPlan.parseHistory(healPrefs.getString(PREF_SELF_RESTART_HISTORY, null))
+        val decision = SelfRestartPlan.decide(
+            activeRuns = activeRuns(),
+            vdBusy = vdBusy(),
+            adbConnected = channel.isConnected(),
+            nowWallMs = now,
+            historyWallMs = history,
+        )
+        if (decision != SelfRestartDecision.DISPATCH) {
+            recordHeal("self_restart_skipped_${decision.code}")
+            return
+        }
+        // Atomically re-confirm idleness and refuse new session starts until this process dies.
+        if (!engageRestartLatch(SELF_RESTART_HOLD_MS)) {
+            recordHeal("self_restart_skipped_${SelfRestartDecision.SKIP_ACTIVE_RUNS.code}")
+            return
+        }
+        // Persist before dispatch: this process will not survive a successful restart.
+        healPrefs.edit()
+            .putString(PREF_SELF_RESTART_HISTORY, SelfRestartPlan.appendHistory(history, now))
+            .putLong(PREF_SELF_RESTART_PENDING_AT, now)
+            .commit()
+        recordHeal("self_restart_dispatching")
+        val result = try {
+            channel.execGuarded(
+                SelfRestartPlan.buildCommand(
+                    app.packageName,
+                    AccessibilityServiceSetting.AGENT,
+                    aliases = listOf(AccessibilityServiceSetting.AGENT_SHORT),
+                ),
+                SELF_RESTART_DISPATCH_TIMEOUT_MS,
+            ) { activeRuns() == 0 && !vdBusy() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Self restart dispatch failed: ${e.javaClass.simpleName}")
+            null
+        }
+        if (result?.stdout?.contains(SelfRestartPlan.DISPATCHED_MARKER) == true) {
+            recordHeal("self_restart_dispatched")
+            // Keep holding the heal gate (VD starts are deferred) and the start latch until the
+            // detached sequence stops this process. Reaching the end means it did not.
+            delay(SELF_RESTART_HOLD_MS)
+            healPrefs.edit().remove(PREF_SELF_RESTART_PENDING_AT).apply()
+            recordHeal("self_restart_not_executed")
+        } else {
+            healPrefs.edit().remove(PREF_SELF_RESTART_PENDING_AT).apply()
+            recordHeal(if (result == null) "self_restart_aborted" else "self_restart_dispatch_failed")
+        }
+        SelfRestartLatch.release()
     }
 
     private fun vdBusy(): Boolean = isVirtualDisplaySessionActive() || ShizukuHealGate.vdActivationInFlight
@@ -452,7 +590,15 @@ internal class McpMaintenance(
         private const val IDENTITY_TIMEOUT_MS = 5_000L
         private const val START_TIMEOUT_MS = 15_000L
         private const val STARTUP_POLL_TIMEOUT_MS = 10_000L
-        private const val SHIZUKU_START_COMMAND = "sh $SHIZUKU_START_SCRIPT_PATH"
+        private const val ROUTE_PROBE_TIMEOUT_MS = 10_000L
+        private const val SELF_RESTART_DISPATCH_TIMEOUT_MS = 5_000L
+        private const val SELF_RESTART_HOLD_MS = 30_000L
+        private const val SELF_RESTART_VERIFY_WINDOW_MS = 10 * 60_000L
+        private const val SELF_RESTART_BINDER_WAIT_MS = 60_000L
+        private const val HEAL_PREFS = "mcp_shizuku_heal"
+        private const val PREF_TERMINAL_INSTALL_KEY = "terminalInstallKey"
+        private const val PREF_SELF_RESTART_HISTORY = "selfRestartHistory"
+        private const val PREF_SELF_RESTART_PENDING_AT = "selfRestartPendingAt"
     }
 }
 

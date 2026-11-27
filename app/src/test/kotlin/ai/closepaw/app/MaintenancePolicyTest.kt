@@ -1,6 +1,7 @@
 package ai.closepaw.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class MaintenancePolicyTest {
@@ -128,14 +129,31 @@ class MaintenancePolicyTest {
     }
 
     @Test fun shizukuStartRouteParsing() {
-        assertEquals(true, ShizukuHealPlan.parseStartRoutePresent("PRESENT\n"))
-        assertEquals(false, ShizukuHealPlan.parseStartRoutePresent("MISSING\n"))
-        assertEquals(null, ShizukuHealPlan.parseStartRoutePresent("garbage"))
-        assertEquals(null, ShizukuHealPlan.parseStartRoutePresent(""))
+        val cp = "/data/app/~~Hq6f==/moe.shizuku.privileged.api-y4p0==" // codePath shape incl. '~' and '='
+        assertEquals(
+            ShizukuRouteProbe.Available(ShizukuStartRoute.EXTRACTED_LIBS, cp),
+            ShizukuHealPlan.parseStartRoute("EXTRACTED $cp\n"),
+        )
+        assertEquals(
+            ShizukuRouteProbe.Available(ShizukuStartRoute.START_SCRIPT, cp),
+            ShizukuHealPlan.parseStartRoute("SCRIPT $cp\n"),
+        )
+        assertEquals(
+            ShizukuRouteProbe.Available(ShizukuStartRoute.START_SCRIPT, null),
+            ShizukuHealPlan.parseStartRoute("SCRIPT \n"),
+        )
+        assertEquals(ShizukuRouteProbe.Missing, ShizukuHealPlan.parseStartRoute("MISSING\n"))
+        for (invalid in listOf("", "garbage", "PRESENT", "EXTRACTED", "EXTRACTED /sdcard/x", "EXTRACTED $cp\nSCRIPT $cp")) {
+            assertEquals(invalid, null, ShizukuHealPlan.parseStartRoute(invalid))
+        }
     }
 
-    @Test fun shizukuStartRouteProbeReferencesTheStartScript() {
-        assertEquals(true, ShizukuHealPlan.START_ROUTE_PROBE_COMMAND.contains(SHIZUKU_START_SCRIPT_PATH))
+    @Test fun shizukuStartRouteProbePrefersExtractedLibrariesOverTheStarter() {
+        val probe = ShizukuHealPlan.START_ROUTE_PROBE_COMMAND
+        assertEquals(true, probe.contains(ShizukuHealPlan.RESOLVE_INSTALL_FRAGMENT))
+        assertEquals(true, probe.indexOf("EXTRACTED") < probe.indexOf(SHIZUKU_START_SCRIPT_PATH))
+        assertEquals(true, ShizukuHealPlan.RESOLVE_INSTALL_FRAGMENT.contains("libshizuku.so"))
+        assertEquals(true, ShizukuHealPlan.RESOLVE_INSTALL_FRAGMENT.contains("dumpsys package $SHIZUKU_PACKAGE"))
     }
 
     @Test fun shizukuIdentityParsing() {
@@ -147,15 +165,142 @@ class MaintenancePolicyTest {
     }
 
     @Test fun shizukuHealCommandRevalidatesIdentityOnDevice() {
-        val starter = "sh $SHIZUKU_START_SCRIPT_PATH"
-        val command = ShizukuHealPlan.buildHealCommand(starter)
-        assertEquals(true, command.contains(ShizukuHealPlan.IDENTITY_PROBE_COMMAND))
-        assertEquals(true, command.contains("ABSENT) $starter"))
-        assertEquals(true, command.contains(ShizukuHealPlan.HEAL_ABORT_MARKER))
-        assertEquals(1, Regex(Regex.escape(starter)).findAll(command).count())
-        assertEquals(false, command.contains("kill"))
+        for (route in ShizukuStartRoute.values()) {
+            val command = ShizukuHealPlan.buildHealCommand(route)
+            assertEquals(true, command.contains(ShizukuHealPlan.IDENTITY_PROBE_COMMAND))
+            assertEquals(true, command.contains("ABSENT) ;; *) echo ${ShizukuHealPlan.HEAL_ABORT_MARKER}; exit 0;;"))
+            // Identity is re-checked before anything is started.
+            assertEquals(true, command.indexOf(ShizukuHealPlan.HEAL_ABORT_MARKER) < command.indexOf("sleep 3"))
+            assertEquals(false, command.contains("kill"))
+            // Success is a live pid, failure is classified from the crash buffer, never from an exit code.
+            assertEquals(true, command.contains("pidof shizuku_server"))
+            assertEquals(true, command.contains("logcat -b crash -d -T"))
+            // "&;" is a POSIX sh syntax error; background starts must be grouped.
+            assertEquals(false, Regex("&\\s*;").containsMatchIn(command))
+        }
         assertEquals(true, ShizukuHealPlan.IDENTITY_PROBE_COMMAND.contains("pidof shizuku_server"))
         assertEquals(true, ShizukuHealPlan.IDENTITY_PROBE_COMMAND.contains("/proc/"))
+    }
+
+    @Test fun extractedRouteStartsADetachedServerFromTheExtractedLibraries() {
+        val command = ShizukuHealPlan.buildHealCommand(ShizukuStartRoute.EXTRACTED_LIBS)
+        assertEquals(true, command.contains("{ setsid /system/bin/app_process"))
+        assertEquals(true, command.contains("-Djava.class.path=\"\$cp/base.apk\""))
+        assertEquals(true, command.contains("-Dshizuku.library.path=\"\$lib\""))
+        assertEquals(true, command.contains("--nice-name=shizuku_server rikka.shizuku.server.ShizukuService"))
+        assertEquals(false, command.contains("base.apk!/"))
+        assertEquals(false, command.contains(SHIZUKU_START_SCRIPT_PATH))
+    }
+
+    @Test fun scriptRouteScansStarterOutputInsteadOfTrustingItsExitCode() {
+        val command = ShizukuHealPlan.buildHealCommand(ShizukuStartRoute.START_SCRIPT)
+        assertEquals(true, command.contains("sh $SHIZUKU_START_SCRIPT_PATH"))
+        assertEquals(true, command.contains("grep -q '^fatal:' && echo ${ShizukuHealPlan.STARTER_FATAL_MARKER}"))
+        assertEquals(false, command.contains("app_process"))
+    }
+
+    @Test fun startOutcomesAreParsedFromMarkers() {
+        val cp = "/data/app/~~a==/moe.shizuku.privileged.api-b=="
+        assertEquals(ShizukuStartOutcome.Started(4321), ShizukuHealPlan.parseStartOutcome("HEAL_STARTED 4321\n"))
+        assertEquals(ShizukuStartOutcome.Started(4321), ShizukuHealPlan.parseStartOutcome("HEAL_STARTED 4321 4322\n"))
+        assertEquals(ShizukuStartOutcome.Unparsed, ShizukuHealPlan.parseStartOutcome("HEAL_STARTED x\n"))
+        assertEquals(ShizukuStartOutcome.IdentityAborted, ShizukuHealPlan.parseStartOutcome("HEAL_ABORT_IDENTITY\n"))
+        assertEquals(ShizukuStartOutcome.RouteGone, ShizukuHealPlan.parseStartOutcome("HEAL_ROUTE_GONE\n"))
+        assertEquals(ShizukuStartOutcome.TerminalLinkError(cp), ShizukuHealPlan.parseStartOutcome("HEAL_TERMINAL_LINK $cp\n"))
+        assertEquals(ShizukuStartOutcome.TerminalLinkError(null), ShizukuHealPlan.parseStartOutcome("HEAL_TERMINAL_LINK \n"))
+        assertEquals(ShizukuStartOutcome.Died(false), ShizukuHealPlan.parseStartOutcome("HEAL_DIED\n"))
+        assertEquals(
+            ShizukuStartOutcome.Died(true),
+            ShizukuHealPlan.parseStartOutcome("HEAL_STARTER_FATAL\nHEAL_DIED\n"),
+        )
+        assertEquals(ShizukuStartOutcome.Unparsed, ShizukuHealPlan.parseStartOutcome(""))
+        assertEquals(ShizukuStartOutcome.Unparsed, ShizukuHealPlan.parseStartOutcome("info: start.sh begin\n"))
+    }
+
+    @Test fun terminalSignatureMatchesOnlyShizukuLibraries() {
+        val signature = Regex(ShizukuHealPlan.TERMINAL_LINK_SIGNATURE)
+        val shizuku = "java.lang.UnsatisfiedLinkError: dlopen failed: library " +
+            "\"/data/app/~~a==/moe.shizuku.privileged.api-b==/base.apk!/lib/arm64-v8a/librish.so\" not found"
+        assertEquals(true, signature.containsMatchIn(shizuku))
+        assertEquals(true, signature.containsMatchIn("java.lang.UnsatisfiedLinkError: couldn't find libshizuku.so"))
+        assertEquals(false, signature.containsMatchIn("java.lang.UnsatisfiedLinkError: dlopen failed: libfoo.so not found"))
+        assertEquals(false, signature.containsMatchIn("moe.shizuku.privileged.api crashed: NullPointerException"))
+        val command = ShizukuHealPlan.buildHealCommand(ShizukuStartRoute.EXTRACTED_LIBS)
+        assertEquals(true, command.contains("grep -qE '${ShizukuHealPlan.TERMINAL_LINK_SIGNATURE}'"))
+    }
+
+    @Test fun terminalStateIsReprobedOnItsOwnScheduleWithoutUsingStartAttempts() {
+        val interval = ShizukuHealPlan.TERMINAL_RECHECK_INTERVAL_MS
+        assertEquals(true, ShizukuHealPlan.terminalRecheckDue(false, 10, 9))
+        assertEquals(true, ShizukuHealPlan.terminalRecheckDue(true, 10, null))
+        assertEquals(false, ShizukuHealPlan.terminalRecheckDue(true, interval - 1, 0))
+        assertEquals(true, ShizukuHealPlan.terminalRecheckDue(true, interval, 0))
+    }
+
+    @Test fun selfRestartLatchRefusesStartsOnlyWhileEngaged() {
+        SelfRestartLatch.release()
+        assertEquals(false, SelfRestartLatch.isEngaged(1_000))
+        SelfRestartLatch.engage(1_000, 30_000)
+        assertEquals(true, SelfRestartLatch.isEngaged(30_999))
+        assertEquals(false, SelfRestartLatch.isEngaged(31_000))
+        SelfRestartLatch.engage(1_000, 30_000)
+        SelfRestartLatch.release()
+        assertEquals(false, SelfRestartLatch.isEngaged(1_001))
+    }
+
+    @Test fun terminalFailureBlocksOnlyTheSameInstall() {
+        val cp = "/data/app/~~a==/moe.shizuku.privileged.api-b=="
+        assertEquals(true, ShizukuHealPlan.startBlockedByTerminal(cp, cp))
+        assertEquals(false, ShizukuHealPlan.startBlockedByTerminal(cp, "/data/app/~~c==/moe.shizuku.privileged.api-d=="))
+        assertEquals(false, ShizukuHealPlan.startBlockedByTerminal(null, cp))
+        assertEquals(false, ShizukuHealPlan.startBlockedByTerminal(cp, null))
+    }
+
+    @Test fun selfRestartRequiresAnIdleDeviceAndRespectsItsBudget() {
+        val now = 10 * SelfRestartPlan.DAY_MS
+        assertEquals(SelfRestartDecision.DISPATCH, SelfRestartPlan.decide(0, false, true, now, emptyList()))
+        assertEquals(SelfRestartDecision.SKIP_ACTIVE_RUNS, SelfRestartPlan.decide(1, false, true, now, emptyList()))
+        assertEquals(SelfRestartDecision.SKIP_VD_BUSY, SelfRestartPlan.decide(0, true, true, now, emptyList()))
+        assertEquals(SelfRestartDecision.SKIP_ADB, SelfRestartPlan.decide(0, false, false, now, emptyList()))
+        val recent = now - SelfRestartPlan.MIN_INTERVAL_MS + 1
+        assertEquals(SelfRestartDecision.SKIP_INTERVAL, SelfRestartPlan.decide(0, false, true, now, listOf(recent)))
+        val spaced = listOf(now - 3 * 60 * 60_000L, now - 2 * 60 * 60_000L)
+        assertEquals(SelfRestartDecision.SKIP_BUDGET, SelfRestartPlan.decide(0, false, true, now, spaced))
+        val old = listOf(now - SelfRestartPlan.DAY_MS, now - SelfRestartPlan.DAY_MS - 1)
+        assertEquals(SelfRestartDecision.DISPATCH, SelfRestartPlan.decide(0, false, true, now, old))
+        // A clock that moved backwards makes the gate stricter, never looser.
+        assertEquals(SelfRestartDecision.SKIP_INTERVAL, SelfRestartPlan.decide(0, false, true, now, listOf(now + 5_000)))
+    }
+
+    @Test fun selfRestartHistoryRoundTripsAndStaysBounded() {
+        val now = 10 * SelfRestartPlan.DAY_MS
+        assertEquals(listOf(1L, 2L), SelfRestartPlan.parseHistory("1, 2,x,"))
+        assertEquals(emptyList<Long>(), SelfRestartPlan.parseHistory(null))
+        val stored = SelfRestartPlan.appendHistory(listOf(now - SelfRestartPlan.DAY_MS - 1, now - 10, now - 5, now - 1), now)
+        assertEquals(listOf(now - 10, now - 5, now - 1, now), SelfRestartPlan.parseHistory(stored))
+    }
+
+    @Test fun selfRestartCommandIsDetachedAndPreservesOtherServices() {
+        val command = SelfRestartPlan.buildCommand(
+            "ai.closepaw",
+            AccessibilityServiceSetting.AGENT,
+            aliases = listOf(AccessibilityServiceSetting.AGENT_SHORT),
+        )
+        // Survives ClosePaw's early stream close: double fork, SIGHUP ignored, reply after a wait.
+        assertEquals(true, command.startsWith("( nohup setsid sh -c '"))
+        assertEquals(true, command.endsWith("& ) ; sleep 1; echo ${SelfRestartPlan.DISPATCHED_MARKER}"))
+        assertEquals(true, command.contains("sh -c 'sleep 2; am force-stop"))
+        assertEquals(true, command.contains("am force-stop ai.closepaw"))
+        assertEquals(true, command.indexOf("am force-stop") < command.indexOf("settings put secure accessibility_enabled 1"))
+        assertEquals(false, command.contains("am start"))
+        assertEquals(false, command.contains("monkey"))
+        assertEquals(false, command.contains("kill"))
+        assertThrows(IllegalArgumentException::class.java) {
+            SelfRestartPlan.buildCommand("ai.closepaw; reboot", AccessibilityServiceSetting.AGENT)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            SelfRestartPlan.buildCommand("ai.closepaw", "ai.closepaw/x'; reboot")
+        }
     }
 
     @Test fun shizukuHealRespectsAttemptLimits() {
