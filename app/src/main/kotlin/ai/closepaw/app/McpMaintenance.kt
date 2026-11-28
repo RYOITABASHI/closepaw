@@ -52,6 +52,7 @@ internal class McpMaintenance(
     /** Set while a live server is known but this process holds no binder (heal v2 H-2). */
     @Volatile private var unreachableIdentity: ShizukuServerIdentity.Present? = null
     private var lastTerminalCheckMs: Long? = null
+    private var lastWatchdogEnsureMs: Long? = null
     private val shizukuBinderReceivedListener = Shizuku.OnBinderReceivedListener {
         lastShizukuPing = ShizukuPingSample(true, SystemClock.elapsedRealtime())
         if (unreachableIdentity != null) {
@@ -104,6 +105,7 @@ internal class McpMaintenance(
     }
 
     fun stop() {
+        if (active === this) active = null
         try {
             shizuku.removeBinderDeadListener(shizukuBinderDeadListener)
             shizuku.removeBinderReceivedListener(shizukuBinderReceivedListener)
@@ -113,10 +115,73 @@ internal class McpMaintenance(
     }
 
     fun start() {
+        active = this
         shizuku.addBinderDeadListener(shizukuBinderDeadListener)
         shizuku.addBinderReceivedListener(shizukuBinderReceivedListener)
         verifyPendingSelfRestart()
         checkRecovery()
+    }
+
+    /**
+     * Heal layer 2: the shell-uid watchdog asks whether it may run the restart sequence itself.
+     * Same gates and shared history as H-3; on `go` the history, pending marker and start latch
+     * are written here, so the next process reports the outcome exactly as for H-3.
+     * Called on a binder thread (credential provider); must not block on the adb channel.
+     */
+    @Synchronized
+    fun requestExternalSelfRestart(): String {
+        val now = System.currentTimeMillis()
+        val history = SelfRestartPlan.parseHistory(healPrefs.getString(PREF_SELF_RESTART_HISTORY, null))
+        val decision = ExternalSelfRestartPlan.decide(
+            binderAlive = pingShizukuBinder(),
+            healInFlight = ShizukuHealGate.healInFlight,
+            activeRuns = activeRuns(),
+            vdBusy = vdBusy(),
+            nowWallMs = now,
+            historyWallMs = history,
+        )
+        if (decision == ExternalSelfRestartPlan.NOT_NEEDED) return decision
+        if (decision != ExternalSelfRestartPlan.GO) {
+            recordHeal("self_restart_external_skipped_$decision")
+            return decision
+        }
+        if (!engageRestartLatch(SELF_RESTART_HOLD_MS)) {
+            recordHeal("self_restart_external_skipped_${SelfRestartDecision.SKIP_ACTIVE_RUNS.code}")
+            return SelfRestartDecision.SKIP_ACTIVE_RUNS.code
+        }
+        val persisted = healPrefs.edit()
+            .putString(PREF_SELF_RESTART_HISTORY, SelfRestartPlan.appendHistory(history, now))
+            .putLong(PREF_SELF_RESTART_PENDING_AT, now)
+            .commit()
+        if (!persisted) {
+            // Without a persisted history entry the interval/budget could not hold after the restart.
+            SelfRestartLatch.release()
+            recordHeal("self_restart_external_skipped_persist_failed")
+            return "persist_failed"
+        }
+        recordHeal("self_restart_external_go")
+        return decision
+    }
+
+    /** Starts the layer-2 watchdog over the adb channel while it is available (idempotent). */
+    private suspend fun ensureWatchdog() {
+        val now = SystemClock.elapsedRealtime()
+        if (lastWatchdogEnsureMs?.let { now - it < WATCHDOG_ENSURE_INTERVAL_MS } == true) return
+        lastWatchdogEnsureMs = now
+        val script = HealWatchdogPlan.script(
+            SelfRestartPlan.restartScript(
+                app.packageName,
+                AccessibilityServiceSetting.AGENT,
+                aliases = listOf(AccessibilityServiceSetting.AGENT_SHORT),
+            ),
+            "${app.packageName}.mcpcredential",
+        )
+        val result = channel.exec(HealWatchdogPlan.launchCommand(script), WATCHDOG_LAUNCH_TIMEOUT_MS)
+        when {
+            result.stdout.contains(HealWatchdogPlan.STARTED_MARKER) -> recordHeal("heal_watchdog_started")
+            result.stdout.contains(HealWatchdogPlan.RUNNING_MARKER) -> Log.i(TAG, "heal_watchdog_running")
+            else -> Log.w(TAG, "heal_watchdog_launch_unclear rc=${result.exitCode}")
+        }
     }
 
     /** Reports whether a self restart dispatched by the previous process brought the binder back. */
@@ -159,6 +224,9 @@ internal class McpMaintenance(
                         !shizuku.hasPermission() -> "permission_missing"
                         else -> "ready"
                     }
+                }
+                if (adb == "connected" && shizukuState == "ready") {
+                    checkStep("watchdog") { ensureWatchdog(); "ok" }
                 }
                 lastCheck = Check(System.currentTimeMillis(), accessibility, adb, shizukuState)
                 Log.i(TAG, "Recovery check accessibility=$accessibility adb=$adb shizuku=$shizukuState")
@@ -338,29 +406,35 @@ internal class McpMaintenance(
 
     /** H-3: the detached force-stop + accessibility rebind sequence, under strict gates. */
     private suspend fun trySelfRestart() {
-        val now = System.currentTimeMillis()
-        val history = SelfRestartPlan.parseHistory(healPrefs.getString(PREF_SELF_RESTART_HISTORY, null))
-        val decision = SelfRestartPlan.decide(
-            activeRuns = activeRuns(),
-            vdBusy = vdBusy(),
-            adbConnected = channel.isConnected(),
-            nowWallMs = now,
-            historyWallMs = history,
-        )
-        if (decision != SelfRestartDecision.DISPATCH) {
-            recordHeal("self_restart_skipped_${decision.code}")
-            return
+        // Same monitor as requestExternalSelfRestart: the shared history is read, judged and
+        // written atomically, so H-3 and the layer-2 watchdog never both claim a restart.
+        val claimed = synchronized(this) {
+            val now = System.currentTimeMillis()
+            val history = SelfRestartPlan.parseHistory(healPrefs.getString(PREF_SELF_RESTART_HISTORY, null))
+            val decision = SelfRestartPlan.decide(
+                activeRuns = activeRuns(),
+                vdBusy = vdBusy(),
+                adbConnected = channel.isConnected(),
+                nowWallMs = now,
+                historyWallMs = history,
+            )
+            if (decision != SelfRestartDecision.DISPATCH) {
+                recordHeal("self_restart_skipped_${decision.code}")
+                return@synchronized false
+            }
+            // Atomically re-confirm idleness and refuse new session starts until this process dies.
+            if (!engageRestartLatch(SELF_RESTART_HOLD_MS)) {
+                recordHeal("self_restart_skipped_${SelfRestartDecision.SKIP_ACTIVE_RUNS.code}")
+                return@synchronized false
+            }
+            // Persist before dispatch: this process will not survive a successful restart.
+            healPrefs.edit()
+                .putString(PREF_SELF_RESTART_HISTORY, SelfRestartPlan.appendHistory(history, now))
+                .putLong(PREF_SELF_RESTART_PENDING_AT, now)
+                .commit()
+            true
         }
-        // Atomically re-confirm idleness and refuse new session starts until this process dies.
-        if (!engageRestartLatch(SELF_RESTART_HOLD_MS)) {
-            recordHeal("self_restart_skipped_${SelfRestartDecision.SKIP_ACTIVE_RUNS.code}")
-            return
-        }
-        // Persist before dispatch: this process will not survive a successful restart.
-        healPrefs.edit()
-            .putString(PREF_SELF_RESTART_HISTORY, SelfRestartPlan.appendHistory(history, now))
-            .putLong(PREF_SELF_RESTART_PENDING_AT, now)
-            .commit()
+        if (!claimed) return
         recordHeal("self_restart_dispatching")
         val result = try {
             channel.execGuarded(
@@ -599,6 +673,11 @@ internal class McpMaintenance(
         private const val PREF_TERMINAL_INSTALL_KEY = "terminalInstallKey"
         private const val PREF_SELF_RESTART_HISTORY = "selfRestartHistory"
         private const val PREF_SELF_RESTART_PENDING_AT = "selfRestartPendingAt"
+        private const val WATCHDOG_ENSURE_INTERVAL_MS = 10 * 60_000L
+        private const val WATCHDOG_LAUNCH_TIMEOUT_MS = 10_000L
+
+        /** The running instance, for the credential provider's layer-2 `selfRestart` call. */
+        @Volatile internal var active: McpMaintenance? = null
     }
 }
 

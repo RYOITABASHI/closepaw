@@ -182,6 +182,17 @@ class MaintenancePolicyTest {
         assertEquals(true, ShizukuHealPlan.IDENTITY_PROBE_COMMAND.contains("/proc/"))
     }
 
+    @Test fun healStartsOnlyUnderTheSharedStartLockAndRechecksInside() {
+        for (route in ShizukuStartRoute.values()) {
+            val command = ShizukuHealPlan.buildHealCommand(route)
+            assertEquals(true, command.startsWith("{ ${ShizukuHealPlan.ACQUIRE_START_LOCK}; [ \"\$lk\" = 1 ] || { echo ${ShizukuHealPlan.HEAL_ABORT_MARKER}; exit 0; };"))
+            assertEquals(true, command.endsWith("} 8>>${ShizukuHealPlan.START_LOCK_FILE}"))
+            // The identity re-check happens after the lock is taken.
+            assertEquals(true, command.indexOf("flock -n 8") < command.indexOf(ShizukuHealPlan.IDENTITY_PROBE_COMMAND))
+            assertEquals(true, command.contains("8>&- 9>&-"))
+        }
+    }
+
     @Test fun extractedRouteStartsADetachedServerFromTheExtractedLibraries() {
         val command = ShizukuHealPlan.buildHealCommand(ShizukuStartRoute.EXTRACTED_LIBS)
         assertEquals(true, command.contains("{ setsid /system/bin/app_process"))
@@ -312,5 +323,62 @@ class MaintenancePolicyTest {
 
     @Test fun shizukuAttemptsAtTheHourBoundaryExpire() {
         assertEquals(1, attemptsInLastHour(listOf(0L, 1L, 2L), nowMs = 3_600_001L))
+    }
+
+    @Test fun externalSelfRestartUsesTheH3GatesAndSharedHistory() {
+        val now = 10 * SelfRestartPlan.DAY_MS
+        fun d(alive: Boolean = false, heal: Boolean = false, runs: Int = 0, vd: Boolean = false, h: List<Long> = emptyList()) =
+            ExternalSelfRestartPlan.decide(alive, heal, runs, vd, now, h)
+        assertEquals(ExternalSelfRestartPlan.GO, d())
+        assertEquals(ExternalSelfRestartPlan.NOT_NEEDED, d(alive = true, runs = 3))
+        assertEquals(ExternalSelfRestartPlan.HEAL_IN_FLIGHT, d(heal = true))
+        assertEquals(SelfRestartDecision.SKIP_ACTIVE_RUNS.code, d(runs = 1))
+        assertEquals(SelfRestartDecision.SKIP_VD_BUSY.code, d(vd = true))
+        // An H-3 dispatch a minute ago (shared history) blocks the watchdog, and vice versa.
+        assertEquals(SelfRestartDecision.SKIP_INTERVAL.code, d(h = listOf(now - 60_000)))
+        assertEquals(SelfRestartDecision.SKIP_BUDGET.code, d(h = listOf(now - 7_200_000, now - 3_600_000)))
+    }
+
+    @Test fun watchdogRestartsOnlyAVanishedServerAndAsksBeforeRestartingClosePaw() {
+        val restart = SelfRestartPlan.restartScript(
+            "ai.closepaw", AccessibilityServiceSetting.AGENT, listOf(AccessibilityServiceSetting.AGENT_SHORT),
+        )
+        val script = HealWatchdogPlan.script(restart, "ai.closepaw.mcpcredential")
+        assertEquals(false, script.contains("§"))
+        assertEquals(false, script.contains("kill"))
+        assertEquals(false, Regex("&\\s*;").containsMatchIn(script))
+        assertEquals(true, script.contains("echo \$\$ > \"\$PIDF\""))
+        // Single instance: the whole body runs under a non-blocking flock held for life.
+        assertEquals(true, script.startsWith("{ flock -n 9 || exit 0;"))
+        assertEquals(true, script.endsWith("} 9>>${HealWatchdogPlan.INSTANCE_LOCK_FILE}"))
+        // Server start shares ClosePaw's H-1 start lock; the started server holds neither lock.
+        assertEquals(true, script.contains("{ ${ShizukuHealPlan.ACQUIRE_START_LOCK}; if [ \"\$lk\" = 1 ]; then"))
+        assertEquals(true, script.contains("} 8>>${ShizukuHealPlan.START_LOCK_FILE};"))
+        assertEquals(true, script.contains("8>&- 9>&- & }"))
+        assertEquals(true, script.contains("if pidof shizuku_server >/dev/null 2>&1; then absent=0;"))
+        assertEquals(true, script.contains("[ \"\$absent\" -ge ${HealWatchdogPlan.ABSENT_GRACE_S} ]"))
+        assertEquals(true, script.contains(ShizukuHealPlan.RESOLVE_INSTALL_FRAGMENT))
+        // Re-checks just before starting so a server ClosePaw started meanwhile is left alone.
+        assertEquals(true, script.contains("if [ -n \"\$lib\" ] && ! pidof shizuku_server >/dev/null 2>&1; then"))
+        assertEquals(true, script.contains("{ setsid /system/bin/app_process"))
+        assertEquals(true, script.contains("content call --uri content://ai.closepaw.mcpcredential --method selfRestart"))
+        // The restart sequence runs only in the decision=go branch.
+        val goBranch = script.substringAfter("*decision=go*)").substringBefore(";;")
+        assertEquals(true, goBranch.contains("am force-stop ai.closepaw"))
+        assertEquals(1, Regex("am force-stop").findAll(script).count())
+        assertThrows(IllegalArgumentException::class.java) { HealWatchdogPlan.script(restart, "x; reboot") }
+    }
+
+    @Test fun watchdogLaunchIsSingleInstanceAndDetached() {
+        val cmd = HealWatchdogPlan.launchCommand("sleep 1")
+        assertEquals(true, cmd.contains("grep -q ${HealWatchdogPlan.NAME} /proc/\$p/cmdline"))
+        assertEquals(true, cmd.contains("then echo ${HealWatchdogPlan.RUNNING_MARKER};"))
+        assertEquals(true, cmd.contains("( nohup setsid sh -c 'sleep 1' ${HealWatchdogPlan.NAME} </dev/null >/dev/null 2>&1 & ) ; sleep 1; echo ${HealWatchdogPlan.STARTED_MARKER}"))
+    }
+
+    @Test fun selfRestartCommandStillWrapsTheSharedRestartScript() {
+        val script = SelfRestartPlan.restartScript("ai.closepaw", AccessibilityServiceSetting.AGENT)
+        val cmd = SelfRestartPlan.buildCommand("ai.closepaw", AccessibilityServiceSetting.AGENT)
+        assertEquals(true, cmd.contains(SelfRestartPlan.shellQuote(script)))
     }
 }

@@ -159,22 +159,42 @@ internal enum class ShizukuHealPlan {
             // setsid detaches the server from the adb shell session (R14 drill C, measured 2026-11-24).
             ShizukuStartRoute.EXTRACTED_LIBS ->
                 "[ -n \"\$lib\" ] || { echo $ROUTE_GONE_MARKER; exit 0; }; " +
-                    "{ setsid /system/bin/app_process -Djava.class.path=\"\$cp/base.apk\" " +
-                    "-Dshizuku.library.path=\"\$lib\" /system/bin --nice-name=shizuku_server " +
-                    "rikka.shizuku.server.ShizukuService </dev/null >/dev/null 2>&1 & }"
+                    EXTRACTED_START_COMMAND
             // start.sh exits 0 even when the starter fails, so its output is scanned instead.
             ShizukuStartRoute.START_SCRIPT ->
                 "[ -f $SHIZUKU_START_SCRIPT_PATH ] || { echo $ROUTE_GONE_MARKER; exit 0; }; " +
-                    "sh $SHIZUKU_START_SCRIPT_PATH </dev/null 2>&1 | grep -q '^fatal:' && echo $STARTER_FATAL_MARKER"
+                    "sh $SHIZUKU_START_SCRIPT_PATH </dev/null 8>&- 9>&- 2>&1 | grep -q '^fatal:' && echo $STARTER_FATAL_MARKER"
         }
 
         /**
-         * Re-validates on the device that no server exists, starts one, and reports what happened.
-         * Success is judged by a live server pid (and later the binder), never by an exit code.
-         * A live server is never killed.
+         * Detached server start from the extracted libraries. Lock fds 8/9 are closed so the
+         * long-lived server never holds the start or watchdog lock.
+         */
+        const val EXTRACTED_START_COMMAND: String =
+            "{ setsid /system/bin/app_process -Djava.class.path=\"\$cp/base.apk\" " +
+                "-Dshizuku.library.path=\"\$lib\" /system/bin --nice-name=shizuku_server " +
+                "rikka.shizuku.server.ShizukuService </dev/null >/dev/null 2>&1 8>&- 9>&- & }"
+
+        /**
+         * Shared by ClosePaw's H-1 and the layer-2 watchdog: whoever holds this flock (fd 8) is the
+         * only one allowed to start a server, and re-checks that none exists after taking it.
+         * Released automatically when the holder exits.
+         */
+        const val START_LOCK_FILE = "/data/local/tmp/closepaw-shizuku-start.lock"
+
+        /** toybox flock has no -w: poll -n for up to 10 s. Sets lk=1 when fd 8 is locked. */
+        const val ACQUIRE_START_LOCK: String =
+            "lk=0; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do " +
+                "flock -n 8 && { lk=1; break; }; sleep 0.5; done"
+
+        /**
+         * Re-validates on the device, under the shared start lock, that no server exists, starts
+         * one, and reports what happened. Success is judged by a live server pid (and later the
+         * binder), never by an exit code. A live server is never killed.
          */
         fun buildHealCommand(route: ShizukuStartRoute): String =
-            "current=\$($IDENTITY_PROBE_COMMAND) || current=; " +
+            "{ $ACQUIRE_START_LOCK; [ \"\$lk\" = 1 ] || { echo $HEAL_ABORT_MARKER; exit 0; }; " +
+                "current=\$($IDENTITY_PROBE_COMMAND) || current=; " +
                 "case \"\$current\" in ABSENT) ;; *) echo $HEAL_ABORT_MARKER; exit 0;; esac; " +
                 "$RESOLVE_INSTALL_FRAGMENT; " +
                 "t0=\$(date '+%m-%d %H:%M:%S.000'); " +
@@ -183,7 +203,7 @@ internal enum class ShizukuHealPlan {
                 "if [ -n \"\$pid\" ]; then echo \"$STARTED_MARKER \$pid\"; " +
                 "elif logcat -b crash -d -T \"\$t0\" 2>/dev/null | grep -qE '$TERMINAL_LINK_SIGNATURE'; " +
                 "then echo \"$TERMINAL_LINK_MARKER \$cp\"; " +
-                "else echo $DIED_MARKER; fi"
+                "else echo $DIED_MARKER; fi; } 8>>$START_LOCK_FILE"
 
         fun parseStartOutcome(output: String): ShizukuStartOutcome {
             val lines = output.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
@@ -315,21 +335,7 @@ internal object SelfRestartPlan {
      * nothing is launched in the foreground.
      */
     fun buildCommand(packageName: String, component: String, aliases: List<String> = emptyList()): String {
-        val componentPattern = Regex("[A-Za-z0-9_.]+/[A-Za-z0-9_.\$]+")
-        require(packageName.matches(Regex("[A-Za-z0-9_.]+")))
-        require(component.matches(componentPattern) && aliases.all { it.matches(componentPattern) })
-        val removals = (listOf(component) + aliases).joinToString(" ") { "-e ${shellQuote(it)}" }
-        val key = "enabled_accessibility_services"
-        // The pre-stop sleep lets the dispatch reply reach ClosePaw first; starts are latched meanwhile.
-        val script = "sleep 2; am force-stop $packageName; sleep 1; " +
-            "c=${shellQuote(component)}; " +
-            "cur=\$(settings get secure $key); [ \"\$cur\" = null ] && cur=; " +
-            "rest=\$(printf '%s\\n' \"\$cur\" | tr ':' '\\n' | grep -vx -F $removals -e '' | tr '\\n' ':'); " +
-            "rest=\${rest%:}; " +
-            "if [ -n \"\$rest\" ]; then settings put secure $key \"\$rest\"; " +
-            "else settings delete secure $key; fi; " +
-            "sleep 1; settings put secure $key \"\${rest:+\$rest:}\$c\"; " +
-            "settings put secure accessibility_enabled 1"
+        val script = restartScript(packageName, component, aliases)
         // ClosePaw's channel closes the stream as soon as the exit marker arrives, and adbd then
         // hangs up the session. A plain `setsid … &` child can be hit before it has left the
         // session (D1, 2026-11-26). Double fork + nohup (SIGHUP ignored) + a short wait before
@@ -338,5 +344,113 @@ internal object SelfRestartPlan {
             "sleep 1; echo $DISPATCHED_MARKER"
     }
 
-    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+    /** The bare restart sequence (no detaching); also run in-line by the layer-2 watchdog. */
+    fun restartScript(packageName: String, component: String, aliases: List<String> = emptyList()): String {
+        val componentPattern = Regex("[A-Za-z0-9_.]+/[A-Za-z0-9_.\$]+")
+        require(packageName.matches(Regex("[A-Za-z0-9_.]+")))
+        require(component.matches(componentPattern) && aliases.all { it.matches(componentPattern) })
+        val removals = (listOf(component) + aliases).joinToString(" ") { "-e ${shellQuote(it)}" }
+        val key = "enabled_accessibility_services"
+        // The pre-stop sleep lets the dispatch reply reach ClosePaw first; starts are latched meanwhile.
+        return "sleep 2; am force-stop $packageName; sleep 1; " +
+            "c=${shellQuote(component)}; " +
+            "cur=\$(settings get secure $key); [ \"\$cur\" = null ] && cur=; " +
+            "rest=\$(printf '%s\\n' \"\$cur\" | tr ':' '\\n' | grep -vx -F $removals -e '' | tr '\\n' ':'); " +
+            "rest=\${rest%:}; " +
+            "if [ -n \"\$rest\" ]; then settings put secure $key \"\$rest\"; " +
+            "else settings delete secure $key; fi; " +
+            "sleep 1; settings put secure $key \"\${rest:+\$rest:}\$c\"; " +
+            "settings put secure accessibility_enabled 1"
+    }
+
+    internal fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+}
+
+/**
+ * Heal layer 2: a self restart requested by the shell-uid watchdog through the credential
+ * provider. Same gates and shared history as H-3, so the watchdog and ClosePaw's own H-3 can never
+ * both restart within the interval. Returns the decision code sent back to the watchdog.
+ */
+internal object ExternalSelfRestartPlan {
+    const val GO = "go"
+    const val NOT_NEEDED = "not_needed"
+    const val HEAL_IN_FLIGHT = "heal_in_flight"
+
+    fun decide(
+        binderAlive: Boolean,
+        healInFlight: Boolean,
+        activeRuns: Int,
+        vdBusy: Boolean,
+        nowWallMs: Long,
+        historyWallMs: List<Long>,
+    ): String = when {
+        binderAlive -> NOT_NEEDED
+        healInFlight -> HEAL_IN_FLIGHT
+        // The watchdog runs its own shell, so ClosePaw's adb channel is not required here.
+        else -> when (val d = SelfRestartPlan.decide(activeRuns, vdBusy, true, nowWallMs, historyWallMs)) {
+            SelfRestartDecision.DISPATCH -> GO
+            else -> d.code
+        }
+    }
+}
+
+/**
+ * Heal layer 2 watchdog: a shell-uid loop, detached like H-3, that restarts a vanished Shizuku
+ * server from the extracted libraries and then asks ClosePaw (shell-only `content call`) whether
+ * to run the restart sequence itself, so recovery completes without ClosePaw's adb channel.
+ * A live server is never killed. One instance at a time (pid file + cmdline check).
+ */
+internal object HealWatchdogPlan {
+    const val NAME = "closepaw-heal-watchdog-v1"
+    const val PID_FILE = "/data/local/tmp/closepaw-heal-watchdog.pid"
+    const val LOG_FILE = "/data/local/tmp/closepaw-heal-watchdog.log"
+    /** Held (flock on fd 9) for the watchdog's whole life; a second instance exits at once. */
+    const val INSTANCE_LOCK_FILE = "/data/local/tmp/closepaw-heal-watchdog.lock"
+    const val LOOP_S = 15
+    /** Absent this long before the watchdog starts the server, leaving the first attempt to ClosePaw. */
+    const val ABSENT_GRACE_S = 20
+    /** Periodic check (in loops) for a live server whose binder never reached ClosePaw. */
+    const val CHECK_EVERY_LOOPS = 20
+    const val STARTED_MARKER = "WATCHDOG_STARTED"
+    const val RUNNING_MARKER = "WATCHDOG_RUNNING"
+    const val METHOD = "selfRestart"
+    const val DECISION_KEY = "decision"
+
+    fun script(restartScript: String, authority: String): String {
+        require(authority.matches(Regex("[A-Za-z0-9_.]+")))
+        return """
+            {
+            flock -n 9 || exit 0;
+            PIDF=$PID_FILE; LOG=$LOG_FILE; echo §§ > "§PIDF";
+            log() { echo "§(date +%m-%d_%H:%M:%S) §*" >> "§LOG"; if [ "§(wc -c < "§LOG")" -gt 65536 ]; then tail -c 32768 "§LOG" > "§LOG.t" && mv "§LOG.t" "§LOG"; fi; };
+            ask() { r=§(content call --uri content://$authority --method $METHOD 2>&1); case "§r" in *$DECISION_KEY=${ExternalSelfRestartPlan.GO}*) log "selfRestart go (§1)"; $restartScript; log "restart sequence done";; *$DECISION_KEY=${ExternalSelfRestartPlan.NOT_NEEDED}*) ;; *) log "selfRestart §(echo "§r" | grep -o '$DECISION_KEY=[a-z_]*' | head -n 1) (§1)";; esac; };
+            log "start pid=§§"; absent=0; n=0;
+            while :; do
+              if pidof shizuku_server >/dev/null 2>&1; then absent=0;
+              else absent=§((absent+$LOOP_S));
+                if [ "§absent" -ge $ABSENT_GRACE_S ]; then absent=0; started=0;
+                  { ${ShizukuHealPlan.ACQUIRE_START_LOCK}; if [ "§lk" = 1 ]; then
+                      ${ShizukuHealPlan.RESOLVE_INSTALL_FRAGMENT};
+                      if [ -n "§lib" ] && ! pidof shizuku_server >/dev/null 2>&1; then
+                        ${ShizukuHealPlan.EXTRACTED_START_COMMAND.replace("$", "§")};
+                        sleep 4;
+                        if pidof shizuku_server >/dev/null 2>&1; then started=1; log "shizuku started pid=§(pidof shizuku_server)"; else log "shizuku start failed"; fi;
+                      else log "start skipped (no extracted libs or server back)"; fi;
+                    else log "start lock busy"; fi; } 8>>${ShizukuHealPlan.START_LOCK_FILE};
+                  if [ "§started" = 1 ]; then sleep 6; ask after_start; fi;
+                fi;
+              fi;
+              n=§((n+1)); if [ "§n" -ge $CHECK_EVERY_LOOPS ]; then n=0; pidof shizuku_server >/dev/null 2>&1 && ask periodic; fi;
+              sleep $LOOP_S;
+            done;
+            } 9>>$INSTANCE_LOCK_FILE
+        """.trimIndent().replace("\n", " ").replace("§", "$")
+    }
+
+    /** Starts the watchdog unless one is already alive. Survives the channel's early close (H-3 form). */
+    fun launchCommand(script: String): String =
+        "p=\$(cat $PID_FILE 2>/dev/null); " +
+            "if [ -n \"\$p\" ] && grep -q $NAME /proc/\$p/cmdline 2>/dev/null; then echo $RUNNING_MARKER; " +
+            "else ( nohup setsid sh -c ${SelfRestartPlan.shellQuote(script)} $NAME </dev/null >/dev/null 2>&1 & ) ; " +
+            "sleep 1; echo $STARTED_MARKER; fi"
 }
