@@ -14,7 +14,7 @@ internal object TaskHelperInputPolicy {
  * the device negative checks (no display 0, STOP-ALL refusal, root refusal, unobservable refusal).
  */
 internal object SecondChannelPolicy {
-    const val ENABLED = false
+    const val ENABLED = true // VERIFY BUILD ONLY — never merge
     const val SHELL_UID = 2000
 
     sealed interface Decision {
