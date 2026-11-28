@@ -120,6 +120,18 @@
             </intent-filter>
         </receiver>
 
+        <!--
+            Read-only MCP bearer token for the adb shell (uid 2000) and root only; every other
+            caller gets a SecurityException (McpCredentialPolicy). Lets an operator agent with an
+            adb route recover the token with no owner action.
+        -->
+        <provider
+            android:name=".app.McpCredentialProvider"
+            android:authorities="${applicationId}.mcpcredential"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:multiprocess="false" />
+
         <!-- Shizuku content provider for binder forwarding -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
