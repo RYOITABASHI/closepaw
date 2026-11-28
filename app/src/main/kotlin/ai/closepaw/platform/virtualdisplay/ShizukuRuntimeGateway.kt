@@ -41,6 +41,14 @@ internal class ShizukuRuntimeGateway {
 
         fun hasPermission(): Boolean = permissionGrantedOrNull() == true
 
+        /** The uid the Shizuku server runs as (2000 = shell, 0 = root); null when unknown. */
+        fun serverUidOrNull(): Int? = try {
+                Shizuku.getUid().takeIf { it >= 0 }
+        } catch (e: Exception) {
+                Log.w(TAG, "Shizuku uid query failed: ${e.message}")
+                null
+        }
+
         fun permissionGrantedOrNull(): Boolean? {
                 return try {
                         Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED

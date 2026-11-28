@@ -1,5 +1,7 @@
 package ai.closepaw.mcp
 
+import ai.closepaw.platform.virtualdisplay.SecondChannelPolicy
+import ai.closepaw.platform.virtualdisplay.VdInputChannelState
 import java.util.UUID
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -314,6 +316,13 @@ class McpHandler(
             put("accessibilitySettingOn", s.accessibilitySettingOn)
             put("accessibilityBound", s.accessibilityReady)
             put("activeRuns", registry.activeCount() + (sessionResults?.activeCount() ?: 0))
+            // Judgment item 2 (guard 6): which channel VD input last used; "shizuku" = degraded.
+            putJsonObject("vdInput") {
+                put("channel", VdInputChannelState.channel)
+                put("degraded", VdInputChannelState.channel == "shizuku")
+                put("degradedSinceMs", VdInputChannelState.degradedSinceMs?.let { JsonPrimitive(it) } ?: JsonNull)
+                put("secondChannelEnabled", SecondChannelPolicy.ENABLED)
+            }
             val adb = adbStatus()
             putJsonObject("adbChannel") {
                 put("paired", adb.paired)
