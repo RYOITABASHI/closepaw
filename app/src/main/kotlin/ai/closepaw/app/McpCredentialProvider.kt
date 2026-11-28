@@ -8,6 +8,7 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Binder
+import android.os.Bundle
 import android.util.Log
 
 /**
@@ -52,6 +53,29 @@ class McpCredentialProvider : ContentProvider() {
             }
         }
         return cursor
+    }
+
+    /**
+     * Heal layer 2: `content call --uri content://ai.closepaw.mcpcredential --method selfRestart`
+     * from the shell-uid watchdog. Returns `decision=go` only when the H-3 gates pass; the
+     * watchdog then runs the restart sequence itself. Shell and root only.
+     */
+    override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
+        val uid = Binder.getCallingUid()
+        if (!McpCredentialPolicy.isTrustedCaller(uid)) denied(uid)
+        if (method != HealWatchdogPlan.METHOD) return null
+        val identity = Binder.clearCallingIdentity()
+        val decision = try {
+            McpMaintenance.active?.requestExternalSelfRestart() ?: "maintenance_inactive"
+        } catch (e: Exception) {
+            "error(${e.javaClass.simpleName})"
+        } finally {
+            Binder.restoreCallingIdentity(identity)
+        }
+        if (decision != ExternalSelfRestartPlan.NOT_NEEDED) {
+            Log.i(TAG, "selfrestart uid=$uid decision=$decision")
+        }
+        return Bundle().apply { putString(HealWatchdogPlan.DECISION_KEY, decision) }
     }
 
     private fun denied(uid: Int): Nothing {
