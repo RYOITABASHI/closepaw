@@ -369,6 +369,22 @@ class MaintenancePolicyTest {
         assertThrows(IllegalArgumentException::class.java) { HealWatchdogPlan.script(restart, "x; reboot") }
     }
 
+    @Test fun watchdogRetriesTransientDecisionsInsteadOfWaitingForThePeriodicAsk() {
+        val restart = SelfRestartPlan.restartScript("ai.closepaw", AccessibilityServiceSetting.AGENT)
+        val script = HealWatchdogPlan.script(restart, "ai.closepaw.mcpcredential")
+        // ask() keeps the decision code.
+        assertEquals(true, script.contains("last=\$(echo \"\$r\" | grep -o 'decision=[a-z_]*' | head -n 1 | cut -d= -f2);"))
+        // After a start: bounded quick retries, only for "not yet" decisions.
+        assertEquals(true, script.contains("retry_ask after_start;"))
+        assertEquals(true, script.contains("case \"\$last\" in heal_in_flight|maintenance_inactive) t=\$((t+1)); " +
+            "[ \"\$t\" -ge ${HealWatchdogPlan.RETRY_MAX} ] && break; sleep ${HealWatchdogPlan.RETRY_S};; *) break;; esac;"))
+        // Periodic: heal_in_flight re-asks on the next loop.
+        assertEquals(true, script.contains("ask periodic; [ \"\$last\" = heal_in_flight ] && n=${HealWatchdogPlan.CHECK_EVERY_LOOPS - 1};"))
+        // go / not_needed / gate refusals end the retry; the restart sequence still exists once.
+        assertEquals(1, Regex("am force-stop").findAll(script).count())
+        assertEquals(false, Regex("&\\s*;").containsMatchIn(script))
+    }
+
     @Test fun watchdogLaunchIsSingleInstanceAndDetached() {
         val cmd = HealWatchdogPlan.launchCommand("sleep 1")
         assertEquals(true, cmd.contains("grep -q ${HealWatchdogPlan.NAME} /proc/\$p/cmdline"))

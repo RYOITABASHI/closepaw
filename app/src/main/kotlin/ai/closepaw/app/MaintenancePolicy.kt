@@ -415,6 +415,14 @@ internal object HealWatchdogPlan {
     const val RUNNING_MARKER = "WATCHDOG_RUNNING"
     const val METHOD = "selfRestart"
     const val DECISION_KEY = "decision"
+    /**
+     * Decisions that only mean "not yet": ClosePaw's own heal holds the gate for a few seconds,
+     * or ClosePaw has just started and its maintenance is not up. Retried after a start instead
+     * of waiting for the next periodic ask (found in the C1+C2 drill, 2026-11-28).
+     */
+    const val TRANSIENT_DECISIONS = "${ExternalSelfRestartPlan.HEAL_IN_FLIGHT}|maintenance_inactive"
+    const val RETRY_MAX = 6
+    const val RETRY_S = 5
 
     fun script(restartScript: String, authority: String): String {
         require(authority.matches(Regex("[A-Za-z0-9_.]+")))
@@ -423,7 +431,8 @@ internal object HealWatchdogPlan {
             flock -n 9 || exit 0;
             PIDF=$PID_FILE; LOG=$LOG_FILE; echo §§ > "§PIDF";
             log() { echo "§(date +%m-%d_%H:%M:%S) §*" >> "§LOG"; if [ "§(wc -c < "§LOG")" -gt 65536 ]; then tail -c 32768 "§LOG" > "§LOG.t" && mv "§LOG.t" "§LOG"; fi; };
-            ask() { r=§(content call --uri content://$authority --method $METHOD 2>&1); case "§r" in *$DECISION_KEY=${ExternalSelfRestartPlan.GO}*) log "selfRestart go (§1)"; $restartScript; log "restart sequence done";; *$DECISION_KEY=${ExternalSelfRestartPlan.NOT_NEEDED}*) ;; *) log "selfRestart §(echo "§r" | grep -o '$DECISION_KEY=[a-z_]*' | head -n 1) (§1)";; esac; };
+            ask() { r=§(content call --uri content://$authority --method $METHOD 2>&1); last=§(echo "§r" | grep -o '$DECISION_KEY=[a-z_]*' | head -n 1 | cut -d= -f2); case "§r" in *$DECISION_KEY=${ExternalSelfRestartPlan.GO}*) log "selfRestart go (§1)"; $restartScript; log "restart sequence done";; *$DECISION_KEY=${ExternalSelfRestartPlan.NOT_NEEDED}*) ;; *) log "selfRestart §(echo "§r" | grep -o '$DECISION_KEY=[a-z_]*' | head -n 1) (§1)";; esac; };
+            retry_ask() { t=0; while :; do ask "§1"; case "§last" in $TRANSIENT_DECISIONS) t=§((t+1)); [ "§t" -ge $RETRY_MAX ] && break; sleep $RETRY_S;; *) break;; esac; done; };
             log "start pid=§§"; absent=0; n=0;
             while :; do
               if pidof shizuku_server >/dev/null 2>&1; then absent=0;
@@ -437,10 +446,10 @@ internal object HealWatchdogPlan {
                         if pidof shizuku_server >/dev/null 2>&1; then started=1; log "shizuku started pid=§(pidof shizuku_server)"; else log "shizuku start failed"; fi;
                       else log "start skipped (no extracted libs or server back)"; fi;
                     else log "start lock busy"; fi; } 8>>${ShizukuHealPlan.START_LOCK_FILE};
-                  if [ "§started" = 1 ]; then sleep 6; ask after_start; fi;
+                  if [ "§started" = 1 ]; then sleep 6; retry_ask after_start; fi;
                 fi;
               fi;
-              n=§((n+1)); if [ "§n" -ge $CHECK_EVERY_LOOPS ]; then n=0; pidof shizuku_server >/dev/null 2>&1 && ask periodic; fi;
+              n=§((n+1)); if [ "§n" -ge $CHECK_EVERY_LOOPS ]; then n=0; if pidof shizuku_server >/dev/null 2>&1; then ask periodic; [ "§last" = ${ExternalSelfRestartPlan.HEAL_IN_FLIGHT} ] && n=${CHECK_EVERY_LOOPS - 1}; fi; fi;
               sleep $LOOP_S;
             done;
             } 9>>$INSTANCE_LOCK_FILE
