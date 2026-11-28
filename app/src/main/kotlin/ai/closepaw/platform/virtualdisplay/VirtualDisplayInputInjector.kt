@@ -371,21 +371,24 @@ class VirtualDisplayInputInjector internal constructor(
                     "${(decision as SecondChannelPolicy.Decision.Refuse).reason})")
                 return channelUnavailable()
             }
-            if (targetDisplayId() != request.displayId) {
-                return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
-            }
             currentCoroutineContext().ensureActive()
-            val result = fallback()
-            if (targetDisplayId() != request.displayId) {
+            // Re-verify the target immediately before injecting (guard 3): same VD id, still present.
+            if (targetDisplayId() != request.displayId ||
+                secondChannel?.displayExists(request.displayId) != true) {
                 return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
             }
-            lastInputChannel = "shizuku"
+            // Recorded before dispatch so a failed or partial Shizuku operation is never logged as adb.
+            recordChannel("shizuku")
+            val result = fallback()
             Log.i(TAG, "input kind=${request.kind} route=shizuku_second_channel adb=unavailable " +
                 "accepted=${result is ActionResult.Success}")
+            if (targetDisplayId() != request.displayId) {
+                return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
+            }
             return if (result is ActionResult.Success) ActionResult.Success("${result.message} [second-channel:shizuku]")
             else result
         }
-        lastInputChannel = "adb"
+        recordChannel("adb")
         if (targetDisplayId() != request.displayId) {
             return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
         }
@@ -408,6 +411,11 @@ class VirtualDisplayInputInjector internal constructor(
         return if (outcome != null && result is ActionResult.Failure) {
             ActionResult.Failure("Helper input $outcome; ${result.reason}")
         } else result
+    }
+
+    private fun recordChannel(channel: String) {
+        lastInputChannel = channel
+        VdInputChannelState.record(channel, System.currentTimeMillis())
     }
 
     /** Evaluated immediately before a second-channel injection (guards 1, 3, 4, 5). */

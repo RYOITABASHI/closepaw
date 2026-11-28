@@ -48,6 +48,27 @@ internal object SecondChannelPolicy {
     }
 }
 
+/**
+ * Process-wide record of the channel VD agent input last used (guard 6), reported by
+ * closepaw_status. "shizuku" means degraded: the adb channel was down; every later operation
+ * still tries the adb channel first, so it switches back at the next operation boundary.
+ */
+internal object VdInputChannelState {
+    @Volatile var channel: String = "adb"
+        private set
+    @Volatile var degradedSinceMs: Long? = null
+        private set
+
+    fun record(channel: String, nowMs: Long) {
+        if (channel == "shizuku") {
+            if (this.channel != "shizuku") degradedSinceMs = nowMs
+        } else {
+            degradedSinceMs = null
+        }
+        this.channel = channel
+    }
+}
+
 /** Facts for [SecondChannelPolicy], supplied by the platform that owns the virtual display. */
 internal interface SecondChannelProbe {
     fun enabled(): Boolean = SecondChannelPolicy.ENABLED

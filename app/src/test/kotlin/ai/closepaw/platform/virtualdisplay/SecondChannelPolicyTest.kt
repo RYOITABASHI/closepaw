@@ -102,6 +102,18 @@ class SecondChannelPolicyTest {
         }
     }
 
+    @Test fun channelStateMarksDegradationAndClearsOnReturnToAdb() {
+        VdInputChannelState.record("adb", 1)
+        assertEquals(null, VdInputChannelState.degradedSinceMs)
+        VdInputChannelState.record("shizuku", 100)
+        VdInputChannelState.record("shizuku", 200)
+        assertEquals("shizuku", VdInputChannelState.channel)
+        assertEquals(100L, VdInputChannelState.degradedSinceMs)  // first degraded operation
+        VdInputChannelState.record("adb", 300)
+        assertEquals("adb", VdInputChannelState.channel)
+        assertEquals(null, VdInputChannelState.degradedSinceMs)
+    }
+
     @Test fun defaultDisplayIsNeverASecondChannelTarget() = runBlocking<Unit> {
         val probe = FakeProbe()
         val injector = VirtualDisplayInputInjector(
