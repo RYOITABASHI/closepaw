@@ -30,8 +30,14 @@ class VirtualDisplayInputInjector internal constructor(
         private val displayIdProvider: () -> Int,
         private val shell: suspend (Array<String>) -> Int,
         private val confirmChannel: suspend (Boolean) -> Boolean,
+        // Before `helper` so existing trailing-lambda call sites keep binding the helper.
+        private val secondChannel: SecondChannelProbe? = null,
         private val helper: (suspend (TaskHelperInputRequest) -> InputOutcome)? = null,
 ) {
+    /** The channel used by the last agent input ("adb" or "shizuku"); for audits and status. */
+    @Volatile internal var lastInputChannel: String = "adb"
+        private set
+
     companion object {
         private const val TAG = "VirtualDisplayInputInjector"
     }
@@ -356,7 +362,30 @@ class VirtualDisplayInputInjector internal constructor(
         success: String,
         fallback: () -> ActionResult,
     ): ActionResult {
-        if (!channelConfirmed()) return channelUnavailable()
+        // channelConfirmed() reconnects once (the short self-repair) before giving up.
+        if (!channelConfirmed()) {
+            // Nothing has been sent on any route yet, so a second channel cannot duplicate input.
+            val decision = secondChannelDecision(request.displayId)
+            if (decision !is SecondChannelPolicy.Decision.Allow) {
+                Log.i(TAG, "input kind=${request.kind} route=none adb=unavailable second_channel=refused(" +
+                    "${(decision as SecondChannelPolicy.Decision.Refuse).reason})")
+                return channelUnavailable()
+            }
+            if (targetDisplayId() != request.displayId) {
+                return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
+            }
+            currentCoroutineContext().ensureActive()
+            val result = fallback()
+            if (targetDisplayId() != request.displayId) {
+                return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
+            }
+            lastInputChannel = "shizuku"
+            Log.i(TAG, "input kind=${request.kind} route=shizuku_second_channel adb=unavailable " +
+                "accepted=${result is ActionResult.Success}")
+            return if (result is ActionResult.Success) ActionResult.Success("${result.message} [second-channel:shizuku]")
+            else result
+        }
+        lastInputChannel = "adb"
         if (targetDisplayId() != request.displayId) {
             return ActionResult.Failure("Input dispatch failed [${InputOutcome.INVALID_TARGET_OR_REQUEST}]")
         }
@@ -379,6 +408,21 @@ class VirtualDisplayInputInjector internal constructor(
         return if (outcome != null && result is ActionResult.Failure) {
             ActionResult.Failure("Helper input $outcome; ${result.reason}")
         } else result
+    }
+
+    /** Evaluated immediately before a second-channel injection (guards 1, 3, 4, 5). */
+    private fun secondChannelDecision(displayId: Int): SecondChannelPolicy.Decision {
+        val probe = secondChannel ?: return SecondChannelPolicy.Decision.Refuse("no_probe")
+        val target = targetDisplayId()?.takeIf { it == displayId }
+        return SecondChannelPolicy.decide(
+            enabled = probe.enabled(),
+            binderAlive = probe.binderAlive(),
+            serverUid = probe.serverUid(),
+            targetDisplayId = target,
+            displayExists = target != null && probe.displayExists(target),
+            displayIdInjection = supportsDisplayIdInjection(),
+            canObserve = probe.canObserve(),
+        )
     }
 
     private fun channelUnavailable() =

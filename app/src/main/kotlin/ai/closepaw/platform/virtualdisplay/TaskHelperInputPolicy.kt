@@ -8,6 +8,55 @@ internal object TaskHelperInputPolicy {
         routeEnabled && sdkInt >= 33
 }
 
+/**
+ * Judgment item 2 (2026-11-28): Shizuku as an explicit second input channel when the adb channel
+ * is confirmed unavailable BEFORE dispatch. Off by default; enabling it as the default requires
+ * the device negative checks (no display 0, STOP-ALL refusal, root refusal, unobservable refusal).
+ */
+internal object SecondChannelPolicy {
+    const val ENABLED = false
+    const val SHELL_UID = 2000
+
+    sealed interface Decision {
+        data object Allow : Decision
+        data class Refuse(val reason: String) : Decision
+    }
+
+    /**
+     * Only reached when the adb channel is confirmed unavailable before anything was sent, so a
+     * resend can never duplicate input (the PR #29 rationale). Every missing guarantee refuses.
+     */
+    fun decide(
+        enabled: Boolean,
+        binderAlive: Boolean,
+        serverUid: Int?,
+        targetDisplayId: Int?,
+        displayExists: Boolean,
+        displayIdInjection: Boolean,
+        canObserve: Boolean,
+    ): Decision = when {
+        !enabled -> Decision.Refuse("disabled")
+        !binderAlive -> Decision.Refuse("shizuku_unavailable")
+        serverUid == null -> Decision.Refuse("server_uid_unknown")
+        serverUid != SHELL_UID -> Decision.Refuse("server_uid_$serverUid")
+        targetDisplayId == null || targetDisplayId <= 0 -> Decision.Refuse("no_virtual_display")
+        !displayExists -> Decision.Refuse("display_missing")
+        // Without setDisplayId the incumbent path would use the shell (the adb channel itself).
+        !displayIdInjection -> Decision.Refuse("display_id_injection_unsupported")
+        !canObserve -> Decision.Refuse("unobservable")
+        else -> Decision.Allow
+    }
+}
+
+/** Facts for [SecondChannelPolicy], supplied by the platform that owns the virtual display. */
+internal interface SecondChannelProbe {
+    fun enabled(): Boolean = SecondChannelPolicy.ENABLED
+    fun binderAlive(): Boolean
+    fun serverUid(): Int?
+    fun displayExists(displayId: Int): Boolean
+    fun canObserve(): Boolean
+}
+
 internal enum class InputOutcome {
     CONFIRMED, UNAVAILABLE, INVALID_TARGET_OR_REQUEST, REFLECTION_FAILED,
     REJECTED, EXCEPTION, TIMEOUT, HELPER_DIED, UNCONFIRMED, CHANNEL_UNAVAILABLE,

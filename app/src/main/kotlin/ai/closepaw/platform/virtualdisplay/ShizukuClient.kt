@@ -98,6 +98,8 @@ class ShizukuClient {
     fun isAvailable(): Boolean =
             runtimeGateway.isAvailable()
 
+    internal fun serverUidOrNull(): Int? = runtimeGateway.serverUidOrNull()
+
     /** True if we have been granted Shizuku permission. */
     fun hasPermission(): Boolean =
             runtimeGateway.hasPermission()

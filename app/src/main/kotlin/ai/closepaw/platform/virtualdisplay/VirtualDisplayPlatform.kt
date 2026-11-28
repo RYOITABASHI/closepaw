@@ -254,10 +254,23 @@ class VirtualDisplayPlatform(
         isDispatchCancelled?.invoke() == true
     }
     private val helperInputEnabled = TaskHelperInputPolicy.useHelper(Build.VERSION.SDK_INT)
+    /** Judgment item 2: facts for the Shizuku second input channel (policy flag off by default). */
+    private val secondChannelProbe = object : SecondChannelProbe {
+        override fun binderAlive(): Boolean = shizuku.isAvailable()
+        override fun serverUid(): Int? = shizuku.serverUidOrNull()
+        override fun displayExists(displayId: Int): Boolean =
+            displayId == displayIdProvider() &&
+                service.getSystemService(android.hardware.display.DisplayManager::class.java)
+                    ?.getDisplay(displayId) != null
+        // Before/after verification is possible only with the VD's hierarchy or its own capture.
+        override fun canObserve(): Boolean =
+            imageReaderProvider() != null || windowAccessor.getRootOnDisplay() != null
+    }
     private val inputInjector = VirtualDisplayInputInjector(
         shizuku, displayIdProvider, shellInput::execute,
         confirmChannel = shellInput::confirmChannel,
         helper = if (helperInputEnabled) ::injectWithTaskHelper else null,
+        secondChannel = secondChannelProbe,
     )
     private val textInjector =
             VirtualDisplayTextInjector(
