@@ -46,7 +46,23 @@ destroy all end an MCP run as `cancelled`/`failed`. `stop_run` uses `AgentServic
 32 random bytes (hex), stored in its own `EncryptedSharedPreferences` file (same pattern as
 `AuthStore`). Regenerating replaces it immediately and drops all MCP sessions.
 
+### Shell-only credential provider
+
+`McpCredentialProvider` (authority `ai.closepaw.mcpcredential`) lets an operator agent with an
+adb route recover the token with no owner action:
+
+    adb shell content query --uri content://ai.closepaw.mcpcredential/token
+
+Rules (`McpCredentialPolicy`, unit tested): only callers with app id 2000 (shell) or 0 (root) are
+answered. Every other caller gets a `SecurityException`, and the Keystore is not touched for it.
+Only `/token` is answered. A disabled server or a missing token yields zero rows. The provider
+never creates or rotates a token and is read-only (insert/update/delete throw). Those callers can
+already drive the whole device, so this adds no trust boundary. Audit lines go to
+`ClosePawMcpAudit` as `mcp credential uid=<uid> outcome=<served|empty(reason)|denied>`, never the
+value. The client side (durable token file, 401 re-bootstrap, run journal) lives in
+`RYOITABASHI/shelly-hayato-bridge` under `src/closepaw/`.
+
 ## Audit
 
-Logcat tag `ClosePawMcpAudit`, one line per tool call:
+Logcat tag `ClosePawMcpAudit`, one line per tool call (and per credential query, see above):
 `mcp tool=<name> handle=<runHandle|-> outcome=<…>`. Never the token, never the goal text.
