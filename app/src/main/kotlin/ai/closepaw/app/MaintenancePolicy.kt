@@ -159,22 +159,42 @@ internal enum class ShizukuHealPlan {
             // setsid detaches the server from the adb shell session (R14 drill C, measured 2026-11-24).
             ShizukuStartRoute.EXTRACTED_LIBS ->
                 "[ -n \"\$lib\" ] || { echo $ROUTE_GONE_MARKER; exit 0; }; " +
-                    "{ setsid /system/bin/app_process -Djava.class.path=\"\$cp/base.apk\" " +
-                    "-Dshizuku.library.path=\"\$lib\" /system/bin --nice-name=shizuku_server " +
-                    "rikka.shizuku.server.ShizukuService </dev/null >/dev/null 2>&1 & }"
+                    EXTRACTED_START_COMMAND
             // start.sh exits 0 even when the starter fails, so its output is scanned instead.
             ShizukuStartRoute.START_SCRIPT ->
                 "[ -f $SHIZUKU_START_SCRIPT_PATH ] || { echo $ROUTE_GONE_MARKER; exit 0; }; " +
-                    "sh $SHIZUKU_START_SCRIPT_PATH </dev/null 2>&1 | grep -q '^fatal:' && echo $STARTER_FATAL_MARKER"
+                    "sh $SHIZUKU_START_SCRIPT_PATH </dev/null 8>&- 9>&- 2>&1 | grep -q '^fatal:' && echo $STARTER_FATAL_MARKER"
         }
 
         /**
-         * Re-validates on the device that no server exists, starts one, and reports what happened.
-         * Success is judged by a live server pid (and later the binder), never by an exit code.
-         * A live server is never killed.
+         * Detached server start from the extracted libraries. Lock fds 8/9 are closed so the
+         * long-lived server never holds the start or watchdog lock.
+         */
+        const val EXTRACTED_START_COMMAND: String =
+            "{ setsid /system/bin/app_process -Djava.class.path=\"\$cp/base.apk\" " +
+                "-Dshizuku.library.path=\"\$lib\" /system/bin --nice-name=shizuku_server " +
+                "rikka.shizuku.server.ShizukuService </dev/null >/dev/null 2>&1 8>&- 9>&- & }"
+
+        /**
+         * Shared by ClosePaw's H-1 and the layer-2 watchdog: whoever holds this flock (fd 8) is the
+         * only one allowed to start a server, and re-checks that none exists after taking it.
+         * Released automatically when the holder exits.
+         */
+        const val START_LOCK_FILE = "/data/local/tmp/closepaw-shizuku-start.lock"
+
+        /** toybox flock has no -w: poll -n for up to 10 s. Sets lk=1 when fd 8 is locked. */
+        const val ACQUIRE_START_LOCK: String =
+            "lk=0; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do " +
+                "flock -n 8 && { lk=1; break; }; sleep 0.5; done"
+
+        /**
+         * Re-validates on the device, under the shared start lock, that no server exists, starts
+         * one, and reports what happened. Success is judged by a live server pid (and later the
+         * binder), never by an exit code. A live server is never killed.
          */
         fun buildHealCommand(route: ShizukuStartRoute): String =
-            "current=\$($IDENTITY_PROBE_COMMAND) || current=; " +
+            "{ $ACQUIRE_START_LOCK; [ \"\$lk\" = 1 ] || { echo $HEAL_ABORT_MARKER; exit 0; }; " +
+                "current=\$($IDENTITY_PROBE_COMMAND) || current=; " +
                 "case \"\$current\" in ABSENT) ;; *) echo $HEAL_ABORT_MARKER; exit 0;; esac; " +
                 "$RESOLVE_INSTALL_FRAGMENT; " +
                 "t0=\$(date '+%m-%d %H:%M:%S.000'); " +
@@ -183,7 +203,7 @@ internal enum class ShizukuHealPlan {
                 "if [ -n \"\$pid\" ]; then echo \"$STARTED_MARKER \$pid\"; " +
                 "elif logcat -b crash -d -T \"\$t0\" 2>/dev/null | grep -qE '$TERMINAL_LINK_SIGNATURE'; " +
                 "then echo \"$TERMINAL_LINK_MARKER \$cp\"; " +
-                "else echo $DIED_MARKER; fi"
+                "else echo $DIED_MARKER; fi; } 8>>$START_LOCK_FILE"
 
         fun parseStartOutcome(output: String): ShizukuStartOutcome {
             val lines = output.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
@@ -384,6 +404,8 @@ internal object HealWatchdogPlan {
     const val NAME = "closepaw-heal-watchdog-v1"
     const val PID_FILE = "/data/local/tmp/closepaw-heal-watchdog.pid"
     const val LOG_FILE = "/data/local/tmp/closepaw-heal-watchdog.log"
+    /** Held (flock on fd 9) for the watchdog's whole life; a second instance exits at once. */
+    const val INSTANCE_LOCK_FILE = "/data/local/tmp/closepaw-heal-watchdog.lock"
     const val LOOP_S = 15
     /** Absent this long before the watchdog starts the server, leaving the first attempt to ClosePaw. */
     const val ABSENT_GRACE_S = 20
@@ -397,6 +419,8 @@ internal object HealWatchdogPlan {
     fun script(restartScript: String, authority: String): String {
         require(authority.matches(Regex("[A-Za-z0-9_.]+")))
         return """
+            {
+            flock -n 9 || exit 0;
             PIDF=$PID_FILE; LOG=$LOG_FILE; echo §§ > "§PIDF";
             log() { echo "§(date +%m-%d_%H:%M:%S) §*" >> "§LOG"; if [ "§(wc -c < "§LOG")" -gt 65536 ]; then tail -c 32768 "§LOG" > "§LOG.t" && mv "§LOG.t" "§LOG"; fi; };
             ask() { r=§(content call --uri content://$authority --method $METHOD 2>&1); case "§r" in *$DECISION_KEY=${ExternalSelfRestartPlan.GO}*) log "selfRestart go (§1)"; $restartScript; log "restart sequence done";; *$DECISION_KEY=${ExternalSelfRestartPlan.NOT_NEEDED}*) ;; *) log "selfRestart §(echo "§r" | grep -o '$DECISION_KEY=[a-z_]*' | head -n 1) (§1)";; esac; };
@@ -404,18 +428,22 @@ internal object HealWatchdogPlan {
             while :; do
               if pidof shizuku_server >/dev/null 2>&1; then absent=0;
               else absent=§((absent+$LOOP_S));
-                if [ "§absent" -ge $ABSENT_GRACE_S ]; then absent=0;
-                  ${ShizukuHealPlan.RESOLVE_INSTALL_FRAGMENT};
-                  if [ -n "§lib" ] && ! pidof shizuku_server >/dev/null 2>&1; then
-                    { setsid /system/bin/app_process -Djava.class.path="§cp/base.apk" -Dshizuku.library.path="§lib" /system/bin --nice-name=shizuku_server rikka.shizuku.server.ShizukuService </dev/null >/dev/null 2>&1 & };
-                    sleep 4;
-                    if pidof shizuku_server >/dev/null 2>&1; then log "shizuku started pid=§(pidof shizuku_server)"; sleep 6; ask after_start; else log "shizuku start failed"; fi;
-                  else log "start skipped (no extracted libs or server back)"; fi;
+                if [ "§absent" -ge $ABSENT_GRACE_S ]; then absent=0; started=0;
+                  { ${ShizukuHealPlan.ACQUIRE_START_LOCK}; if [ "§lk" = 1 ]; then
+                      ${ShizukuHealPlan.RESOLVE_INSTALL_FRAGMENT};
+                      if [ -n "§lib" ] && ! pidof shizuku_server >/dev/null 2>&1; then
+                        ${ShizukuHealPlan.EXTRACTED_START_COMMAND.replace("$", "§")};
+                        sleep 4;
+                        if pidof shizuku_server >/dev/null 2>&1; then started=1; log "shizuku started pid=§(pidof shizuku_server)"; else log "shizuku start failed"; fi;
+                      else log "start skipped (no extracted libs or server back)"; fi;
+                    else log "start lock busy"; fi; } 8>>${ShizukuHealPlan.START_LOCK_FILE};
+                  if [ "§started" = 1 ]; then sleep 6; ask after_start; fi;
                 fi;
               fi;
               n=§((n+1)); if [ "§n" -ge $CHECK_EVERY_LOOPS ]; then n=0; pidof shizuku_server >/dev/null 2>&1 && ask periodic; fi;
               sleep $LOOP_S;
-            done
+            done;
+            } 9>>$INSTANCE_LOCK_FILE
         """.trimIndent().replace("\n", " ").replace("§", "$")
     }
 

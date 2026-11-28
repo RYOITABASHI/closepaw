@@ -182,6 +182,17 @@ class MaintenancePolicyTest {
         assertEquals(true, ShizukuHealPlan.IDENTITY_PROBE_COMMAND.contains("/proc/"))
     }
 
+    @Test fun healStartsOnlyUnderTheSharedStartLockAndRechecksInside() {
+        for (route in ShizukuStartRoute.values()) {
+            val command = ShizukuHealPlan.buildHealCommand(route)
+            assertEquals(true, command.startsWith("{ ${ShizukuHealPlan.ACQUIRE_START_LOCK}; [ \"\$lk\" = 1 ] || { echo ${ShizukuHealPlan.HEAL_ABORT_MARKER}; exit 0; };"))
+            assertEquals(true, command.endsWith("} 8>>${ShizukuHealPlan.START_LOCK_FILE}"))
+            // The identity re-check happens after the lock is taken.
+            assertEquals(true, command.indexOf("flock -n 8") < command.indexOf(ShizukuHealPlan.IDENTITY_PROBE_COMMAND))
+            assertEquals(true, command.contains("8>&- 9>&-"))
+        }
+    }
+
     @Test fun extractedRouteStartsADetachedServerFromTheExtractedLibraries() {
         val command = ShizukuHealPlan.buildHealCommand(ShizukuStartRoute.EXTRACTED_LIBS)
         assertEquals(true, command.contains("{ setsid /system/bin/app_process"))
@@ -337,6 +348,13 @@ class MaintenancePolicyTest {
         assertEquals(false, script.contains("kill"))
         assertEquals(false, Regex("&\\s*;").containsMatchIn(script))
         assertEquals(true, script.contains("echo \$\$ > \"\$PIDF\""))
+        // Single instance: the whole body runs under a non-blocking flock held for life.
+        assertEquals(true, script.startsWith("{ flock -n 9 || exit 0;"))
+        assertEquals(true, script.endsWith("} 9>>${HealWatchdogPlan.INSTANCE_LOCK_FILE}"))
+        // Server start shares ClosePaw's H-1 start lock; the started server holds neither lock.
+        assertEquals(true, script.contains("{ ${ShizukuHealPlan.ACQUIRE_START_LOCK}; if [ \"\$lk\" = 1 ]; then"))
+        assertEquals(true, script.contains("} 8>>${ShizukuHealPlan.START_LOCK_FILE};"))
+        assertEquals(true, script.contains("8>&- 9>&- & }"))
         assertEquals(true, script.contains("if pidof shizuku_server >/dev/null 2>&1; then absent=0;"))
         assertEquals(true, script.contains("[ \"\$absent\" -ge ${HealWatchdogPlan.ABSENT_GRACE_S} ]"))
         assertEquals(true, script.contains(ShizukuHealPlan.RESOLVE_INSTALL_FRAGMENT))

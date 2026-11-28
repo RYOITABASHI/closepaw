@@ -149,10 +149,16 @@ internal class McpMaintenance(
             recordHeal("self_restart_external_skipped_${SelfRestartDecision.SKIP_ACTIVE_RUNS.code}")
             return SelfRestartDecision.SKIP_ACTIVE_RUNS.code
         }
-        healPrefs.edit()
+        val persisted = healPrefs.edit()
             .putString(PREF_SELF_RESTART_HISTORY, SelfRestartPlan.appendHistory(history, now))
             .putLong(PREF_SELF_RESTART_PENDING_AT, now)
             .commit()
+        if (!persisted) {
+            // Without a persisted history entry the interval/budget could not hold after the restart.
+            SelfRestartLatch.release()
+            recordHeal("self_restart_external_skipped_persist_failed")
+            return "persist_failed"
+        }
         recordHeal("self_restart_external_go")
         return decision
     }
